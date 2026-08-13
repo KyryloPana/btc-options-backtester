@@ -7,7 +7,9 @@ import {
   generateDesiredSpreads,
   intrinsicPriceBtc,
   parseContractText,
+  type ValuationPoint,
 } from "../app/lib/backtester.ts";
+import { CHART_SERIES, hitExitGroups, nearestPoint, timeX } from "../app/lib/valuation-chart.ts";
 
 function close(actual: number | undefined, expected: number) {
   assert.ok(actual !== undefined && Math.abs(actual - expected) < 1e-10, `${actual} should be close to ${expected}`);
@@ -81,6 +83,24 @@ test("uses inverse BTC intrinsic settlement", () => {
   assert.equal(intrinsicPriceBtc("P", 50_000, 55_000), 5_000 / 50_000);
 });
 
+test("chart geometry uses timestamps, cursor lookup, and hit-only grouped exit markers", () => {
+  const path = [{ timestamp: 0 }, { timestamp: 10 }, { timestamp: 100 }] as ReturnType<typeof valuationFixture>["path"];
+  assert.equal(timeX(path[1].timestamp, 0, 100, 0, 100), 10, "irregular points retain time-proportional spacing");
+  assert.equal(nearestPoint(path, 70).timestamp, 100);
+  assert.deepEqual(hitExitGroups([
+    { rule: "VPOC hit", timestamp: 10, status: "hit", qualityReason: "hit" },
+    { rule: "50% credit", timestamp: 10, status: "hit", qualityReason: "hit" },
+    { rule: "4H invalidation", status: "not-hit", qualityReason: "not hit" },
+    { rule: "Expiry", status: "unavailable", qualityReason: "missing" },
+  ]), [{ timestamp: 10, labels: ["VPOC hit", "50% credit"] }]);
+});
+
+test("chart modes keep USD PnL and BTC contract series separate", () => {
+  assert.equal(CHART_SERIES.ivPnlUsd.metric, "pnl");
+  assert.equal(CHART_SERIES.rawPnlUsd.metric, "pnl");
+  for (const key of ["rawSoldLegPrice", "rawBoughtLegPrice", "rawSpreadValue", "ivSoldLegPrice", "ivBoughtLegPrice", "ivSpreadValue"] as const) assert.equal(CHART_SERIES[key].metric, "values");
+});
+
 test("builds a complete credit opening ledger and uses it for immediate-close PnL", () => {
   const run = valuationFixture("credit");
   const ledger = run.entryLedgers!.raw;
@@ -102,6 +122,28 @@ test("builds a complete credit opening ledger and uses it for immediate-close Pn
   close(run.path[0].rawPnlUsd, -144);
   assert.equal(ledger.qualityFlag, "green");
   assert.match(ledger.qualityReason, /Both legs/);
+});
+
+test("valuation retains exact leg prices, evidence diagnostics, and Settlement status", () => {
+  const run = valuationFixture("credit");
+  assert.equal(run.path[0].rawSoldLegPrice, 0.03);
+  assert.equal(run.path[0].rawBoughtLegPrice, 0.01);
+  assert.equal(typeof run.path[0].usedDirectionFallback, "boolean");
+  assert.equal(typeof run.path[0].usedModelFallback, "boolean");
+  const settlement = run.path.at(-1)!;
+  assert.equal(settlement.qualityFlag, "settlement");
+  assert.equal(settlement.valuationSource, "settlement");
+  assert.equal(settlement.rawSoldLegPrice, 0.2);
+  assert.equal(settlement.rawBoughtLegPrice, 0.18);
+  assert.equal(settlement.ivSoldLegPrice, settlement.rawSoldLegPrice);
+  assert.match(settlement.qualityReason, /intrinsic settlement/i);
+});
+
+test("missing valuation data remains explicit rather than reconstructed", () => {
+  const missing: ValuationPoint = { timestamp: 1, btcIndex: 60_000, qualityFlag: "red", valuationSource: "unavailable", qualityReason: "Both legs could not be priced at this timestamp.", usedDirectionFallback: false, usedModelFallback: false };
+  assert.equal(missing.rawSoldLegPrice, undefined);
+  assert.equal(missing.ivSpreadValue, undefined);
+  assert.match(missing.qualityReason, /could not be priced/i);
 });
 
 test("mirrors debit cash-flow signs and identifies a combo fee", () => {
