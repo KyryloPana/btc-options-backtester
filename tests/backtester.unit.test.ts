@@ -6,6 +6,7 @@ import {
   buildValuation,
   generateDesiredSpreads,
   intrinsicPriceBtc,
+  latestCompletedCandleAtOrBefore,
   normalizeLeg,
   evaluateExits,
   parseContractText,
@@ -37,6 +38,7 @@ function valuationFixture(kind: "credit" | "debit", comboExecution = false) {
     expiryTimestamp: expiry, expiryLabel: "17APR24", actualDte: 7, actualWidth: 1000,
     soldContract: inventory.find(item => item.instrumentName === soldName), boughtContract: inventory.find(item => item.instrumentName === boughtName),
     soldExistedAtEntry: true, boughtExistedAtEntry: true, retrievalStatus: "ready" as const, retrievalNote: "fixture",
+    priceIndex: "btc_usd", deliveryPrice: 50000, deliveryPriceDate: "2024-04-17", deliveryPriceSource: "deribit-get_delivery_prices" as const,
   };
   const event = { id: "event", label: "fixture", direction: "long" as const, entryDate: "2024-04-10", entryTimestamp: entry, entryPrice: 60000 };
   const candles = [
@@ -124,6 +126,63 @@ test("entry and causal close select opposite prints and never select a future pr
   assert.equal(close.vwapPriceBtc, 0.04, "regression: the old implementation selected the opening-side buy print, and a symmetric window could include 0.99");
   assert.equal(close.latestEvidenceTimestamp, timestamp - 2);
   assert.equal(close.windowEnd, timestamp);
+});
+
+test("underlying lookup selects only the latest completed candle", () => {
+  const at = Date.parse("2024-04-10T08:30:00Z");
+  const completed = { openTime: at - 5_400_000, closeTime: at - 1_800_000, open: 1, high: 2, low: 1, close: 2, volume: 1 };
+  const containing = { openTime: at - 1_800_000 + 1, closeTime: at + 1_800_000, open: 2, high: 99, low: 2, close: 99, volume: 1 };
+  const future = { ...containing, openTime: at + 3_600_000, closeTime: at + 7_200_000, close: 999 };
+  assert.equal(latestCompletedCandleAtOrBefore([future, containing, completed], at), completed);
+  assert.equal(latestCompletedCandleAtOrBefore([containing, future], at), undefined);
+  assert.equal(latestCompletedCandleAtOrBefore([{ ...completed, closeTime: at }], at)?.closeTime, at);
+});
+
+test("ordinary 08:00 valuation uses the previous close while expiry uses official delivery price", () => {
+  const entry = Date.parse("2024-04-16T04:00:00Z");
+  const valuation = Date.parse("2024-04-16T08:00:00Z");
+  const expiry = Date.parse("2024-04-17T08:00:00Z");
+  const names = ["BTC-17APR24-60000-P", "BTC-17APR24-59000-P"];
+  const rows = [
+    { timestamp: entry, price: .03, iv: 70, instrument_name: names[0], index_price: 60_000, direction: "buy", amount: 1 },
+    { timestamp: entry, price: .01, iv: 65, instrument_name: names[1], index_price: 60_000, direction: "sell", amount: 1 },
+    { timestamp: valuation, price: .02, iv: 60, instrument_name: names[0], index_price: 61_000, direction: "sell", amount: 1 },
+    { timestamp: valuation, price: .005, iv: 58, instrument_name: names[1], index_price: 61_000, direction: "buy", amount: 1 },
+  ];
+  const inventory = buildInventory(rows.map((row, i) => ({ name: String(i), trades: parseContractText(JSON.stringify(row)) })));
+  const spread = { id: "causal-index", targetDte: 1, targetWidth: 1000, anchorStrike: 60000, soldStrike: 60000, boughtStrike: 59000, optionType: "P", spreadKind: "credit", structure: "credit", buffered: false, expiryTimestamp: expiry, expiryLabel: "17APR24", soldContract: inventory.find(x => x.instrumentName === names[0]), boughtContract: inventory.find(x => x.instrumentName === names[1]), soldExistedAtEntry: true, boughtExistedAtEntry: true, retrievalStatus: "ready", retrievalNote: "fixture", priceIndex: "btc_usd", deliveryPrice: 50_000, deliveryPriceDate: "2024-04-17", deliveryPriceSource: "deribit-get_delivery_prices" } as const;
+  const candles = [
+    { openTime: valuation - 3_600_000, closeTime: valuation - 1, open: 60_000, high: 61_000, low: 59_000, close: 61_000, volume: 1 },
+    { openTime: valuation, closeTime: valuation + 3_599_999, open: 61_000, high: 100_000, low: 1, close: 99_000, volume: 1 },
+    { openTime: expiry, closeTime: expiry + 3_599_999, open: 70_000, high: 100_000, low: 1, close: 88_000, volume: 1 },
+  ];
+  const event = { id: "e", label: "e", direction: "long" as const, entryDate: "2024-04-16", entryTimestamp: entry, entryPrice: 60_000 };
+  const run = buildValuation(spread, event, candles, "maker", 1, false, [valuation]);
+  const ordinary = run.path.find(point => point.timestamp === valuation)!;
+  assert.equal(ordinary.btcIndex, 61_000);
+  assert.equal(ordinary.btcIndexSource, "completed-candle");
+  assert.equal(ordinary.btcIndexTimestamp, valuation - 1);
+  assert.ok(ordinary.btcIndexTimestamp! <= ordinary.timestamp && ordinary.btcIndexSourceCandleCloseTime! <= ordinary.timestamp);
+  assert.notEqual(ordinary.rawPnlUsd, undefined);
+  assert.notEqual(ordinary.ivPnlBtc, undefined);
+  const futureOnly = buildValuation(spread, event, [candles[1], candles[2]], "maker", 1, false, [valuation]);
+  const unavailableOrdinary = futureOnly.path.find(point => point.timestamp === valuation)!;
+  assert.equal(unavailableOrdinary.btcIndexSource, "unavailable");
+  assert.equal(unavailableOrdinary.btcIndex, undefined, "event entry price is not reused after entry");
+  assert.equal(unavailableOrdinary.rawPnlUsd, undefined);
+  assert.equal(unavailableOrdinary.ivPnlBtc, undefined);
+  const settlement = run.path.at(-1)!;
+  assert.equal(settlement.btcIndex, 50_000);
+  assert.equal(settlement.btcIndexSource, "deribit-delivery-price");
+  assert.equal(settlement.valuationSource, "settlement");
+  assert.notEqual(settlement.btcIndex, candles[2].close);
+  const exported = JSON.parse(JSON.stringify(run));
+  const exportedOrdinary = exported.path.find((point: ValuationPoint) => point.timestamp === valuation);
+  assert.ok(exportedOrdinary.btcIndexTimestamp <= exportedOrdinary.timestamp);
+  assert.ok(exportedOrdinary.btcIndexSourceCandleCloseTime <= exportedOrdinary.timestamp);
+  const missing = buildValuation({ ...spread, deliveryPrice: undefined }, event, candles, "maker", 1, false, [valuation]);
+  assert.equal(missing.path.at(-1)?.valuationSource, "settlement-data-unavailable");
+  assert.equal(missing.path.at(-1)?.rawPnlBtc, undefined);
 });
 
 test("opening-side-only evidence leaves causal close PnL unavailable", () => {
@@ -237,7 +296,9 @@ test("expiry USD PnL converts opening and closing cash flows at their own indexe
 
 function causalPoint(timestamp: number, overrides: Partial<ValuationPoint> = {}): ValuationPoint {
   return {
-    timestamp, btcIndex: 60_000, rawPnlBtc: 0.01, ivPnlBtc: 0.01, rawPnlUsd: 600, ivPnlUsd: 600,
+    timestamp, btcIndex: 60_000, btcIndexSource: "completed-candle", btcIndexTimestamp: timestamp,
+    btcIndexSourceCandleOpenTime: timestamp - 60_000, btcIndexSourceCandleCloseTime: timestamp, btcIndexAgeMs: 0,
+    btcIndexAvailabilityReason: "causal test evidence", rawPnlBtc: 0.01, ivPnlBtc: 0.01, rawPnlUsd: 600, ivPnlUsd: 600,
     rawCreditCapturedPct: 0.8, ivCreditCapturedPct: 0.8, qualityFlag: "green", valuationSource: "trade-window",
     qualityReason: "causal", usedDirectionFallback: false, usedModelFallback: false, valuationPurpose: "close",
     soldRequiredAction: "buy", boughtRequiredAction: "sell", soldCompatibleDirection: "sell", boughtCompatibleDirection: "buy",
@@ -245,6 +306,17 @@ function causalPoint(timestamp: number, overrides: Partial<ValuationPoint> = {})
     rawExitFeesBtc: 0.0006, ivExitFeesBtc: 0.0006, ...overrides,
   };
 }
+
+test("future or unavailable underlying evidence cannot trigger credit capture", () => {
+  const entry = 1_000_000;
+  const expiry = entry + 86_400_000;
+  const futureIndex = causalPoint(entry + 4_000, { btcIndexTimestamp: entry + 5_000, btcIndexSourceCandleCloseTime: entry + 5_000 });
+  const unavailableIndex = causalPoint(entry + 8_000, { btcIndex: undefined, btcIndexSource: "unavailable", btcIndexTimestamp: undefined, btcIndexSourceCandleCloseTime: undefined });
+  const settlement = causalPoint(expiry, { valuationPurpose: "settlement", valuationSource: "settlement", qualityFlag: "settlement", btcIndexSource: "deribit-delivery-price" });
+  const exits = evaluateExits([futureIndex, unavailableIndex, settlement], { spreadKind: "credit", expiryTimestamp: expiry } as Parameters<typeof evaluateExits>[1], { entryTimestamp: entry } as Parameters<typeof evaluateExits>[2], []);
+  assert.equal(exits.find(exit => exit.rule === "50% credit")?.status, "not-hit");
+  assert.equal(exits.find(exit => exit.rule === "70% credit")?.status, "not-hit");
+});
 
 test("future-supported and unavailable close values cannot trigger credit capture", () => {
   const entry = 1_000_000;
@@ -272,6 +344,10 @@ test("VPOC and invalidation valuation never precede completed candle decisions",
   assert.ok(vpoc.valuationTimestamp! >= vpoc.decisionAvailableTimestamp!);
   assert.equal(invalidation.decisionAvailableTimestamp, candles[3].closeTime);
   assert.ok(invalidation.valuationTimestamp! >= invalidation.decisionAvailableTimestamp!);
+  const vpocPoint = path.find(point => point.timestamp === vpoc.valuationTimestamp)!;
+  const invalidationPoint = path.find(point => point.timestamp === invalidation.valuationTimestamp)!;
+  assert.ok(vpocPoint.btcIndexTimestamp! <= vpoc.valuationTimestamp! && vpocPoint.btcIndexSourceCandleCloseTime! <= vpoc.valuationTimestamp!);
+  assert.ok(invalidationPoint.btcIndexTimestamp! <= invalidation.valuationTimestamp! && invalidationPoint.btcIndexSourceCandleCloseTime! <= invalidation.valuationTimestamp!);
   assert.notEqual(vpoc.triggerTimestamp, vpoc.valuationTimestamp, "exported timing retains trigger separately from valuation");
   const exported = JSON.parse(JSON.stringify({ exits }));
   assert.equal(exported.exits[0].triggerTimestamp, candles[0].closeTime);
@@ -284,4 +360,15 @@ test("fixed exits after expiry are unavailable", () => {
   const exits = evaluateExits([causalPoint(entry), causalPoint(expiry, { valuationPurpose: "settlement", valuationSource: "settlement", qualityFlag: "settlement" })], { spreadKind: "credit", expiryTimestamp: expiry } as Parameters<typeof evaluateExits>[1], { entryTimestamp: entry } as Parameters<typeof evaluateExits>[2], []);
   assert.equal(exits.find(exit => exit.rule === "5D fixed")?.reasonCode, "after-expiry");
   assert.equal(exits.find(exit => exit.rule === "14D fixed")?.status, "unavailable");
+});
+
+test("fixed-time valuation retains causal completed-candle index evidence", () => {
+  const entry = 1_000_000;
+  const target = entry + 3 * 86_400_000;
+  const expiry = entry + 5 * 86_400_000;
+  const point = causalPoint(target + 1, { btcIndexTimestamp: target, btcIndexSourceCandleCloseTime: target });
+  const settlement = causalPoint(expiry, { valuationPurpose: "settlement", valuationSource: "settlement", qualityFlag: "settlement", btcIndexSource: "deribit-delivery-price" });
+  const exit = evaluateExits([point, settlement], { spreadKind: "credit", expiryTimestamp: expiry } as Parameters<typeof evaluateExits>[1], { entryTimestamp: entry } as Parameters<typeof evaluateExits>[2], []).find(result => result.rule === "3D fixed")!;
+  assert.equal(exit.valuationTimestamp, target + 1);
+  assert.ok(point.btcIndexTimestamp! <= exit.valuationTimestamp! && point.btcIndexSourceCandleCloseTime! <= exit.valuationTimestamp!);
 });
