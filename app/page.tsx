@@ -124,7 +124,7 @@ function QualityDot({ flag }: { flag: QualityFlag }) {
   return <span className={`quality-dot ${flag}`} aria-label={`${flag} quality`} />;
 }
 
-const SERIES_COLORS: Record<ChartSeriesKey, string> = { rawPnlUsd: "#9aa5a2", ivPnlUsd: "#6eae8b", rawSoldLegPrice: "#c29b5e", rawBoughtLegPrice: "#788eaa", rawSpreadValue: "#aaa39a", ivSoldLegPrice: "#d0b27b", ivBoughtLegPrice: "#91a8c5", ivSpreadValue: "#6eae8b" };
+const SERIES_COLORS: Record<ChartSeriesKey, string> = { rawPnlUsd: "#898781", ivPnlUsd: "#2a78d6", rawSoldLegPrice: "#fab219", rawBoughtLegPrice: "#d03b3b", rawSpreadValue: "#52514e", ivSoldLegPrice: "#c58a00", ivBoughtLegPrice: "#e66767", ivSpreadValue: "#3987e5" };
 
 function ValuationChart({ path, exits }: { path: ValuationPoint[]; exits: ExitResult[] }) {
   const [metric, setMetric] = useState<ChartMetric>("pnl");
@@ -186,8 +186,22 @@ function Ledger({ ledger }: { ledger: EntryLedger }) {
 export default function Home() {
   const stats = useMemo(() => durationSummary(), []);
   const [section, setSection] = useState<Section>("events");
+  const [theme, setTheme] = useState<"light" | "dark">("light");
   const [events, setEvents] = useState<BacktestEvent[]>(BUNDLED_EVENTS);
   const [selectedEventId, setSelectedEventId] = useState(BUNDLED_EVENTS[1].id);
+
+  useEffect(() => {
+    const savedTheme = window.localStorage.getItem("options-lab-theme");
+    const initialTheme = savedTheme === "dark" || savedTheme === "light"
+      ? savedTheme
+      : window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    queueMicrotask(() => setTheme(initialTheme));
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem("options-lab-theme", theme);
+  }, [theme]);
   const [dtes, setDtes] = useState(DTE_OPTIONS);
   const [dteTolerances, setDteTolerances] = useState<Record<number, DteTolerance>>(DEFAULT_DTE_TOLERANCES);
   const [expirySelectionMode, setExpirySelectionMode] = useState<ExpirySelectionMode>("liquidity-aware");
@@ -436,7 +450,7 @@ export default function Home() {
   }
 
   return (
-    <main>
+    <main data-theme={theme}>
       <header className="topbar">
         <div className="brand-lockup"><span className="brand-mark">O</span><div><strong>Options Lab</strong><span>BTC mean-reversion backtester</span></div></div>
         <nav aria-label="Backtest pipeline">
@@ -444,7 +458,7 @@ export default function Home() {
             <button className={section === item ? "active" : ""} onClick={() => jump(item)} key={item}><span>{index + 1}</span>{item}</button>
           ))}
         </nav>
-        <div className="status-lockup"><span className="live-dot" /> local session</div>
+        <div className="status-lockup"><span className="live-dot" /> local session<button className="theme-toggle" type="button" onClick={() => setTheme(current => current === "dark" ? "light" : "dark")} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}>{theme === "dark" ? "Light" : "Dark"}</button></div>
       </header>
 
       <div className="page-shell">
