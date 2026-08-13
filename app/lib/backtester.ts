@@ -4,8 +4,9 @@ export type TradeSide = "buy" | "sell";
 export type ExecutionMode = "maker" | "taker";
 export type SpreadKind = "credit" | "debit";
 export type QualityFlag = "green" | "yellow" | "red";
-export type ValuationStatus = QualityFlag | "settlement";
-export type ValuationSource = "trade-window" | "model-fallback" | "unavailable" | "settlement";
+export type ValuationStatus = QualityFlag | "settlement" | "underlying-unavailable";
+export type ValuationSource = "trade-window" | "model-fallback" | "unavailable" | "settlement" | "settlement-data-unavailable";
+export type BtcIndexSource = "event-entry-price" | "completed-candle" | "deribit-delivery-price" | "unavailable";
 export type ExpirySelectionMode = "liquidity-aware" | "closest-dte" | "all-eligible";
 export type ValuationPurpose = "entry" | "close" | "settlement";
 export type CandidateDataStatus = "available" | "data-unavailable";
@@ -105,6 +106,10 @@ export interface ContractCandidateManifest {
   dataStatus?: CandidateDataStatus;
   failedInstruments?: string[];
   retrievalErrors?: Array<{ instrumentName: string; cause: string; retryable: boolean }>;
+  priceIndex?: string;
+  deliveryPrice?: number;
+  deliveryPriceDate?: string;
+  deliveryPriceSource?: "deribit-get_delivery_prices";
 }
 
 export interface HistoricalLiquidityWindow {
@@ -158,6 +163,10 @@ export interface RetrievedSpread extends DesiredSpread {
   strikeResolutionNote?: string;
   dataStatus?: CandidateDataStatus;
   failedInstruments?: string[];
+  priceIndex?: string;
+  deliveryPrice?: number;
+  deliveryPriceDate?: string;
+  deliveryPriceSource?: "deribit-get_delivery_prices";
 }
 
 export interface WindowMetrics {
@@ -216,7 +225,13 @@ export interface SpreadNormalization {
 
 export interface ValuationPoint {
   timestamp: number;
-  btcIndex: number;
+  btcIndex?: number;
+  btcIndexSource: BtcIndexSource;
+  btcIndexTimestamp?: number;
+  btcIndexSourceCandleOpenTime?: number;
+  btcIndexSourceCandleCloseTime?: number;
+  btcIndexAgeMs?: number;
+  btcIndexAvailabilityReason: string;
   rawSpreadValue?: number;
   ivSpreadValue?: number;
   rawSoldLegPrice?: number;
@@ -272,6 +287,7 @@ export interface ExitResult {
   reasonCode: "triggered" | "not-hit" | "not-configured" | "after-expiry" | "causal-valuation-unavailable" | "settlement";
   qualityReason: string;
   status: "hit" | "not-hit" | "unavailable";
+  triggeredPricingMethod?: EntryPricingMethod;
 }
 
 export type EntryPricingMethod = "raw-vwap" | "iv-normalized";
@@ -812,6 +828,10 @@ export function buildExpiryCandidates(
         strikeResolutionNote: manifest.strikeResolutionNote,
         dataStatus: manifest.dataStatus ?? "available",
         failedInstruments: manifest.failedInstruments,
+        priceIndex: manifest.priceIndex,
+        deliveryPrice: manifest.deliveryPrice,
+        deliveryPriceDate: manifest.deliveryPriceDate,
+        deliveryPriceSource: manifest.deliveryPriceSource,
       };
       const normalization = normalizeSpread(base, entryTimestamp, entryIndex, executionMode, 120);
       const hasObservedPrices = Boolean(
@@ -922,11 +942,11 @@ export function intrinsicPriceBtc(optionType: OptionType, settlementPrice: numbe
     : Math.max(strike - settlementPrice, 0) / settlementPrice;
 }
 
-export function candleAt(candles: Candle[], timestamp: number) {
-  if (!candles.length) return undefined;
-  const index = candles.findIndex(candle => timestamp >= candle.openTime && timestamp <= candle.closeTime);
-  if (index >= 0) return candles[index];
-  return [...candles].sort((a, b) => Math.abs(a.openTime - timestamp) - Math.abs(b.openTime - timestamp))[0];
+export function latestCompletedCandleAtOrBefore(candles: Candle[], timestamp: number) {
+  return candles.reduce<Candle | undefined>((latest, candle) => {
+    if (candle.closeTime > timestamp) return latest;
+    return !latest || candle.closeTime > latest.closeTime ? candle : latest;
+  }, undefined);
 }
 
 export function firstTouch(candles: Candle[], price: number, after = 0) {
@@ -1039,10 +1059,31 @@ export function buildValuationPath(
   let maxAdverse = 0;
   let maxFavorable = 0;
   return timestamps.map(timestamp => {
-    const candle = candleAt(candles, timestamp);
-    const btcIndex = timestamp === event.entryTimestamp ? event.entryPrice : (candle?.close ?? event.entryPrice);
-    const normalization: SpreadNormalization | null = normalizeSpread(spread, timestamp, btcIndex, executionMode, undefined, "close");
+    const isEntry = timestamp === event.entryTimestamp;
+    const isSettlement = timestamp === spread.expiryTimestamp;
+    const candle = !isEntry && !isSettlement ? latestCompletedCandleAtOrBefore(candles, timestamp) : undefined;
+    const btcIndex = isEntry ? event.entryPrice : isSettlement ? spread.deliveryPrice : candle?.close;
+    const btcIndexSource: BtcIndexSource = isEntry ? "event-entry-price" : isSettlement && spread.deliveryPrice !== undefined ? "deribit-delivery-price" : candle ? "completed-candle" : "unavailable";
+    const btcIndexTimestamp = isEntry ? event.entryTimestamp : isSettlement && spread.deliveryPrice !== undefined ? timestamp : candle?.closeTime;
+    const btcIndexAvailabilityReason = btcIndex === undefined
+      ? isSettlement ? `Official Deribit delivery price is unavailable for ${spread.deliveryPriceDate ?? new Date(timestamp).toISOString().slice(0, 10)} (${spread.priceIndex ?? "btc_usd"}).` : "No completed underlying candle exists at or before the valuation timestamp."
+      : isEntry ? "Supplied event entry price." : isSettlement ? `Official Deribit ${spread.priceIndex ?? "btc_usd"} delivery price for ${spread.deliveryPriceDate}.` : "Latest completed underlying candle at or before valuation timestamp.";
+    const indexEvidence = {
+      btcIndex, btcIndexSource, btcIndexTimestamp,
+      btcIndexSourceCandleOpenTime: candle?.openTime,
+      btcIndexSourceCandleCloseTime: candle?.closeTime,
+      btcIndexAgeMs: btcIndexTimestamp === undefined ? undefined : timestamp - btcIndexTimestamp,
+      btcIndexAvailabilityReason,
+    };
+    const normalization: SpreadNormalization | null = btcIndex === undefined ? null : normalizeSpread(spread, timestamp, btcIndex, executionMode, undefined, "close");
     if (timestamp === spread.expiryTimestamp) {
+      if (btcIndex === undefined) return {
+        timestamp, ...indexEvidence, qualityFlag: "settlement" as const, valuationSource: "settlement-data-unavailable" as const,
+        qualityReason: btcIndexAvailabilityReason, usedDirectionFallback: false, usedModelFallback: false,
+        valuationPurpose: "settlement" as const, soldRequiredAction: "buy" as const, boughtRequiredAction: "sell" as const,
+        soldCompatibleDirection: compatibleSchemaDirection("buy", executionMode), boughtCompatibleDirection: compatibleSchemaDirection("sell", executionMode), executionMode,
+        evidenceWindowStart: timestamp, evidenceWindowEnd: timestamp,
+      };
       const soldIntrinsic = intrinsicPriceBtc(spread.optionType, btcIndex, spread.soldContract!.strike);
       const boughtIntrinsic = intrinsicPriceBtc(spread.optionType, btcIndex, spread.boughtContract!.strike);
       const value = spreadValue(spread.spreadKind, soldIntrinsic, boughtIntrinsic);
@@ -1062,7 +1103,7 @@ export function buildValuationPath(
       maxAdverse = Math.min(maxAdverse, primary);
       maxFavorable = Math.max(maxFavorable, primary);
       return {
-        timestamp, btcIndex, rawSpreadValue: value, ivSpreadValue: value,
+        timestamp, ...indexEvidence, rawSpreadValue: value, ivSpreadValue: value,
         rawSoldLegPrice: soldIntrinsic, rawBoughtLegPrice: boughtIntrinsic,
         ivSoldLegPrice: soldIntrinsic, ivBoughtLegPrice: boughtIntrinsic,
         rawPnlBtc, ivPnlBtc,
@@ -1078,8 +1119,8 @@ export function buildValuationPath(
       };
     }
     if (!normalization || !normalization.sold.nearestTrade || !normalization.bought.nearestTrade) return {
-      timestamp, btcIndex, qualityFlag: "red" as const, valuationSource: "unavailable" as const,
-      qualityReason: "Causal closing-side evidence is unavailable for one or both legs.",
+      timestamp, ...indexEvidence, qualityFlag: btcIndex === undefined ? "underlying-unavailable" as const : "red" as const, valuationSource: "unavailable" as const,
+      qualityReason: btcIndex === undefined ? btcIndexAvailabilityReason : "Causal closing-side evidence is unavailable for one or both legs.",
       usedDirectionFallback: Boolean(normalization?.sold.usedDirectionFallback || normalization?.bought.usedDirectionFallback),
       usedModelFallback: Boolean(normalization?.sold.usedModelFallback || normalization?.bought.usedModelFallback),
       valuationPurpose: "close" as const, soldRequiredAction: "buy" as const, boughtRequiredAction: "sell" as const,
@@ -1104,11 +1145,12 @@ export function buildValuationPath(
     const primary = ivPnlBtc ?? rawPnlBtc ?? 0;
     maxAdverse = Math.min(maxAdverse, primary);
     maxFavorable = Math.max(maxFavorable, primary);
-    const rawPnlUsd = rawPnlBtc === undefined ? undefined : ((spread.spreadKind === "credit" ? (rawEntryValue ?? 0) * entryIndex - (rawCurrent ?? 0) * btcIndex : (rawCurrent ?? 0) * btcIndex - (rawEntryValue ?? 0) * entryIndex) * amount - (rawEntryFees ?? 0) * entryIndex - (rawExitFees ?? 0) * btcIndex);
-    const ivPnlUsd = ivPnlBtc === undefined ? undefined : ((spread.spreadKind === "credit" ? (ivEntryValue ?? 0) * entryIndex - (ivCurrent ?? 0) * btcIndex : (ivCurrent ?? 0) * btcIndex - (ivEntryValue ?? 0) * entryIndex) * amount - (ivEntryFees ?? 0) * entryIndex - (ivExitFees ?? 0) * btcIndex);
+    const currentIndex = btcIndex!;
+    const rawPnlUsd = rawPnlBtc === undefined ? undefined : ((spread.spreadKind === "credit" ? (rawEntryValue ?? 0) * entryIndex - (rawCurrent ?? 0) * currentIndex : (rawCurrent ?? 0) * currentIndex - (rawEntryValue ?? 0) * entryIndex) * amount - (rawEntryFees ?? 0) * entryIndex - (rawExitFees ?? 0) * currentIndex);
+    const ivPnlUsd = ivPnlBtc === undefined ? undefined : ((spread.spreadKind === "credit" ? (ivEntryValue ?? 0) * entryIndex - (ivCurrent ?? 0) * currentIndex : (ivCurrent ?? 0) * currentIndex - (ivEntryValue ?? 0) * entryIndex) * amount - (ivEntryFees ?? 0) * entryIndex - (ivExitFees ?? 0) * currentIndex);
     return {
       timestamp,
-      btcIndex,
+      ...indexEvidence,
       rawSpreadValue: rawCurrent,
       ivSpreadValue: ivCurrent,
       rawSoldLegPrice: rawSold,
@@ -1163,6 +1205,9 @@ function firstCausalPathPoint(path: ValuationPoint[], timestamp: number, allowSe
     && (allowSettlement ? point.valuationSource === "settlement" : point.valuationSource === "trade-window")
     && (allowSettlement || point.qualityFlag !== "red")
     && !point.usedDirectionFallback && !point.usedModelFallback
+    && point.btcIndexSource !== "unavailable"
+    && point.btcIndexTimestamp !== undefined && point.btcIndexTimestamp <= point.timestamp
+    && (point.btcIndexSourceCandleCloseTime === undefined || point.btcIndexSourceCandleCloseTime <= point.timestamp)
     && (point.newestSupportingPrintTimestamp === undefined || point.newestSupportingPrintTimestamp <= point.timestamp));
 }
 
@@ -1196,8 +1241,9 @@ export function evaluateExits(path: ValuationPoint[], spread: RetrievedSpread, e
   ];
   if (spread.spreadKind === "credit") {
     for (const [rule, threshold] of [["50% credit", 0.5], ["70% credit", 0.7]] as const) {
-      const point = path.find(candidate => candidate.valuationSource === "trade-window" && candidate.qualityFlag !== "red" && !candidate.usedDirectionFallback && !candidate.usedModelFallback && (candidate.newestSupportingPrintTimestamp === undefined || candidate.newestSupportingPrintTimestamp <= candidate.timestamp) && (candidate.ivCreditCapturedPct ?? candidate.rawCreditCapturedPct ?? -Infinity) >= threshold);
-      results.push(point ? toExit(rule, point, { triggerTimestamp: point.timestamp, decisionAvailableTimestamp: point.timestamp }) : { rule, status: "not-hit", reasonCode: "not-hit", qualityReason: "The causal close-side credit-capture threshold was not reached." });
+      const point = path.find(candidate => candidate.valuationSource === "trade-window" && candidate.qualityFlag !== "red" && !candidate.usedDirectionFallback && !candidate.usedModelFallback && candidate.btcIndexSource !== "unavailable" && candidate.btcIndexTimestamp !== undefined && candidate.btcIndexTimestamp <= candidate.timestamp && (candidate.btcIndexSourceCandleCloseTime === undefined || candidate.btcIndexSourceCandleCloseTime <= candidate.timestamp) && (candidate.newestSupportingPrintTimestamp === undefined || candidate.newestSupportingPrintTimestamp <= candidate.timestamp) && (candidate.ivCreditCapturedPct ?? candidate.rawCreditCapturedPct ?? -Infinity) >= threshold);
+      const triggeredPricingMethod: EntryPricingMethod | undefined = point ? (point.ivCreditCapturedPct !== undefined ? "iv-normalized" : "raw-vwap") : undefined;
+      results.push(point ? toExit(rule, point, { triggerTimestamp: point.timestamp, decisionAvailableTimestamp: point.timestamp, triggeredPricingMethod }) : { rule, status: "not-hit", reasonCode: "not-hit", qualityReason: "The causal close-side credit-capture threshold was not reached." });
     }
   } else {
     results.push({ rule: "50% credit", status: "unavailable", reasonCode: "not-configured", qualityReason: "Credit capture does not apply to debit spreads." }, { rule: "70% credit", status: "unavailable", reasonCode: "not-configured", qualityReason: "Credit capture does not apply to debit spreads." });
@@ -1209,7 +1255,13 @@ export function evaluateExits(path: ValuationPoint[], spread: RetrievedSpread, e
   }
   results.push(invalidation ? toExit("4H invalidation", firstCausalPathPoint(path, invalidation.closeTime), { triggerTimestamp: invalidation.closeTime, sourceCandleOpenTimestamp: invalidation.openTime, sourceCandleCloseTimestamp: invalidation.closeTime, decisionAvailableTimestamp: invalidation.closeTime }) : { rule: "4H invalidation", status: "not-hit", reasonCode: "not-hit", qualityReason: "The invalidation condition was not reached." });
   const settlement = path.find(point => point.valuationSource === "settlement");
-  results.push(toExit("Expiry", settlement, { triggerTimestamp: spread.expiryTimestamp, decisionAvailableTimestamp: spread.expiryTimestamp }));
+  const unavailableSettlement = path.find(point => point.valuationSource === "settlement-data-unavailable");
+  results.push(settlement ? toExit("Expiry", settlement, { triggerTimestamp: spread.expiryTimestamp, decisionAvailableTimestamp: spread.expiryTimestamp }) : {
+    rule: "Expiry", triggerTimestamp: spread.expiryTimestamp, decisionAvailableTimestamp: spread.expiryTimestamp,
+    valuationTimestamp: unavailableSettlement?.timestamp, timestamp: unavailableSettlement?.timestamp,
+    qualityFlag: unavailableSettlement?.qualityFlag, valuationSource: unavailableSettlement?.valuationSource,
+    reasonCode: "causal-valuation-unavailable", status: "unavailable", qualityReason: unavailableSettlement?.qualityReason ?? "Official Deribit settlement data is unavailable.",
+  });
   return results;
 }
 
