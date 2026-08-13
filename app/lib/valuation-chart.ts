@@ -1,4 +1,4 @@
-import type { ExitResult, ValuationPoint } from "./backtester";
+import type { ExitResult, RetrievedSpread, ValuationPoint } from "./backtester";
 
 export type ChartMetric = "pnl" | "values";
 export type ChartSeriesKey = "rawPnlUsd" | "ivPnlUsd" | "rawSoldLegPrice" | "rawBoughtLegPrice" | "rawSpreadValue" | "ivSoldLegPrice" | "ivBoughtLegPrice" | "ivSpreadValue";
@@ -14,8 +14,18 @@ export const CHART_SERIES: Record<ChartSeriesKey, { label: string; metric: Chart
   ivSpreadValue: { label: "IV-normalized net spread value", metric: "values" },
 };
 
-export function timeX(timestamp: number, start: number, end: number, left = 10, right = 98) {
+export const CHART_GEOMETRY = { width: 960, height: 280, plotLeft: 68, plotRight: 946, plotTop: 18, plotBottom: 224 } as const;
+
+export function timeX(timestamp: number, start: number, end: number, left: number, right: number) {
   return end === start ? left : left + ((timestamp - start) / (end - start)) * (right - left);
+}
+
+export function timestampAtX(x: number, start: number, end: number, left: number, right: number) {
+  return start + Math.max(0, Math.min(1, (x - left) / (right - left))) * (end - start);
+}
+
+export function visibleMatrixSpreads(spreads: RetrievedSpread[], hideRed: boolean) {
+  return hideRed ? spreads.filter(spread => spread.entryLiquidityQuality !== "red") : spreads;
 }
 
 export function nearestPoint(points: ValuationPoint[], timestamp: number) {
