@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import type { Plugin } from "vite";
 import { defineConfig, loadEnv } from "vite";
 import hostingConfig from "./.openai/hosting.json";
-import { localContractDataPlugin } from "./scripts/local-contract-data";
+import { deribitHistoryApiPlugin } from "./scripts/deribit-history-api";
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -100,9 +100,9 @@ export default defineConfig(async ({ mode }) => {
     },
     plugins: [
       vinext(),
-      localContractDataPlugin({
-        rootPath: localEnv.CONTRACT_DATA_PATH || process.env.CONTRACT_DATA_PATH,
-        cachePath: resolve(process.cwd(), ".local-cache", "contracts-index.json"),
+      deribitHistoryApiPlugin({
+        baseUrl: localEnv.DERIBIT_HISTORY_API_URL || process.env.DERIBIT_HISTORY_API_URL || "https://history.deribit.com/api/v2/public",
+        cachePath: resolve(process.cwd(), ".local-cache", "deribit-instruments.json"),
       }),
       sites(),
       cloudflare({

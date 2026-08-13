@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BUNDLED_EVENTS, SAMPLE_CONTRACT_JSONL, durationSummary } from "./data";
+import { BUNDLED_EVENTS, durationSummary } from "./data";
 import {
   type BacktestEvent,
   type Candle,
@@ -15,14 +15,12 @@ import {
   type RetrievedSpread,
   type SpreadKind,
   type ValuationPoint,
-  buildInventory,
   buildExpiryCandidates,
   buildValuationPath,
   evaluateExits,
   firstTouch,
   formatUtc,
   generateDesiredSpreads,
-  parseContractText,
   parseUtcDate,
   qualityRank,
   windowComparison,
@@ -135,7 +133,7 @@ export default function Home() {
   const [pricingModes, setPricingModes] = useState(["vwap", "iv"]);
   const [inventory, setInventory] = useState<ContractSeries[]>([]);
   const [candidateManifests, setCandidateManifests] = useState<ContractCandidateManifest[]>([]);
-  const [parseStatus, setParseStatus] = useState("Checking configured contract source…");
+  const [parseStatus, setParseStatus] = useState("Checking Deribit instrument manifest…");
   const [sourceBusy, setSourceBusy] = useState(false);
   const [sourceReady, setSourceReady] = useState(false);
   const [selectedSpreadId, setSelectedSpreadId] = useState<string>();
@@ -242,24 +240,20 @@ export default function Home() {
 
   async function refreshSourceStatus() {
     try {
-      const response = await fetch("/__local/contracts/status");
+      const response = await fetch("/__deribit/history/status");
       const status = await response.json();
       if (!response.ok) throw new Error(status.error ?? "Contract source status failed.");
       setSourceReady(status.phase === "ready");
       if (status.phase === "ready") {
-        setParseStatus(`${status.contractsFound.toLocaleString()} contracts indexed from ${status.jsonFiles.toLocaleString()} JSON files · cache ready`);
-      } else if (status.phase === "indexing") {
-        setParseStatus(`Indexing… ${status.filesScanned.toLocaleString()} files scanned · ${status.contractsFound.toLocaleString()} contracts found`);
-      } else if (status.phase === "unconfigured") {
-        setParseStatus("CONTRACT_DATA_PATH is not configured. Add it to .env.local and restart the app.");
-      } else if (!status.pathExists) {
-        setParseStatus(`Configured folder not found: ${status.configuredPath ?? "unknown path"}`);
+        setParseStatus(`${status.contractsFound.toLocaleString()} Deribit option instruments · manifest cache ready`);
+      } else if (status.phase === "synchronizing") {
+        setParseStatus("Synchronizing Deribit instrument manifest…");
       } else {
-        setParseStatus(`Configured source: ${status.configuredPath} · not indexed yet`);
+        setParseStatus("Deribit manifest is ready to synchronize.");
       }
       return status;
     } catch (error) {
-      setParseStatus(error instanceof Error ? error.message : "Local contract service is unavailable.");
+      setParseStatus(error instanceof Error ? error.message : "Deribit History API service is unavailable.");
       return undefined;
     }
   }
@@ -268,10 +262,10 @@ export default function Home() {
     for (let attempt = 0; attempt < 2400; attempt += 1) {
       const status = await refreshSourceStatus();
       if (status?.phase === "ready") return;
-      if (status?.phase === "error" || status?.phase === "unconfigured") throw new Error(status.error ?? "Contract index is unavailable.");
+      if (status?.phase === "error") throw new Error(status.error ?? "Deribit manifest is unavailable.");
       await new Promise(resolve => window.setTimeout(resolve, 750));
     }
-    throw new Error("Indexing is still running. Leave the app open and retry once the status is ready.");
+    throw new Error("Manifest synchronization is still running. Retry once the status is ready.");
   }
 
   async function loadRequiredContracts(forceIndex = false) {
@@ -282,16 +276,16 @@ export default function Home() {
     setSourceBusy(true);
     setAnalysisResults([]);
     try {
-      const indexResponse = await fetch("/__local/contracts/index", {
+      const indexResponse = await fetch("/__deribit/history/index", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ force: forceIndex }),
       });
       const indexStatus = await indexResponse.json();
-      if (!indexResponse.ok) throw new Error(indexStatus.error ?? "Contract indexing could not start.");
+      if (!indexResponse.ok) throw new Error(indexStatus.error ?? "Manifest synchronization could not start.");
       if (indexStatus.phase !== "ready") await waitForIndex();
-      setParseStatus("Loading only the contracts required by the generated spread matrix…");
-      const response = await fetch("/__local/contracts/resolve", {
+      setParseStatus("Loading exact resolved contracts from Deribit History API…");
+      const response = await fetch("/__deribit/history/resolve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -314,7 +308,7 @@ export default function Home() {
       setCandidateManifests(payload.candidates as ContractCandidateManifest[]);
       setSourceReady(true);
       setSelectedSpreadId(undefined);
-      setParseStatus(`${payload.diagnostics.filesRead.toLocaleString()} files read on demand · ${payload.diagnostics.candidateExpiries.toLocaleString()} expiry candidates · ${nextInventory.length.toLocaleString()} contracts · ${payload.diagnostics.validTrades.toLocaleString()} valid trades${payload.diagnostics.failedFiles.length ? ` · ${payload.diagnostics.failedFiles.length} failed files` : ""}`);
+      setParseStatus(`${payload.diagnostics.apiRequestCount.toLocaleString()} API requests · ${payload.diagnostics.candidateExpiries.toLocaleString()} expiry candidates · ${payload.diagnostics.contractsLoaded.toLocaleString()} contracts loaded · ${payload.diagnostics.validTrades.toLocaleString()} valid trades · ${payload.diagnostics.cacheHits.toLocaleString()} cache hits · ${payload.diagnostics.failedContracts.length.toLocaleString()} failures`);
     } catch (error) {
       setParseStatus(error instanceof Error ? error.message : "Contract loading failed.");
     } finally {
@@ -327,18 +321,10 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  function loadSample() {
-    const next = buildInventory([{ name: "BTC-1APR20-6000-C.jsonl", trades: parseContractText(SAMPLE_CONTRACT_JSONL) }]);
-    setInventory(next);
-    setCandidateManifests([]);
-    setParseStatus("Attached schema sample loaded · 1 contract · 2 trades");
-    setAnalysisResults([]);
-  }
-
   async function runBacktest() {
     const runnable = retrievedSpreads.filter(spread => spread.selectedForTest && spread.entryLiquidity?.viable && spread.soldContract && spread.boughtContract && spread.expiryTimestamp);
     if (!runnable.length) {
-      setAnalysisStatus("No complete spread can be valued. Import both leg files for at least one generated combination.");
+      setAnalysisStatus("No complete spread can be valued. Load both legs for at least one generated combination.");
       return;
     }
     setAnalysisStatus("Loading BTC index path and valuing every generated spread…");
@@ -480,13 +466,13 @@ export default function Home() {
             </div>
           </div>
           <div className="table-card card">
-            <div className="card-title-row"><div><p className="eyebrow">Generated matrix</p><h3>Desired → historical contract</h3></div><button className="secondary-button" onClick={() => jump("contracts")}>Load contract folder</button></div>
+            <div className="card-title-row"><div><p className="eyebrow">Generated matrix</p><h3>Desired → historical contract</h3></div><button className="secondary-button" onClick={() => jump("contracts")}>Load contracts</button></div>
             <div className="table-scroll"><table><thead><tr><th>Structure</th><th>Expiry horizon</th><th>Actual expiry</th><th>Desired → actual legs</th><th>Entry liquidity</th><th>DTE fit</th><th>Selection</th></tr></thead><tbody>
               {retrievedSpreads.map(spread => (
                 <tr className={selectedSpread?.id === spread.id ? "row-selected" : ""} key={spread.id} onClick={() => setSelectedSpreadId(spread.id)}>
                   <td><strong>{spread.structure}</strong>{spread.buffered && <small className="buffer-tag">buffer</small>}</td>
                   <td><strong>~{spread.targetDte}D</strong><small>{spread.dteMin}–{spread.dteMax}D eligible</small></td>
-                  <td>{spread.expiryLabel ?? "—"}<small>{spread.actualDte !== undefined ? `${spread.actualDte.toFixed(1)}D actual` : "awaiting files"}</small></td>
+                  <td>{spread.expiryLabel ?? "—"}<small>{spread.actualDte !== undefined ? `${spread.actualDte.toFixed(1)}D actual` : "awaiting contracts"}</small></td>
                   <td><span className="mono">S {money(spread.soldStrike)} → {money(spread.soldContract?.strike)}</span><small className="mono">B {money(spread.boughtStrike)} → {money(spread.boughtContract?.strike)}</small></td>
                   <td><span className={flagClass(spread.entryLiquidityQuality ?? "red")}>{spread.entryLiquidityQuality ?? "unscored"}</span><small>S {spread.entryLiquidity?.shortTrades2h ?? 0} / L {spread.entryLiquidity?.longTrades2h ?? 0} prints · {(spread.entryLiquidity?.shortAmount2h ?? 0).toFixed(2)} / {(spread.entryLiquidity?.longAmount2h ?? 0).toFixed(2)} amount</small><small>sync {spread.entryLiquidity?.legTimeDiffMin?.toFixed(0) ?? "—"}m · index {spread.entryLiquidity?.indexDiffPct?.toFixed(2) ?? "—"}%</small><small>compatible prior 24h / 7d: {(spread.entryLiquidity?.previous24hShort.compatibleTradeCount ?? 0) + (spread.entryLiquidity?.previous24hLong.compatibleTradeCount ?? 0)} / {(spread.entryLiquidity?.previous7dShort.compatibleTradeCount ?? 0) + (spread.entryLiquidity?.previous7dLong.compatibleTradeCount ?? 0)}</small></td>
                   <td>{spread.dteDistance !== undefined ? `Δ ${spread.dteDistance.toFixed(1)}D` : "—"}<small>vs target ~{spread.targetDte}D</small></td>
@@ -500,7 +486,7 @@ export default function Home() {
 
         <section className="workspace-section" ref={node => { sectionRefs.current.contracts = node; }}>
           <div className="section-heading"><div><span className="step-number">03</span><p className="eyebrow">Historical tape</p><h2>Contracts & normalization</h2></div><div className="inventory-summary"><span><strong>{inventory.length}</strong> contracts</span><span><strong>{inventoryTrades.toLocaleString()}</strong> prints</span><span><strong>{inventoryExpiries}</strong> expiries</span></div></div>
-          <div className="import-card card"><div><p className="eyebrow">Local indexed source</p><h3>Read the configured Deribit archive</h3><p>The local server indexes filenames once, then parses only the contracts needed by the current spread matrix. The browser never receives the full folder.</p></div><div className="import-actions"><button className="primary-button" disabled={sourceBusy} onClick={() => loadRequiredContracts(false)}>{sourceBusy ? "Working…" : sourceReady ? "Load required contracts" : "Index & load contracts"}</button><button className="secondary-button" disabled={sourceBusy} onClick={() => loadRequiredContracts(true)}>Refresh index</button><button className="ghost-button" disabled={sourceBusy} onClick={loadSample}>Load attached 2-print schema</button></div><div className="parse-status"><span className={inventory.length || sourceReady ? "live-dot" : "idle-dot"} />{parseStatus}</div></div>
+          <div className="import-card card"><div><p className="eyebrow">Deribit History API</p><h3>Load historical option contracts</h3><p>The server resolves eligible instruments from Deribit listing metadata and retrieves only the exact contract histories required by the current matrix.</p></div><div className="import-actions"><button className="primary-button" disabled={sourceBusy} onClick={() => loadRequiredContracts(false)}>{sourceBusy ? "Loading contracts…" : "Load contracts"}</button><button className="secondary-button" disabled={sourceBusy} onClick={() => loadRequiredContracts(true)}>Refresh API manifest</button></div><div className="parse-status"><span className={inventory.length || sourceReady ? "live-dot" : "idle-dot"} />{parseStatus}</div></div>
 
           <div className="normalization-grid">
             <div className="table-card card">

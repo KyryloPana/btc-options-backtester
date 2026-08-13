@@ -64,6 +64,7 @@ export interface ContractSeries {
   firstTradeTimestamp: number;
   lastTradeTimestamp: number;
   sourceFiles: string[];
+  creationTimestamp?: number;
 }
 
 export interface DesiredSpread {
@@ -93,6 +94,8 @@ export interface ContractCandidateManifest {
   boughtInstrumentName?: string;
   soldStrike?: number;
   boughtStrike?: number;
+  soldCreationTimestamp?: number;
+  boughtCreationTimestamp?: number;
   strikeResolutionSensible: boolean;
   strikeResolutionNote: string;
 }
@@ -400,7 +403,7 @@ export function retrieveSpread(combo: DesiredSpread, entryTimestamp: number, inv
     .sort((a, b) => a - b);
   const expiryTimestamp = expiries[0];
   if (!expiryTimestamp) {
-    return { ...combo, soldExistedAtEntry: false, boughtExistedAtEntry: false, retrievalStatus: "missing", retrievalNote: `No listed expiry at or beyond ${combo.targetDte}D in imported files.` };
+    return { ...combo, soldExistedAtEntry: false, boughtExistedAtEntry: false, retrievalStatus: "missing", retrievalNote: `No listed expiry at or beyond ${combo.targetDte}D in loaded contracts.` };
   }
   const chain = inventory.filter(item => item.optionType === combo.optionType && item.expiryTimestamp === expiryTimestamp);
   const soldContract = nearestStrike(chain, combo.soldStrike);
@@ -421,10 +424,10 @@ export function retrieveSpread(combo: DesiredSpread, entryTimestamp: number, inv
     boughtExistedAtEntry,
     retrievalStatus: ready ? (strictlyObserved ? "ready" : "partial") : "missing",
     retrievalNote: !ready
-      ? "One or both strike files are missing."
+      ? "One or both resolved contracts are missing."
       : strictlyObserved
         ? "Both contracts have an observed trade at or before entry."
-        : "Contracts were found, but at least one has no print at or before entry; listing existence is not proven by these trade files.",
+        : "Contracts were found, but listing existence is not proven by the available metadata.",
   };
 }
 
@@ -578,7 +581,7 @@ export function normalizeSpread(spread: RetrievedSpread, timestamp: number, targ
   }
   if (!spread.soldExistedAtEntry || !spread.boughtExistedAtEntry) {
     qualityFlag = "red";
-    qualityReason = "Trade files do not prove that both legs existed at entry.";
+    qualityReason = "Listing metadata does not prove that both legs existed at entry.";
   }
   return {
     timestamp,
@@ -664,8 +667,9 @@ export function buildExpiryCandidates(
     const candidates = (byRequest.get(combo.id) ?? []).map(manifest => {
       const soldContract = manifest.soldInstrumentName ? inventoryByName.get(manifest.soldInstrumentName) : undefined;
       const boughtContract = manifest.boughtInstrumentName ? inventoryByName.get(manifest.boughtInstrumentName) : undefined;
-      const soldExistedAtEntry = Boolean(soldContract && soldContract.firstTradeTimestamp <= entryTimestamp);
-      const boughtExistedAtEntry = Boolean(boughtContract && boughtContract.firstTradeTimestamp <= entryTimestamp);
+      // Listing metadata, not the first observed print, proves existence.
+      const soldExistedAtEntry = manifest.soldCreationTimestamp !== undefined && manifest.soldCreationTimestamp <= entryTimestamp;
+      const boughtExistedAtEntry = manifest.boughtCreationTimestamp !== undefined && manifest.boughtCreationTimestamp <= entryTimestamp;
       const base: RetrievedSpread = {
         ...combo,
         id: `${combo.id}-${manifest.expiryTimestamp}`,
@@ -700,8 +704,9 @@ export function buildExpiryCandidates(
       const quality: QualityFlag = viable ? normalization!.qualityFlag : "red";
       let reason = normalization?.qualityReason ?? "Both contracts could not be priced from observed entry-window trades.";
       if (!manifest.strikeResolutionSensible) reason = manifest.strikeResolutionNote;
-      else if (!soldContract || !boughtContract) reason = "One or both resolved contract files could not be loaded.";
-      else if (!soldExistedAtEntry || !boughtExistedAtEntry) reason = "Trade files do not prove that both contracts existed at entry.";
+      else if (!soldContract || !boughtContract) reason = "One or both resolved contracts could not be loaded.";
+      else if (manifest.soldCreationTimestamp === undefined || manifest.boughtCreationTimestamp === undefined) reason = "Listing existence at entry is unknown because creation metadata is missing.";
+      else if (!soldExistedAtEntry || !boughtExistedAtEntry) reason = "One or both contracts were created after entry.";
       else if (!hasObservedPrices) reason = "Both legs require observed, non-model prices within ±2h of entry.";
       const entryLiquidity: EntryLiquidityMetrics = {
         quality,

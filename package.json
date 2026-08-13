@@ -11,7 +11,7 @@
     "build": "bash scripts/build-verified.sh",
     "start": "vinext start",
     "test": "npm run test:unit && npm run build && node --test tests/rendered-html.test.mjs",
-    "test:unit": "node --experimental-strip-types --test tests/backtester.unit.test.ts tests/local-contract-data.unit.test.ts",
+    "test:unit": "node --experimental-strip-types --test tests/backtester.unit.test.ts tests/deribit-history-api.unit.test.ts",
     "validate:artifact": "bash scripts/validate-artifact.sh",
     "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"
