@@ -28,7 +28,7 @@ import {
   qualityRank,
   windowComparison,
 } from "./lib/backtester";
-import { CHART_SERIES, hitExitGroups, nearestPoint, timeX, type ChartMetric, type ChartSeriesKey } from "./lib/valuation-chart";
+import { CHART_GEOMETRY, CHART_SERIES, hitExitGroups, nearestPoint, timestampAtX, timeX, visibleMatrixSpreads, type ChartMetric, type ChartSeriesKey } from "./lib/valuation-chart";
 
 type Section = "events" | "construction" | "contracts" | "analysis";
 
@@ -127,6 +127,7 @@ function QualityDot({ flag }: { flag: QualityFlag }) {
 const SERIES_COLORS: Record<ChartSeriesKey, string> = { rawPnlUsd: "#898781", ivPnlUsd: "#2a78d6", rawSoldLegPrice: "#fab219", rawBoughtLegPrice: "#d03b3b", rawSpreadValue: "#52514e", ivSoldLegPrice: "#c58a00", ivBoughtLegPrice: "#e66767", ivSpreadValue: "#3987e5" };
 
 function ValuationChart({ path, exits }: { path: ValuationPoint[]; exits: ExitResult[] }) {
+  const { width, height, plotLeft, plotRight, plotTop, plotBottom } = CHART_GEOMETRY;
   const [metric, setMetric] = useState<ChartMetric>("pnl");
   const [visible, setVisible] = useState<ChartSeriesKey[]>(["ivPnlUsd"]);
   const [showExits, setShowExits] = useState(false);
@@ -138,25 +139,26 @@ function ValuationChart({ path, exits }: { path: ValuationPoint[]; exits: ExitRe
   const values = points.flatMap(point => active.map(key => point[key]).filter((value): value is number => typeof value === "number"));
   const rawMin = Math.min(0, ...values); const rawMax = Math.max(0, ...values); const padding = (rawMax - rawMin || 1) * .08;
   const min = rawMin - padding; const max = rawMax + padding;
-  const y = (value: number) => 78 - ((value - min) / (max - min)) * 68;
+  const y = (value: number) => plotBottom - ((value - min) / (max - min)) * (plotBottom - plotTop);
   const selected = cursor === undefined || !path.length ? undefined : nearestPoint(path, cursor);
   const ticks = Array.from({ length: 5 }, (_, index) => min + ((max - min) * index) / 4);
   const dateTicks = Array.from({ length: 5 }, (_, index) => start + ((end - start) * index) / 4);
-  const inspect = (clientX: number, rect: DOMRect) => setCursor(start + Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * (end - start));
+  const x = (timestamp: number) => timeX(timestamp, start, end, plotLeft, plotRight);
+  const inspect = (clientX: number, rect: DOMRect) => setCursor(timestampAtX(((clientX - rect.left) / rect.width) * width, start, end, plotLeft, plotRight));
   const changeMetric = (next: ChartMetric) => { setMetric(next); setVisible(next === "pnl" ? ["ivPnlUsd"] : ["ivSpreadValue"]); setCursor(undefined); };
   return <>
     <div className="chart-controls"><div className="segmented" aria-label="Chart metric">{([['pnl','PnL · USD'],['values','Contract values · BTC']] as const).map(([value,label]) => <button key={value} className={metric === value ? "active" : ""} onClick={() => changeMetric(value)}>{label}</button>)}</div><label className="chart-toggle"><input type="checkbox" checked={showExits} onChange={event => setShowExits(event.target.checked)}/> Show exit markers</label></div>
     <div className="chart-legend" aria-label="Visible chart series">{keys.map(key => <label key={key}><input type="checkbox" checked={active.includes(key)} onChange={() => setVisible(current => current.includes(key) ? current.filter(item => item !== key) : [...current, key])}/><i style={{ background: SERIES_COLORS[key] }}/>{CHART_SERIES[key].label}</label>)}</div>
     <div className="mini-chart" aria-label={`${metric === "pnl" ? "IV-normalized unrealized PnL in USD" : "Contract values in BTC"} valuation path chart`}>
-      {!points.length ? <p className="empty-note">No selected series has valuation data.</p> : <svg viewBox="0 0 100 100" role="application" tabIndex={0} aria-label="Interactive valuation chart. Use left and right arrow keys to inspect timestamps." onPointerMove={event => inspect(event.clientX, event.currentTarget.getBoundingClientRect())} onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); inspect(event.clientX, event.currentTarget.getBoundingClientRect()); }} onPointerLeave={() => setCursor(undefined)} onKeyDown={event => { if (!path.length || !["ArrowLeft","ArrowRight","Home","End"].includes(event.key)) return; event.preventDefault(); const index = selected ? path.indexOf(selected) : 0; const next = event.key === "Home" ? 0 : event.key === "End" ? path.length - 1 : Math.max(0, Math.min(path.length - 1, index + (event.key === "ArrowLeft" ? -1 : 1))); setCursor(path[next].timestamp); }}>
-        {ticks.map(value => <g key={value}><line x1="10" x2="98" y1={y(value)} y2={y(value)} className={Math.abs(value) < (max-min)/1000 ? "zero-line" : "grid-line"}/><text x="9" y={y(value)+1} textAnchor="end" className="axis-label">{metric === "pnl" ? `$${Math.round(value).toLocaleString()}` : value.toFixed(4)}</text></g>)}
-        {dateTicks.map(timestamp => <g key={timestamp}><line x1={timeX(timestamp,start,end)} x2={timeX(timestamp,start,end)} y1="78" y2="81" className="axis-tick"/><text x={timeX(timestamp,start,end)} y="86" textAnchor="middle" className="axis-label">{new Date(timestamp).toLocaleDateString("en-GB",{timeZone:"UTC",month:"short",day:"2-digit"})}</text><text x={timeX(timestamp,start,end)} y="91" textAnchor="middle" className="axis-label">{new Date(timestamp).toLocaleTimeString("en-GB",{timeZone:"UTC",hour:"2-digit",minute:"2-digit",hour12:false})} UTC</text></g>)}
-        <text x="1" y="5" className="axis-unit">{metric === "pnl" ? "USD" : "BTC / contract"}</text>
-        {showExits && hitExitGroups(exits).map(group => <g key={group.timestamp} className="exit-marker"><line x1={timeX(group.timestamp,start,end)} x2={timeX(group.timestamp,start,end)} y1="8" y2="78"/><text x={timeX(group.timestamp,start,end)+.8} y="12">{group.labels.join(" + ")}</text></g>)}
-        {active.map(key => { const series = path.filter(point => typeof point[key] === "number"); return <polyline key={key} points={series.map(point => `${timeX(point.timestamp,start,end)},${y(point[key] as number)}`).join(" ")} className="chart-series" style={{ stroke: SERIES_COLORS[key] }}/>; })}
-        {selected && <g className="crosshair"><line x1={timeX(selected.timestamp,start,end)} x2={timeX(selected.timestamp,start,end)} y1="8" y2="78"/>{active.map(key => typeof selected[key] === "number" && <circle key={key} cx={timeX(selected.timestamp,start,end)} cy={y(selected[key] as number)} r="1" style={{fill:SERIES_COLORS[key]}}/>)}</g>}
+      {!points.length ? <p className="empty-note">No selected series has valuation data.</p> : <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" role="application" tabIndex={0} aria-label="Interactive valuation chart. Use left and right arrow keys to inspect timestamps." onPointerMove={event => inspect(event.clientX, event.currentTarget.getBoundingClientRect())} onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); inspect(event.clientX, event.currentTarget.getBoundingClientRect()); }} onPointerLeave={() => setCursor(undefined)} onKeyDown={event => { if (!path.length || !["ArrowLeft","ArrowRight","Home","End"].includes(event.key)) return; event.preventDefault(); const index = selected ? path.indexOf(selected) : 0; const next = event.key === "Home" ? 0 : event.key === "End" ? path.length - 1 : Math.max(0, Math.min(path.length - 1, index + (event.key === "ArrowLeft" ? -1 : 1))); setCursor(path[next].timestamp); }}>
+        {ticks.map(value => <g key={value}><line x1={plotLeft} x2={plotRight} y1={y(value)} y2={y(value)} className={Math.abs(value) < (max-min)/1000 ? "zero-line" : "grid-line"}/><text x={plotLeft-7} y={y(value)+3} textAnchor="end" className="axis-label">{metric === "pnl" ? `$${Math.round(value).toLocaleString()}` : value.toFixed(4)}</text></g>)}
+        {dateTicks.map(timestamp => <g key={timestamp}><line x1={x(timestamp)} x2={x(timestamp)} y1={plotBottom} y2={plotBottom+5} className="axis-tick"/><text x={x(timestamp)} y={plotBottom+20} textAnchor="middle" className="axis-label">{new Date(timestamp).toLocaleDateString("en-GB",{timeZone:"UTC",month:"short",day:"2-digit"})}</text><text x={x(timestamp)} y={plotBottom+34} textAnchor="middle" className="axis-label">{new Date(timestamp).toLocaleTimeString("en-GB",{timeZone:"UTC",hour:"2-digit",minute:"2-digit",hour12:false})} UTC</text></g>)}
+        <text x="4" y="12" className="axis-unit">{metric === "pnl" ? "USD" : "BTC / contract"}</text>
+        {showExits && hitExitGroups(exits).map(group => <g key={group.timestamp} className="exit-marker"><line x1={x(group.timestamp)} x2={x(group.timestamp)} y1={plotTop} y2={plotBottom}/><text x={x(group.timestamp)+5} y={plotTop+10}>{group.labels.join(" + ")}</text></g>)}
+        {active.map(key => { const series = path.filter(point => typeof point[key] === "number"); return <polyline key={key} points={series.map(point => `${x(point.timestamp)},${y(point[key] as number)}`).join(" ")} className="chart-series" style={{ stroke: SERIES_COLORS[key] }}/>; })}
+        {selected && <g className="crosshair"><line x1={x(selected.timestamp)} x2={x(selected.timestamp)} y1={plotTop} y2={plotBottom}/>{active.map(key => typeof selected[key] === "number" && <circle key={key} cx={x(selected.timestamp)} cy={y(selected[key] as number)} r="4" style={{fill:SERIES_COLORS[key]}}/>)}</g>}
       </svg>}
-      {selected && <div className={`chart-tooltip ${timeX(selected.timestamp,start,end)>60 ? "align-right" : ""}`}><strong>{formatUtc(selected.timestamp)}</strong><span>BTC index <b>{money(selected.btcIndex)}</b></span><span>Selected value <b>{active.map(key => `${CHART_SERIES[key].label}: ${metric === "pnl" ? money(selected[key]) : btc(selected[key])}`).join(" · ") || "—"}</b></span><span>Raw / IV PnL <b>{money(selected.rawPnlUsd)} / {money(selected.ivPnlUsd)}</b></span><span>Raw / IV spread <b>{btc(selected.rawSpreadValue)} / {btc(selected.ivSpreadValue)}</b></span><span>Sold Raw / IV <b>{btc(selected.rawSoldLegPrice)} / {btc(selected.ivSoldLegPrice)}</b></span><span>Bought Raw / IV <b>{btc(selected.rawBoughtLegPrice)} / {btc(selected.ivBoughtLegPrice)}</b></span><span>Evidence <b>{selected.qualityFlag} · {selected.valuationSource}</b></span><em>{selected.qualityReason}</em></div>}
+      {selected && <div className={`chart-tooltip ${x(selected.timestamp)>(plotLeft+plotRight)/2 ? "align-right" : ""}`}><strong>{formatUtc(selected.timestamp)}</strong><span>BTC index <b>{money(selected.btcIndex)}</b></span><span>Selected value <b>{active.map(key => `${CHART_SERIES[key].label}: ${metric === "pnl" ? money(selected[key]) : btc(selected[key])}`).join(" · ") || "—"}</b></span><span>Raw / IV PnL <b>{money(selected.rawPnlUsd)} / {money(selected.ivPnlUsd)}</b></span><span>Raw / IV spread <b>{btc(selected.rawSpreadValue)} / {btc(selected.ivSpreadValue)}</b></span><span>Sold Raw / IV <b>{btc(selected.rawSoldLegPrice)} / {btc(selected.ivSoldLegPrice)}</b></span><span>Bought Raw / IV <b>{btc(selected.rawBoughtLegPrice)} / {btc(selected.ivBoughtLegPrice)}</b></span><span>Evidence <b>{selected.qualityFlag} · {selected.valuationSource}</b></span><em>{selected.qualityReason}</em></div>}
     </div>
   </>;
 }
@@ -217,6 +219,7 @@ export default function Home() {
   const [sourceBusy, setSourceBusy] = useState(false);
   const [sourceReady, setSourceReady] = useState(false);
   const [selectedSpreadId, setSelectedSpreadId] = useState<string>();
+  const [hideRed, setHideRed] = useState(false);
   const [resolveStatus, setResolveStatus] = useState("");
   const [analysisStatus, setAnalysisStatus] = useState("");
   const [analysisResults, setAnalysisResults] = useState<AnalysisResult[]>([]);
@@ -235,7 +238,8 @@ export default function Home() {
     () => buildExpiryCandidates(desiredSpreads, candidateManifests, effectiveEntryTimestamp, selectedEvent.entryPrice, inventory, executionMode, expirySelectionMode),
     [desiredSpreads, candidateManifests, effectiveEntryTimestamp, selectedEvent.entryPrice, inventory, executionMode, expirySelectionMode],
   );
-  const selectedSpread = retrievedSpreads.find(spread => spread.id === selectedSpreadId) ?? retrievedSpreads[0];
+  const visibleRetrievedSpreads = useMemo(() => visibleMatrixSpreads(retrievedSpreads, hideRed), [retrievedSpreads, hideRed]);
+  const selectedSpread = visibleRetrievedSpreads.find(spread => spread.id === selectedSpreadId) ?? visibleRetrievedSpreads[0];
   const selectedAnalysis = analysisResults.find(result => result.spread.id === selectedResultId) ?? analysisResults[0];
   const entryWindowRows = selectedSpread?.soldContract && selectedSpread?.boughtContract
     ? windowComparison(selectedSpread, effectiveEntryTimestamp, selectedEvent.entryPrice, executionMode)
@@ -545,9 +549,15 @@ export default function Home() {
             </div>
           </div>
           <div className="table-card card">
-            <div className="card-title-row"><div><p className="eyebrow">Generated matrix</p><h3>Desired → historical contract</h3></div><button className="secondary-button" onClick={() => jump("contracts")}>Load contracts</button></div>
+            <div className="card-title-row"><div><p className="eyebrow">Generated matrix</p><h3>Desired → historical contract</h3></div><div className="matrix-header-actions"><label className="matrix-filter"><input type="checkbox" checked={hideRed} onChange={event => {
+  const checked = event.target.checked;
+  setHideRed(checked);
+  if (checked && retrievedSpreads.find(spread => spread.id === selectedSpreadId)?.entryLiquidityQuality === "red") {
+    setSelectedSpreadId(visibleMatrixSpreads(retrievedSpreads, true)[0]?.id);
+  }
+}} />Hide red</label><button className="secondary-button" onClick={() => jump("contracts")}>Load contracts</button></div></div>
             <div className="table-scroll"><table><thead><tr><th>Structure</th><th>Expiry horizon</th><th>Actual expiry</th><th>Desired → actual legs</th><th>Entry liquidity</th><th>DTE fit<InfoTooltip term="dteTolerance" label="Explain DTE tolerance and DTE fit" /></th><th>Selection</th></tr></thead><tbody>
-              {retrievedSpreads.map(spread => (
+              {visibleRetrievedSpreads.map(spread => (
                 <tr className={selectedSpread?.id === spread.id ? "row-selected" : ""} key={spread.id} onClick={() => setSelectedSpreadId(spread.id)}>
                   <td><strong>{spread.structure}</strong>{spread.buffered && <small className="buffer-tag">buffer</small>}</td>
                   <td><strong>~{spread.targetDte}D</strong><small>{spread.dteMin}–{spread.dteMax}D eligible</small></td>
@@ -559,6 +569,7 @@ export default function Home() {
                 </tr>
               ))}
               {!retrievedSpreads.length && <tr><td colSpan={7} className="empty-cell">Load eligible contract histories to discover and rank every listed expiry in the selected horizon bands.</td></tr>}
+              {!!retrievedSpreads.length && !visibleRetrievedSpreads.length && <tr><td colSpan={7} className="empty-cell">No candidates remain visible while Hide red is enabled.</td></tr>}
             </tbody></table></div>
           </div>
         </section>
@@ -594,7 +605,7 @@ export default function Home() {
               const best = Math.max(...result.path.map(point => point.ivPnlUsd ?? -Infinity));
               const worst = Math.min(...result.path.map(point => point.ivPnlUsd ?? Infinity));
               const expanded = expandedResultIds.includes(result.spread.id);
-              return <Fragment key={result.spread.id}><tr className={selectedAnalysis?.spread.id === result.spread.id ? "row-selected" : ""} onClick={() => setSelectedResultId(result.spread.id)}><td><button className="expand-button" aria-expanded={expanded} aria-controls={`ledger-${result.spread.id}`} aria-label={`${expanded ? "Collapse" : "Expand"} opening ledgers for ${result.spread.structure}`} onClick={event => { event.stopPropagation(); setExpandedResultIds(current => expanded ? current.filter(id => id !== result.spread.id) : [...current, result.spread.id]); }}>⌄</button></td><td><span className={flagClass(result.eventQuality)}>{result.eventQuality}</span><small>Entry {result.entryLedgers?.iv.qualityFlag ?? "red"} · exit {result.selectedExit?.qualityFlag ?? "red"}</small></td><td><strong>{result.spread.structure}</strong><small className="mono">{result.spread.soldContract?.strike} / {result.spread.boughtContract?.strike} {result.spread.optionType}</small></td><td>{result.spread.expiryLabel}<small>Target ~{result.spread.targetDte}D · actual {result.spread.actualDte?.toFixed(1)}D · rank #{result.spread.expiryRank}</small></td><td>{money(result.spread.actualWidth)}</td><td>{btc(result.entryLedgers?.raw.grossEntryBtcPerContract)}</td><td>{btc(result.entryLedgers?.iv.grossEntryBtcPerContract)}</td><td className="positive">{best === -Infinity ? "—" : money(best)}</td><td className="negative">{worst === Infinity ? "—" : money(worst)}</td><td>{result.selectedExit?.rule ?? "—"}<small>{money(result.selectedExit?.ivPnlUsd ?? result.selectedExit?.rawPnlUsd)}</small></td></tr>{expanded && <tr className="ledger-detail-row"><td colSpan={10}><div id={`ledger-${result.spread.id}`} className="ledger-pair">{result.entryLedgers ? <><Ledger ledger={result.entryLedgers.raw}/><Ledger ledger={result.entryLedgers.iv}/></> : <p>Opening evidence was insufficient to produce complete ledgers.</p>}</div></td></tr>}</Fragment>;
+              return <Fragment key={result.spread.id}><tr className={selectedAnalysis?.spread.id === result.spread.id ? "row-selected" : ""} onClick={() => setSelectedResultId(result.spread.id)}><td><button className="expand-button" aria-expanded={expanded} aria-controls={`ledger-${result.spread.id}`} aria-label={`${expanded ? "Collapse" : "Expand"} opening ledgers for ${result.spread.structure}`} onClick={event => { event.stopPropagation(); setExpandedResultIds(current => expanded ? current.filter(id => id !== result.spread.id) : [...current, result.spread.id]); }}><span className="expand-chevron" aria-hidden="true" /></button></td><td><span className={flagClass(result.eventQuality)}>{result.eventQuality}</span><small>Entry {result.entryLedgers?.iv.qualityFlag ?? "red"} · exit {result.selectedExit?.qualityFlag ?? "red"}</small></td><td><strong>{result.spread.structure}</strong><small className="mono">{result.spread.soldContract?.strike} / {result.spread.boughtContract?.strike} {result.spread.optionType}</small></td><td>{result.spread.expiryLabel}<small>Target ~{result.spread.targetDte}D · actual {result.spread.actualDte?.toFixed(1)}D · rank #{result.spread.expiryRank}</small></td><td>{money(result.spread.actualWidth)}</td><td>{btc(result.entryLedgers?.raw.grossEntryBtcPerContract)}</td><td>{btc(result.entryLedgers?.iv.grossEntryBtcPerContract)}</td><td className="positive">{best === -Infinity ? "—" : money(best)}</td><td className="negative">{worst === Infinity ? "—" : money(worst)}</td><td>{result.selectedExit?.rule ?? "—"}<small>{money(result.selectedExit?.ivPnlUsd ?? result.selectedExit?.rawPnlUsd)}</small></td></tr>{expanded && <tr className="ledger-detail-row"><td colSpan={10}><div id={`ledger-${result.spread.id}`} className="ledger-pair">{result.entryLedgers ? <><Ledger ledger={result.entryLedgers.raw}/><Ledger ledger={result.entryLedgers.iv}/></> : <p>Opening evidence was insufficient to produce complete ledgers.</p>}</div></td></tr>}</Fragment>;
             })}
             {!filteredResults.length && <tr><td colSpan={10} className="empty-cell">Run the backtest after importing eligible contract histories. Red tests remain visible in “All tests.”</td></tr>}
           </tbody></table></div></div>

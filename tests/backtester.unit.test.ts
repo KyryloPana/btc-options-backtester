@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   buildExpiryCandidates,
   buildInventory,
@@ -12,7 +13,7 @@ import {
   parseContractText,
   type ValuationPoint,
 } from "../app/lib/backtester.ts";
-import { CHART_SERIES, hitExitGroups, nearestPoint, timeX } from "../app/lib/valuation-chart.ts";
+import { CHART_GEOMETRY, CHART_SERIES, hitExitGroups, nearestPoint, timestampAtX, timeX, visibleMatrixSpreads } from "../app/lib/valuation-chart.ts";
 
 function close(actual: number | undefined, expected: number) {
   assert.ok(actual !== undefined && Math.abs(actual - expected) < 1e-10, `${actual} should be close to ${expected}`);
@@ -203,7 +204,14 @@ test("opening-side-only evidence leaves causal close PnL unavailable", () => {
 
 test("chart geometry uses timestamps, cursor lookup, and hit-only grouped exit markers", () => {
   const path = [{ timestamp: 0 }, { timestamp: 10 }, { timestamp: 100 }] as ReturnType<typeof valuationFixture>["path"];
-  assert.equal(timeX(path[1].timestamp, 0, 100, 0, 100), 10, "irregular points retain time-proportional spacing");
+  const { plotLeft, plotRight } = CHART_GEOMETRY;
+  assert.equal(timeX(0, 0, 100, plotLeft, plotRight), plotLeft);
+  assert.equal(timeX(50, 0, 100, plotLeft, plotRight), (plotLeft + plotRight) / 2);
+  assert.equal(timeX(100, 0, 100, plotLeft, plotRight), plotRight);
+  assert.equal(timestampAtX(plotLeft, 0, 100, plotLeft, plotRight), 0);
+  assert.equal(timestampAtX((plotLeft + plotRight) / 2, 0, 100, plotLeft, plotRight), 50);
+  assert.equal(timestampAtX(plotRight, 0, 100, plotLeft, plotRight), 100);
+  assert.ok((plotRight - plotLeft) / CHART_GEOMETRY.width > .85, "plot occupies at least 85% of chart width");
   assert.equal(nearestPoint(path, 70).timestamp, 100);
   assert.deepEqual(hitExitGroups([
     { rule: "VPOC hit", timestamp: 10, status: "hit", qualityReason: "hit" },
@@ -211,6 +219,30 @@ test("chart geometry uses timestamps, cursor lookup, and hit-only grouped exit m
     { rule: "4H invalidation", status: "not-hit", qualityReason: "not hit" },
     { rule: "Expiry", status: "unavailable", qualityReason: "missing" },
   ]), [{ timestamp: 10, labels: ["VPOC hit", "50% credit"] }]);
+});
+
+test("matrix display filter hides only actual Red entry liquidity", () => {
+  const spreads = [
+    { id: "red", entryLiquidityQuality: "red", dataStatus: "available" },
+    { id: "yellow", entryLiquidityQuality: "yellow", dataStatus: "available" },
+    { id: "green", entryLiquidityQuality: "green", dataStatus: "available" },
+    { id: "unavailable", entryLiquidityQuality: undefined, dataStatus: "data-unavailable" },
+  ] as Parameters<typeof visibleMatrixSpreads>[0];
+  assert.equal(visibleMatrixSpreads(spreads, false), spreads, "off preserves the original collection exactly");
+  assert.deepEqual(visibleMatrixSpreads(spreads, true).map(spread => spread.id), ["yellow", "green", "unavailable"]);
+  assert.deepEqual(visibleMatrixSpreads([spreads[0]], true), []);
+});
+
+test("matrix toggle defaults off and disclosure buttons retain accessible relationships", () => {
+  const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /const \[hideRed, setHideRed\] = useState\(false\)/);
+  assert.match(page, /className="matrix-filter"/);
+  assert.match(page, /checked=\{hideRed\}/);
+  assert.match(page, />Hide red<\/label>/);
+  assert.match(page, /className="expand-button" aria-expanded=\{expanded\} aria-controls=/);
+  assert.match(page, /aria-label=\{`\$\{expanded \? "Collapse" : "Expand"\} opening ledgers/);
+  assert.match(page, /className="expand-chevron" aria-hidden="true"/);
+  assert.doesNotMatch(page, /⌄/);
 });
 
 test("chart modes keep USD PnL and BTC contract series separate", () => {
