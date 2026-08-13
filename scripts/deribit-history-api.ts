@@ -23,6 +23,9 @@ export interface DeribitCandidateManifest extends DesiredRequest {
   desiredSoldStrike: number; desiredBoughtStrike: number; expiryTimestamp: number; expiryLabel: string; actualDte: number;
   soldInstrumentName?: string; boughtInstrumentName?: string; soldStrike?: number; boughtStrike?: number;
   soldCreationTimestamp?: number; boughtCreationTimestamp?: number; strikeResolutionSensible: boolean; strikeResolutionNote: string;
+  dataStatus?: "available" | "data-unavailable";
+  failedInstruments?: string[];
+  retrievalErrors?: Array<{ instrumentName: string; cause: string; retryable: boolean }>;
 }
 interface ApiTrade { timestamp: number; price: number; mark_price?: number; iv?: number; instrument_name: string; index_price: number; direction: "buy" | "sell"; amount: number; trade_id?: string; trade_seq: number }
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -145,11 +148,16 @@ export class DeribitHistoryService {
         if (sensible) { selected.set(sold!.instrumentName, sold!); selected.set(bought!.instrumentName, bought!); }
       }
     }
-    const files: Array<{name:string;trades:ContractTrade[]}> = [], failedContracts: string[] = []; let cacheHits = 0;
+    const files: Array<{name:string;trades:ContractTrade[]}> = [], failures: Array<{ instrumentName: string; cause: string; retryable: boolean }> = []; let cacheHits = 0;
     const jobs = [...selected.values()]; let cursor = 0;
-    await Promise.all(Array.from({ length: Math.min(this.concurrency, jobs.length) }, async () => { while (cursor < jobs.length) { const item = jobs[cursor++]; const key = `${item.instrumentName}:${entryTimestamp-7*DAY_MS}:${item.expiryTimestamp}`; if (this.tradeCache.has(key)) cacheHits += 1; try { files.push({ name: item.instrumentName, trades: await this.fetchTradeRange(item.instrumentName, entryTimestamp-7*DAY_MS, item.expiryTimestamp) }); } catch { failedContracts.push(item.instrumentName); } } }));
+    await Promise.all(Array.from({ length: Math.min(this.concurrency, jobs.length) }, async () => { while (cursor < jobs.length) { const item = jobs[cursor++]; const key = `${item.instrumentName}:${entryTimestamp-7*DAY_MS}:${item.expiryTimestamp}`; if (this.tradeCache.has(key)) cacheHits += 1; try { files.push({ name: item.instrumentName, trades: await this.fetchTradeRange(item.instrumentName, entryTimestamp-7*DAY_MS, item.expiryTimestamp) }); } catch (error) { const cause = error instanceof Error ? error.message : "Unknown retrieval failure"; failures.push({ instrumentName: item.instrumentName, cause, retryable: /network|408|429|HTTP 5\d\d|after retries/i.test(cause) }); } } }));
+    for (const candidate of candidates) {
+      const affected = failures.filter(failure => failure.instrumentName === candidate.soldInstrumentName || failure.instrumentName === candidate.boughtInstrumentName);
+      candidate.dataStatus = affected.length ? "data-unavailable" : "available";
+      if (affected.length) { candidate.failedInstruments = affected.map(failure => failure.instrumentName); candidate.retrievalErrors = affected; }
+    }
     const inventory = buildInventory(files).map(series => { const manifest = selected.get(series.instrumentName); return { ...series, creationTimestamp: manifest?.creationTimestamp }; });
-    return { inventory, candidates, diagnostics: { indexedContracts: this.manifest!.length, selectedContracts: selected.size, contractsLoaded: files.length, cacheHits, apiRequestCount: this.requestCount-requestStart, failedContracts, unavailableRequests: unavailable, candidateExpiries: candidates.length, validTrades: inventory.reduce((n,x)=>n+x.trades.length,0) } };
+    return { complete: failures.length === 0, inventory, candidates, failures: failures.map(failure => ({ ...failure, requestIds: candidates.filter(candidate => candidate.failedInstruments?.includes(failure.instrumentName)).map(candidate => candidate.requestId), candidateIds: candidates.filter(candidate => candidate.failedInstruments?.includes(failure.instrumentName)).map(candidate => `${candidate.requestId}:${candidate.expiryTimestamp}`) })), diagnostics: { indexedContracts: this.manifest!.length, selectedContracts: selected.size, contractsLoaded: files.length, cacheHits, apiRequestCount: this.requestCount-requestStart, failedContracts: failures.map(failure => failure.instrumentName), unavailableRequests: unavailable, candidateExpiries: candidates.length, validTrades: inventory.reduce((n,x)=>n+x.trades.length,0) } };
   }
 }
 
