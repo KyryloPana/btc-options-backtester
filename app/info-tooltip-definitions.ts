@@ -1,0 +1,25 @@
+export const INFO_TOOLTIP_DEFINITIONS = {
+  expiryHorizon: "Expiry Horizon is the requested research bucket (about 7, 14, or 30 days); Actual DTE is the selected Deribit contract’s exact time to expiry at entry.",
+  dteTolerance: "The minimum–maximum Actual DTE admitted for a horizon. DTE fit reports how far an eligible listing lands from that horizon.",
+  liquidityAware: "Ranks eligible expiries using entry-time evidence: Green before Yellow, then distance from the target DTE; it keeps the winner and one viable alternative.",
+  execution: "Maker uses prints compatible with resting-limit execution; Taker uses prints compatible with crossing the market. The choice changes eligible historical prints, not future data.",
+  sideCompatible: "Prints whose aggressor side could fill the selected leg and execution mode. Counts are shown as compatible prints over all prints in the window.",
+  rawVwap: "Amount-weighted price of side-compatible Deribit prints in the selected entry or valuation window, without an IV adjustment.",
+  ivNormalized: "Reprices observed option IV at the event BTC index so asynchronous leg prints are compared on a common underlying level.",
+  synchronizationGap: "Absolute time between the sold- and bought-leg evidence selected for the same valuation timestamp.",
+  indexMismatch: "Percentage difference between the BTC index levels attached to the two legs’ selected prints.",
+  qualityStates: "Green has synchronized direct evidence; Yellow uses wider, older, or fallback evidence; Red lacks a trustworthy two-leg mark. Settlement uses the expiry payoff instead of trade prints.",
+  grossEntry: "Premium received minus premium paid for a credit spread (reversed for a debit), before contract amount and fees.",
+  netOpening: "Gross entry cash flow across the selected contract amount after separate-leg or combo opening fees; debit openings are negative.",
+  pnlMethods: "Raw PnL marks the spread from observed VWAPs; IV-normalized PnL uses those prints’ IV at a common BTC index. Both include the configured cash flows and fees.",
+  extrema: "Best unrealized is the highest marked PnL on the 4H path; Max adverse is the lowest. Neither implies an executable exit between grid points.",
+  valuationEvidence: "For each 4H timestamp, records the print/model source, leg ages, synchronization, index mismatch, fallbacks, and resulting trust color.",
+  vpocExit: "First 4H path point at which the event’s recorded VPOC target is touched, subject to available valuation evidence.",
+  creditCapture: "First point where closing the credit spread realizes at least 50% or 70% of its opening credit after the configured fee treatment.",
+  fixedTime: "Exits at elapsed durations derived from the event set; they sample the first available point on the 4H valuation grid at or after the target time.",
+  invalidation4h: "First 4H valuation point where BTC invalidates the event’s recorded range boundary for its trade direction.",
+  expirySettlement: "At Deribit’s 08:00 UTC expiry, remaining option legs use intrinsic settlement payoff rather than a trade-derived mark.",
+  feeTreatment: "Separate-leg execution charges each option leg; combo execution applies the recorded combo fee treatment. The ledger states which path was used.",
+} as const;
+
+export type InfoTooltipTerm = keyof typeof INFO_TOOLTIP_DEFINITIONS;
