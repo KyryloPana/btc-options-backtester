@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { BUNDLED_EVENTS, durationSummary } from "./data";
 import {
   type BacktestEvent,
@@ -11,12 +11,14 @@ import {
   type ExecutionMode,
   type ExpirySelectionMode,
   type ExitResult,
+  type EntryLedger,
+  type EntryLedgers,
   type QualityFlag,
   type RetrievedSpread,
   type SpreadKind,
   type ValuationPoint,
   buildExpiryCandidates,
-  buildValuationPath,
+  buildValuation,
   evaluateExits,
   firstTouch,
   formatUtc,
@@ -31,7 +33,9 @@ type Section = "events" | "construction" | "contracts" | "analysis";
 interface AnalysisResult {
   spread: RetrievedSpread;
   path: ValuationPoint[];
+  entryLedgers?: EntryLedgers;
   exits: ExitResult[];
+  selectedExit?: ExitResult;
   eventQuality: QualityFlag;
 }
 
@@ -117,6 +121,28 @@ function QualityDot({ flag }: { flag: QualityFlag }) {
   return <span className={`quality-dot ${flag}`} aria-label={`${flag} quality`} />;
 }
 
+function Ledger({ ledger }: { ledger: EntryLedger }) {
+  const flowLabel = ledger.spreadKind === "credit" ? "Gross net credit" : "Gross net debit";
+  return <section className="opening-ledger" aria-label={`${ledger.pricingMethod} opening ledger`}>
+    <div className="ledger-heading"><h4>{ledger.pricingMethod === "raw-vwap" ? "Raw VWAP" : "IV-normalized"}</h4><span className={flagClass(ledger.qualityFlag)}>{ledger.qualityFlag} evidence</span></div>
+    <p className="quality-reason"><strong>Pricing evidence:</strong> {ledger.qualityReason}</p>
+    <dl>
+      <div><dt>Sold instrument</dt><dd className="mono">{ledger.soldInstrumentName}</dd></div><div><dt>Bought instrument</dt><dd className="mono">{ledger.boughtInstrumentName}</dd></div>
+      <div><dt>Structure</dt><dd>{ledger.expiryLabel} · {ledger.optionType === "C" ? "Call" : "Put"} · sold ${ledger.soldStrikeUsd.toLocaleString()} / bought ${ledger.boughtStrikeUsd.toLocaleString()}</dd></div>
+      <div><dt>Selected contract amount</dt><dd>{ledger.contractAmount} contracts</dd></div>
+      <div><dt>Sold price received</dt><dd>{btc(ledger.soldPriceBtcPerContract)} / contract</dd></div><div><dt>Total sold proceeds</dt><dd>{btc(ledger.soldProceedsBtc)} · {money(ledger.soldProceedsUsd)}</dd></div>
+      <div><dt>Bought price paid</dt><dd>{btc(ledger.boughtPriceBtcPerContract)} / contract</dd></div><div><dt>Total bought cost</dt><dd>{btc(ledger.boughtCostBtc)} · {money(ledger.boughtCostUsd)}</dd></div>
+      <div><dt>Sold-leg fee</dt><dd>{btc(ledger.soldLegFeeBtc)}</dd></div><div><dt>{ledger.comboFeeBtc !== undefined ? "Combo fee" : "Bought-leg fee"}</dt><dd>{btc(ledger.comboFeeBtc ?? ledger.boughtLegFeeBtc)}</dd></div>
+      <div><dt>Total opening fees</dt><dd>{btc(ledger.totalOpeningFeesBtc)} · {money(ledger.totalOpeningFeesUsd)}</dd></div>
+      <div><dt>{flowLabel} / contract</dt><dd>{btc(ledger.grossEntryBtcPerContract)}</dd></div><div><dt>{flowLabel} total</dt><dd>{btc(ledger.grossEntryTotalBtc)} · {money(ledger.grossEntryTotalUsd)}</dd></div>
+      <div><dt>Net opening cash flow after fees</dt><dd>{btc(ledger.netOpeningCashFlowBtc)} · {money(ledger.netOpeningCashFlowUsd)}</dd></div>
+      <div><dt>Entry BTC index</dt><dd>{money(ledger.entryIndexUsdPerBtc)} / BTC</dd></div>
+      <div><dt>Sold pricing timestamp</dt><dd>{formatUtc(ledger.soldPricingTimestamp)}</dd></div><div><dt>Bought pricing timestamp</dt><dd>{formatUtc(ledger.boughtPricingTimestamp)}</dd></div>
+      <div><dt>Normalization window</dt><dd>±{ledger.normalizationWindowMinutes} minutes</dd></div><div><dt>Execution mode</dt><dd>{ledger.executionMode}{ledger.comboFeeBtc !== undefined ? " · combo" : " · legs"}</dd></div>
+    </dl>
+  </section>;
+}
+
 export default function Home() {
   const stats = useMemo(() => durationSummary(), []);
   const [section, setSection] = useState<Section>("events");
@@ -142,6 +168,7 @@ export default function Home() {
   const [analysisResults, setAnalysisResults] = useState<AnalysisResult[]>([]);
   const [resultsFilter, setResultsFilter] = useState<"all" | "trusted" | "green">("all");
   const [selectedResultId, setSelectedResultId] = useState<string>();
+  const [expandedResultIds, setExpandedResultIds] = useState<string[]>([]);
   const sectionRefs = useRef<Record<Section, HTMLElement | null>>({ events: null, construction: null, contracts: null, analysis: null });
 
   const selectedEvent = events.find(event => event.id === selectedEventId) ?? events[0];
@@ -335,16 +362,14 @@ export default function Home() {
       const vpocTouch = selectedEvent.vpocPrice ? firstTouch(candles, selectedEvent.vpocPrice, entryTimestamp)?.openTime : undefined;
       const next = runnable.map(spread => {
         const specials = [selectedEvent.vpocTimestamp, selectedEvent.exitTimestamp, vpocTouch].filter(Boolean) as number[];
-        const path = buildValuationPath(spread, { ...selectedEvent, entryTimestamp }, candles, executionMode, amount, comboExecution, specials);
+        const valuation = buildValuation(spread, { ...selectedEvent, entryTimestamp }, candles, executionMode, amount, comboExecution, specials);
+        const { path, entryLedgers } = valuation;
         const exits = evaluateExits(path, spread, { ...selectedEvent, entryTimestamp }, candles);
-        const entryQuality = path[0]?.qualityFlag ?? "red";
-        const usableExits = exits.filter(exit => exit.status === "hit" && exit.qualityFlag);
-        const eventQuality: QualityFlag = usableExits.some(exit => exit.qualityFlag === "green") && entryQuality === "green"
-          ? "green"
-          : usableExits.some(exit => exit.qualityFlag !== "red") && entryQuality !== "red"
-            ? "yellow"
-            : "red";
-        return { spread, path, exits, eventQuality };
+        const selectedExit = exits.find(exit => exit.rule === "VPOC hit" && exit.status === "hit") ?? exits.find(exit => exit.status === "hit");
+        const entryQuality = entryLedgers?.iv.qualityFlag ?? entryLedgers?.raw.qualityFlag ?? "red";
+        const exitQuality = selectedExit?.qualityFlag ?? "red";
+        const eventQuality: QualityFlag = entryQuality === "red" || exitQuality === "red" ? "red" : entryQuality === "green" && exitQuality === "green" ? "green" : "yellow";
+        return { spread, path, entryLedgers, exits, selectedExit, eventQuality };
       });
       setAnalysisResults(next);
       setSelectedResultId(next[0]?.spread.id);
@@ -509,14 +534,15 @@ export default function Home() {
         <section className="workspace-section" ref={node => { sectionRefs.current.analysis = node; }}>
           <div className="section-heading"><div><span className="step-number">04</span><p className="eyebrow">Path-aware output</p><h2>PnL, exits & trust filters</h2></div><button className="secondary-button" disabled={!analysisResults.length} onClick={exportResults}>Export JSON</button></div>
           <div className="filter-row"><div className="segmented">{([['all','All tests'],['trusted','Green / yellow'],['green','Green only']] as const).map(([value,label]) => <button className={resultsFilter === value ? "active" : ""} onClick={() => setResultsFilter(value)} key={value}>{label}</button>)}</div><span>{filteredResults.length} / {analysisResults.length} results visible</span></div>
-          <div className="table-card card"><div className="table-scroll"><table><thead><tr><th>Quality</th><th>Spread</th><th>Expiry</th><th>Width</th><th>Entry raw</th><th>Entry IV</th><th>Best IV PnL</th><th>Worst IV PnL</th><th>Selected exit</th></tr></thead><tbody>
+          <div className="cashflow-explainer card"><strong>Cash-flow identities</strong><p>Credit: gross entry credit = sold premium received − bought premium paid; net opening cash flow = gross entry credit × amount − opening fees; mark-to-close PnL = opening cash flow − closing cost − exit fees. Debit spreads mirror the cash-flow direction: opening cash flow is negative and closing proceeds are positive.</p><p>The first path point is a hypothetical immediate close, including both opening and closing fees. It can be negative and is not the gross entry credit or debit.</p></div>
+          <div className="table-card card"><div className="table-scroll"><table><thead><tr><th><span className="sr-only">Expand</span></th><th>Selected-exit trust</th><th>Spread</th><th>Expiry</th><th>Width</th><th>{spreadKind === "credit" ? "Gross entry credit · Raw" : "Gross entry debit · Raw"}</th><th>{spreadKind === "credit" ? "Gross entry credit · IV" : "Gross entry debit · IV"}</th><th>Best IV PnL</th><th>Worst IV PnL</th><th>Selected exit</th></tr></thead><tbody>
             {filteredResults.map(result => {
               const best = Math.max(...result.path.map(point => point.ivPnlUsd ?? -Infinity));
               const worst = Math.min(...result.path.map(point => point.ivPnlUsd ?? Infinity));
-              const preferred = result.exits.find(exit => exit.rule === "VPOC hit" && exit.status === "hit") ?? result.exits.find(exit => exit.status === "hit");
-              return <tr className={selectedAnalysis?.spread.id === result.spread.id ? "row-selected" : ""} key={result.spread.id} onClick={() => setSelectedResultId(result.spread.id)}><td><span className={flagClass(result.eventQuality)}>{result.eventQuality}</span></td><td><strong>{result.spread.structure}</strong><small className="mono">{result.spread.soldContract?.strike} / {result.spread.boughtContract?.strike} {result.spread.optionType}</small></td><td>{result.spread.expiryLabel}<small>Target ~{result.spread.targetDte}D · actual {result.spread.actualDte?.toFixed(1)}D · rank #{result.spread.expiryRank}</small></td><td>{money(result.spread.actualWidth)}</td><td>{btc(result.path[0]?.rawSpreadValue)}</td><td>{btc(result.path[0]?.ivSpreadValue)}</td><td className="positive">{best === -Infinity ? "—" : money(best)}</td><td className="negative">{worst === Infinity ? "—" : money(worst)}</td><td>{preferred?.rule ?? "—"}<small>{money(preferred?.ivPnlUsd ?? preferred?.rawPnlUsd)}</small></td></tr>;
+              const expanded = expandedResultIds.includes(result.spread.id);
+              return <Fragment key={result.spread.id}><tr className={selectedAnalysis?.spread.id === result.spread.id ? "row-selected" : ""} onClick={() => setSelectedResultId(result.spread.id)}><td><button className="expand-button" aria-expanded={expanded} aria-controls={`ledger-${result.spread.id}`} aria-label={`${expanded ? "Collapse" : "Expand"} opening ledgers for ${result.spread.structure}`} onClick={event => { event.stopPropagation(); setExpandedResultIds(current => expanded ? current.filter(id => id !== result.spread.id) : [...current, result.spread.id]); }}>⌄</button></td><td><span className={flagClass(result.eventQuality)}>{result.eventQuality}</span><small>Entry {result.entryLedgers?.iv.qualityFlag ?? "red"} · exit {result.selectedExit?.qualityFlag ?? "red"}</small></td><td><strong>{result.spread.structure}</strong><small className="mono">{result.spread.soldContract?.strike} / {result.spread.boughtContract?.strike} {result.spread.optionType}</small></td><td>{result.spread.expiryLabel}<small>Target ~{result.spread.targetDte}D · actual {result.spread.actualDte?.toFixed(1)}D · rank #{result.spread.expiryRank}</small></td><td>{money(result.spread.actualWidth)}</td><td>{btc(result.entryLedgers?.raw.grossEntryBtcPerContract)}</td><td>{btc(result.entryLedgers?.iv.grossEntryBtcPerContract)}</td><td className="positive">{best === -Infinity ? "—" : money(best)}</td><td className="negative">{worst === Infinity ? "—" : money(worst)}</td><td>{result.selectedExit?.rule ?? "—"}<small>{money(result.selectedExit?.ivPnlUsd ?? result.selectedExit?.rawPnlUsd)}</small></td></tr>{expanded && <tr className="ledger-detail-row"><td colSpan={10}><div id={`ledger-${result.spread.id}`} className="ledger-pair">{result.entryLedgers ? <><Ledger ledger={result.entryLedgers.raw}/><Ledger ledger={result.entryLedgers.iv}/></> : <p>Opening evidence was insufficient to produce complete ledgers.</p>}</div></td></tr>}</Fragment>;
             })}
-            {!filteredResults.length && <tr><td colSpan={9} className="empty-cell">Run the backtest after importing eligible contract histories. Red tests remain visible in “All tests.”</td></tr>}
+            {!filteredResults.length && <tr><td colSpan={10} className="empty-cell">Run the backtest after importing eligible contract histories. Red tests remain visible in “All tests.”</td></tr>}
           </tbody></table></div></div>
 
           {selectedAnalysis && <div className="analysis-detail">
@@ -531,10 +557,10 @@ export default function Home() {
                 const zeroY = 92 - ((0 - min) / range) * 78;
                 return <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img"><line x1="0" x2="100" y1={zeroY} y2={zeroY} className="zero-line"/><polygon points={`0,92 ${polyline} 100,92`} className="pnl-area"/><polyline points={polyline} className="pnl-line"/></svg>;
               })()}</div>
-              <div className="path-metrics"><span><small>Best unrealized</small><strong className="positive">{money(Math.max(...selectedAnalysis.path.map(point => point.maxFavorablePnlSoFar ?? -Infinity)) * (selectedAnalysis.path[0]?.btcIndex ?? 0))}</strong></span><span><small>Max adverse</small><strong className="negative">{money(Math.min(...selectedAnalysis.path.map(point => point.maxAdversePnlSoFar ?? Infinity)) * (selectedAnalysis.path[0]?.btcIndex ?? 0))}</strong></span><span><small>Grid points</small><strong>{selectedAnalysis.path.length}</strong></span></div>
+              <div className="path-metrics"><span><small>Best unrealized</small><strong className="positive">{money(Math.max(...selectedAnalysis.path.map(point => point.ivPnlUsd ?? point.rawPnlUsd ?? -Infinity)))}</strong></span><span><small>Max adverse</small><strong className="negative">{money(Math.min(...selectedAnalysis.path.map(point => point.ivPnlUsd ?? point.rawPnlUsd ?? Infinity)))}</strong></span><span><small>Grid points</small><strong>{selectedAnalysis.path.length}</strong></span></div>
               <div className="table-scroll compact path-table"><table><thead><tr><th>Timestamp</th><th>BTC index</th><th>Raw value</th><th>IV value</th><th>Raw PnL USD</th><th>IV PnL USD</th><th>Data</th></tr></thead><tbody>{selectedAnalysis.path.slice(0, 80).map(point => <tr key={point.timestamp}><td>{formatUtc(point.timestamp)}</td><td>{money(point.btcIndex)}</td><td>{btc(point.rawSpreadValue)}</td><td>{btc(point.ivSpreadValue)}</td><td>{money(point.rawPnlUsd)}</td><td className={(point.ivPnlUsd ?? 0) >= 0 ? "positive" : "negative"}>{money(point.ivPnlUsd)}</td><td><span className={flagClass(point.qualityFlag)}>{point.qualityFlag}</span></td></tr>)}</tbody></table></div>
             </div>
-            <aside className="exit-card card"><p className="eyebrow">Exit engine</p><h3>Independent outcomes</h3><div className="exit-list">{selectedAnalysis.exits.map(exit => <div className={`exit-row ${exit.status}`} key={exit.rule}><span>{exit.qualityFlag ? <QualityDot flag={exit.qualityFlag} /> : <span className="quality-dot muted" />}{exit.rule}<small>{exit.timestamp ? formatUtc(exit.timestamp) : exit.status.replace("-", " ")}</small></span><strong>{money(exit.ivPnlUsd ?? exit.rawPnlUsd)}</strong></div>)}</div><div className="ledger-note"><strong>Ledger discipline</strong><p>BTC PnL uses BTC credits and debits. USD PnL converts entry and exit cash flows at their own index prices. They are never treated as interchangeable.</p></div></aside>
+            <aside className="exit-card card"><p className="eyebrow">Exit engine</p><h3>Independent outcomes</h3><p className="quality-reason"><strong>Entry pricing evidence:</strong> {selectedAnalysis.entryLedgers?.iv.qualityReason ?? "Unavailable"}</p><div className="exit-list">{selectedAnalysis.exits.map(exit => <div className={`exit-row ${exit.status}`} key={exit.rule}><span>{exit.qualityFlag ? <QualityDot flag={exit.qualityFlag} /> : <span className="quality-dot muted" />}{exit.rule}<small>{exit.timestamp ? formatUtc(exit.timestamp) : exit.status.replace("-", " ")} · {exit.qualityReason}</small></span><strong>{money(exit.ivPnlUsd ?? exit.rawPnlUsd)}</strong></div>)}</div><div className="ledger-note"><strong>Trust means reliability</strong><p>Red, Yellow, and Green describe pricing evidence only—not profitability. Displayed trust combines entry evidence with the selected exit’s own evidence.</p></div></aside>
           </div>}
         </section>
 
