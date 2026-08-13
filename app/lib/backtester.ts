@@ -4,6 +4,8 @@ export type TradeSide = "buy" | "sell";
 export type ExecutionMode = "maker" | "taker";
 export type SpreadKind = "credit" | "debit";
 export type QualityFlag = "green" | "yellow" | "red";
+export type ValuationStatus = QualityFlag | "settlement";
+export type ValuationSource = "trade-window" | "model-fallback" | "unavailable" | "settlement";
 export type ExpirySelectionMode = "liquidity-aware" | "closest-dte" | "all-eligible";
 
 export interface DteTolerance {
@@ -196,17 +198,25 @@ export interface ValuationPoint {
   btcIndex: number;
   rawSpreadValue?: number;
   ivSpreadValue?: number;
+  rawSoldLegPrice?: number;
+  rawBoughtLegPrice?: number;
+  ivSoldLegPrice?: number;
+  ivBoughtLegPrice?: number;
   rawPnlBtc?: number;
   ivPnlBtc?: number;
   rawPnlUsd?: number;
   ivPnlUsd?: number;
   rawCreditCapturedPct?: number;
   ivCreditCapturedPct?: number;
-  qualityFlag: QualityFlag;
+  qualityFlag: ValuationStatus;
+  valuationSource: ValuationSource;
   qualityReason: string;
   soldLegGapMin?: number;
   boughtLegGapMin?: number;
+  synchronizationGapMin?: number;
   indexMismatch?: number;
+  usedDirectionFallback: boolean;
+  usedModelFallback: boolean;
   maxAdversePnlSoFar?: number;
   maxFavorablePnlSoFar?: number;
 }
@@ -977,14 +987,18 @@ export function buildValuationPath(
       maxFavorable = Math.max(maxFavorable, primary);
       return {
         timestamp, btcIndex, rawSpreadValue: value, ivSpreadValue: value,
+        rawSoldLegPrice: soldIntrinsic, rawBoughtLegPrice: boughtIntrinsic,
+        ivSoldLegPrice: soldIntrinsic, ivBoughtLegPrice: boughtIntrinsic,
         rawPnlBtc, ivPnlBtc,
         rawPnlUsd, ivPnlUsd,
-        qualityFlag: "yellow" as QualityFlag, qualityReason: "Expiry settlement uses intrinsic value rather than contemporaneous option prints.",
+        qualityFlag: "settlement" as const, valuationSource: "settlement" as const,
+        qualityReason: "Expiry intrinsic settlement; both legs use their exact intrinsic value at the expiry BTC index.",
+        usedDirectionFallback: false, usedModelFallback: false,
         maxAdversePnlSoFar: maxAdverse,
         maxFavorablePnlSoFar: maxFavorable,
       };
     }
-    if (!normalization) return { timestamp, btcIndex, qualityFlag: "red" as QualityFlag, qualityReason: "Both legs could not be priced at this timestamp." };
+    if (!normalization) return { timestamp, btcIndex, qualityFlag: "red" as const, valuationSource: "unavailable" as const, qualityReason: "Both legs could not be priced at this timestamp.", usedDirectionFallback: false, usedModelFallback: false };
     const rawSold = normalization.sold.vwapPriceBtc;
     const rawBought = normalization.bought.vwapPriceBtc;
     const ivSold = normalization.sold.ivNormalizedPriceBtc;
@@ -1009,6 +1023,10 @@ export function buildValuationPath(
       btcIndex,
       rawSpreadValue: rawCurrent,
       ivSpreadValue: ivCurrent,
+      rawSoldLegPrice: rawSold,
+      rawBoughtLegPrice: rawBought,
+      ivSoldLegPrice: ivSold,
+      ivBoughtLegPrice: ivBought,
       rawPnlBtc,
       ivPnlBtc,
       rawPnlUsd,
@@ -1016,10 +1034,14 @@ export function buildValuationPath(
       rawCreditCapturedPct: spread.spreadKind === "credit" && rawEntryValue && rawCurrent !== undefined ? (rawEntryValue - rawCurrent) / rawEntryValue : undefined,
       ivCreditCapturedPct: spread.spreadKind === "credit" && ivEntryValue && ivCurrent !== undefined ? (ivEntryValue - ivCurrent) / ivEntryValue : undefined,
       qualityFlag: normalization.qualityFlag,
+      valuationSource: normalization.sold.usedModelFallback || normalization.bought.usedModelFallback ? "model-fallback" : "trade-window",
       qualityReason: normalization.qualityReason,
       soldLegGapMin: normalization.sold.nearestTimeGapMin,
       boughtLegGapMin: normalization.bought.nearestTimeGapMin,
+      synchronizationGapMin: normalization.legTimeDiffMin,
       indexMismatch: normalization.indexDiffPct,
+      usedDirectionFallback: normalization.sold.usedDirectionFallback || normalization.bought.usedDirectionFallback,
+      usedModelFallback: normalization.sold.usedModelFallback || normalization.bought.usedModelFallback,
       maxAdversePnlSoFar: maxAdverse,
       maxFavorablePnlSoFar: maxFavorable,
     };
@@ -1049,7 +1071,7 @@ export function evaluateExits(path: ValuationPoint[], spread: RetrievedSpread, e
     ivPnlBtc: point.ivPnlBtc,
     rawPnlUsd: point.rawPnlUsd,
     ivPnlUsd: point.ivPnlUsd,
-    qualityFlag: point.qualityFlag,
+    qualityFlag: point.qualityFlag === "settlement" ? undefined : point.qualityFlag,
     qualityReason: point.qualityReason,
     status: "hit",
   } : { rule, status: "not-hit", qualityReason: "The exit condition was not reached." };

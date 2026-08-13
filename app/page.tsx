@@ -27,6 +27,7 @@ import {
   qualityRank,
   windowComparison,
 } from "./lib/backtester";
+import { CHART_SERIES, hitExitGroups, nearestPoint, timeX, type ChartMetric, type ChartSeriesKey } from "./lib/valuation-chart";
 
 type Section = "events" | "construction" | "contracts" | "analysis";
 
@@ -60,7 +61,8 @@ function pct(value?: number) {
   return value === undefined || !Number.isFinite(value) ? "—" : `${value.toFixed(1)}%`;
 }
 
-function flagClass(flag: QualityFlag | "ready" | "partial" | "missing") {
+function flagClass(flag: QualityFlag | "settlement" | "ready" | "partial" | "missing") {
+  if (flag === "settlement") return "flag flag-settlement";
   const normalized = flag === "ready" ? "green" : flag === "partial" ? "yellow" : flag === "missing" ? "red" : flag;
   return `flag flag-${normalized}`;
 }
@@ -119,6 +121,43 @@ function CheckboxGroup({ values, selected, onChange, formatter }: {
 
 function QualityDot({ flag }: { flag: QualityFlag }) {
   return <span className={`quality-dot ${flag}`} aria-label={`${flag} quality`} />;
+}
+
+const SERIES_COLORS: Record<ChartSeriesKey, string> = { rawPnlUsd: "#9aa5a2", ivPnlUsd: "#6eae8b", rawSoldLegPrice: "#c29b5e", rawBoughtLegPrice: "#788eaa", rawSpreadValue: "#aaa39a", ivSoldLegPrice: "#d0b27b", ivBoughtLegPrice: "#91a8c5", ivSpreadValue: "#6eae8b" };
+
+function ValuationChart({ path, exits }: { path: ValuationPoint[]; exits: ExitResult[] }) {
+  const [metric, setMetric] = useState<ChartMetric>("pnl");
+  const [visible, setVisible] = useState<ChartSeriesKey[]>(["ivPnlUsd"]);
+  const [showExits, setShowExits] = useState(false);
+  const [cursor, setCursor] = useState<number>();
+  const keys = (Object.keys(CHART_SERIES) as ChartSeriesKey[]).filter(key => CHART_SERIES[key].metric === metric);
+  const active = visible.filter(key => CHART_SERIES[key].metric === metric);
+  const points = path.filter(point => active.some(key => point[key] !== undefined));
+  const start = path[0]?.timestamp ?? 0; const end = path.at(-1)?.timestamp ?? start;
+  const values = points.flatMap(point => active.map(key => point[key]).filter((value): value is number => typeof value === "number"));
+  const rawMin = Math.min(0, ...values); const rawMax = Math.max(0, ...values); const padding = (rawMax - rawMin || 1) * .08;
+  const min = rawMin - padding; const max = rawMax + padding;
+  const y = (value: number) => 78 - ((value - min) / (max - min)) * 68;
+  const selected = cursor === undefined || !path.length ? undefined : nearestPoint(path, cursor);
+  const ticks = Array.from({ length: 5 }, (_, index) => min + ((max - min) * index) / 4);
+  const dateTicks = Array.from({ length: 5 }, (_, index) => start + ((end - start) * index) / 4);
+  const inspect = (clientX: number, rect: DOMRect) => setCursor(start + Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * (end - start));
+  const changeMetric = (next: ChartMetric) => { setMetric(next); setVisible(next === "pnl" ? ["ivPnlUsd"] : ["ivSpreadValue"]); setCursor(undefined); };
+  return <>
+    <div className="chart-controls"><div className="segmented" aria-label="Chart metric">{([['pnl','PnL · USD'],['values','Contract values · BTC']] as const).map(([value,label]) => <button key={value} className={metric === value ? "active" : ""} onClick={() => changeMetric(value)}>{label}</button>)}</div><label className="chart-toggle"><input type="checkbox" checked={showExits} onChange={event => setShowExits(event.target.checked)}/> Show exit markers</label></div>
+    <div className="chart-legend" aria-label="Visible chart series">{keys.map(key => <label key={key}><input type="checkbox" checked={active.includes(key)} onChange={() => setVisible(current => current.includes(key) ? current.filter(item => item !== key) : [...current, key])}/><i style={{ background: SERIES_COLORS[key] }}/>{CHART_SERIES[key].label}</label>)}</div>
+    <div className="mini-chart" aria-label={`${metric === "pnl" ? "IV-normalized unrealized PnL in USD" : "Contract values in BTC"} valuation path chart`}>
+      {!points.length ? <p className="empty-note">No selected series has valuation data.</p> : <svg viewBox="0 0 100 100" role="application" tabIndex={0} aria-label="Interactive valuation chart. Use left and right arrow keys to inspect timestamps." onPointerMove={event => inspect(event.clientX, event.currentTarget.getBoundingClientRect())} onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); inspect(event.clientX, event.currentTarget.getBoundingClientRect()); }} onPointerLeave={() => setCursor(undefined)} onKeyDown={event => { if (!path.length || !["ArrowLeft","ArrowRight","Home","End"].includes(event.key)) return; event.preventDefault(); const index = selected ? path.indexOf(selected) : 0; const next = event.key === "Home" ? 0 : event.key === "End" ? path.length - 1 : Math.max(0, Math.min(path.length - 1, index + (event.key === "ArrowLeft" ? -1 : 1))); setCursor(path[next].timestamp); }}>
+        {ticks.map(value => <g key={value}><line x1="10" x2="98" y1={y(value)} y2={y(value)} className={Math.abs(value) < (max-min)/1000 ? "zero-line" : "grid-line"}/><text x="9" y={y(value)+1} textAnchor="end" className="axis-label">{metric === "pnl" ? `$${Math.round(value).toLocaleString()}` : value.toFixed(4)}</text></g>)}
+        {dateTicks.map(timestamp => <g key={timestamp}><line x1={timeX(timestamp,start,end)} x2={timeX(timestamp,start,end)} y1="78" y2="81" className="axis-tick"/><text x={timeX(timestamp,start,end)} y="86" textAnchor="middle" className="axis-label">{new Date(timestamp).toLocaleDateString("en-GB",{timeZone:"UTC",month:"short",day:"2-digit"})}</text><text x={timeX(timestamp,start,end)} y="91" textAnchor="middle" className="axis-label">{new Date(timestamp).toLocaleTimeString("en-GB",{timeZone:"UTC",hour:"2-digit",minute:"2-digit",hour12:false})} UTC</text></g>)}
+        <text x="1" y="5" className="axis-unit">{metric === "pnl" ? "USD" : "BTC / contract"}</text>
+        {showExits && hitExitGroups(exits).map(group => <g key={group.timestamp} className="exit-marker"><line x1={timeX(group.timestamp,start,end)} x2={timeX(group.timestamp,start,end)} y1="8" y2="78"/><text x={timeX(group.timestamp,start,end)+.8} y="12">{group.labels.join(" + ")}</text></g>)}
+        {active.map(key => { const series = path.filter(point => typeof point[key] === "number"); return <polyline key={key} points={series.map(point => `${timeX(point.timestamp,start,end)},${y(point[key] as number)}`).join(" ")} className="chart-series" style={{ stroke: SERIES_COLORS[key] }}/>; })}
+        {selected && <g className="crosshair"><line x1={timeX(selected.timestamp,start,end)} x2={timeX(selected.timestamp,start,end)} y1="8" y2="78"/>{active.map(key => typeof selected[key] === "number" && <circle key={key} cx={timeX(selected.timestamp,start,end)} cy={y(selected[key] as number)} r="1" style={{fill:SERIES_COLORS[key]}}/>)}</g>}
+      </svg>}
+      {selected && <div className={`chart-tooltip ${timeX(selected.timestamp,start,end)>60 ? "align-right" : ""}`}><strong>{formatUtc(selected.timestamp)}</strong><span>BTC index <b>{money(selected.btcIndex)}</b></span><span>Selected value <b>{active.map(key => `${CHART_SERIES[key].label}: ${metric === "pnl" ? money(selected[key]) : btc(selected[key])}`).join(" · ") || "—"}</b></span><span>Raw / IV PnL <b>{money(selected.rawPnlUsd)} / {money(selected.ivPnlUsd)}</b></span><span>Raw / IV spread <b>{btc(selected.rawSpreadValue)} / {btc(selected.ivSpreadValue)}</b></span><span>Sold Raw / IV <b>{btc(selected.rawSoldLegPrice)} / {btc(selected.ivSoldLegPrice)}</b></span><span>Bought Raw / IV <b>{btc(selected.rawBoughtLegPrice)} / {btc(selected.ivBoughtLegPrice)}</b></span><span>Evidence <b>{selected.qualityFlag} · {selected.valuationSource}</b></span><em>{selected.qualityReason}</em></div>}
+    </div>
+  </>;
 }
 
 function Ledger({ ledger }: { ledger: EntryLedger }) {
@@ -547,18 +586,10 @@ export default function Home() {
 
           {selectedAnalysis && <div className="analysis-detail">
             <div className="path-card card">
-              <div className="card-title-row"><div><p className="eyebrow">Selected combination</p><h3>4H valuation path</h3></div><span className={flagClass(selectedAnalysis.eventQuality)}>{selectedAnalysis.eventQuality} event</span></div>
-              <div className="mini-chart" aria-label="IV normalized PnL path chart">{(() => {
-                const points = selectedAnalysis.path.filter(point => point.ivPnlUsd !== undefined);
-                if (points.length < 2) return <p className="empty-note">Not enough IV-normalized points to draw the path.</p>;
-                const values = points.map(point => point.ivPnlUsd!);
-                const min = Math.min(...values); const max = Math.max(...values); const range = max - min || 1;
-                const polyline = points.map((point, index) => `${(index / (points.length - 1)) * 100},${92 - ((point.ivPnlUsd! - min) / range) * 78}`).join(" ");
-                const zeroY = 92 - ((0 - min) / range) * 78;
-                return <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img"><line x1="0" x2="100" y1={zeroY} y2={zeroY} className="zero-line"/><polygon points={`0,92 ${polyline} 100,92`} className="pnl-area"/><polyline points={polyline} className="pnl-line"/></svg>;
-              })()}</div>
+              <div className="card-title-row"><div><p className="eyebrow">Selected combination</p><h3>4H valuation path · IV-normalized unrealized PnL · USD</h3></div><span className={flagClass(selectedAnalysis.eventQuality)}>{selectedAnalysis.eventQuality} event</span></div>
+              <ValuationChart path={selectedAnalysis.path} exits={selectedAnalysis.exits}/>
               <div className="path-metrics"><span><small>Best unrealized</small><strong className="positive">{money(Math.max(...selectedAnalysis.path.map(point => point.ivPnlUsd ?? point.rawPnlUsd ?? -Infinity)))}</strong></span><span><small>Max adverse</small><strong className="negative">{money(Math.min(...selectedAnalysis.path.map(point => point.ivPnlUsd ?? point.rawPnlUsd ?? Infinity)))}</strong></span><span><small>Grid points</small><strong>{selectedAnalysis.path.length}</strong></span></div>
-              <div className="table-scroll compact path-table"><table><thead><tr><th>Timestamp</th><th>BTC index</th><th>Raw value</th><th>IV value</th><th>Raw PnL USD</th><th>IV PnL USD</th><th>Data</th></tr></thead><tbody>{selectedAnalysis.path.slice(0, 80).map(point => <tr key={point.timestamp}><td>{formatUtc(point.timestamp)}</td><td>{money(point.btcIndex)}</td><td>{btc(point.rawSpreadValue)}</td><td>{btc(point.ivSpreadValue)}</td><td>{money(point.rawPnlUsd)}</td><td className={(point.ivPnlUsd ?? 0) >= 0 ? "positive" : "negative"}>{money(point.ivPnlUsd)}</td><td><span className={flagClass(point.qualityFlag)}>{point.qualityFlag}</span></td></tr>)}</tbody></table></div>
+              <div className="table-scroll compact path-table"><table><thead><tr><th>Timestamp</th><th>BTC index</th><th>Raw value</th><th>IV value</th><th>Raw PnL USD</th><th>IV PnL USD</th><th>Valuation evidence</th></tr></thead><tbody>{selectedAnalysis.path.slice(0, 80).map(point => <tr key={point.timestamp}><td>{formatUtc(point.timestamp)}</td><td>{money(point.btcIndex)}</td><td>{btc(point.rawSpreadValue)}</td><td>{btc(point.ivSpreadValue)}</td><td>{money(point.rawPnlUsd)}</td><td className={(point.ivPnlUsd ?? 0) >= 0 ? "positive" : "negative"}>{money(point.ivPnlUsd)}</td><td><details className="evidence-details"><summary><span className={flagClass(point.qualityFlag)}>{point.qualityFlag}</span></summary><p><strong>{point.valuationSource}</strong> · {point.qualityReason}</p><dl><div>Sold gap <b>{point.soldLegGapMin?.toFixed(1) ?? "—"}m</b></div><div>Bought gap <b>{point.boughtLegGapMin?.toFixed(1) ?? "—"}m</b></div><div>Sync gap <b>{point.synchronizationGapMin?.toFixed(1) ?? "—"}m</b></div><div>Index mismatch <b>{pct(point.indexMismatch)}</b></div><div>Direction fallback <b>{point.usedDirectionFallback ? "yes" : "no"}</b></div><div>Model fallback <b>{point.usedModelFallback ? "yes" : "no"}</b></div></dl></details></td></tr>)}</tbody></table></div>
             </div>
             <aside className="exit-card card"><p className="eyebrow">Exit engine</p><h3>Independent outcomes</h3><p className="quality-reason"><strong>Entry pricing evidence:</strong> {selectedAnalysis.entryLedgers?.iv.qualityReason ?? "Unavailable"}</p><div className="exit-list">{selectedAnalysis.exits.map(exit => <div className={`exit-row ${exit.status}`} key={exit.rule}><span>{exit.qualityFlag ? <QualityDot flag={exit.qualityFlag} /> : <span className="quality-dot muted" />}{exit.rule}<small>{exit.timestamp ? formatUtc(exit.timestamp) : exit.status.replace("-", " ")} · {exit.qualityReason}</small></span><strong>{money(exit.ivPnlUsd ?? exit.rawPnlUsd)}</strong></div>)}</div><div className="ledger-note"><strong>Trust means reliability</strong><p>Red, Yellow, and Green describe pricing evidence only—not profitability. Displayed trust combines entry evidence with the selected exit’s own evidence.</p></div></aside>
           </div>}
