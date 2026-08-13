@@ -40,3 +40,19 @@ npm run lint
 npm run build
 npm run validate:artifact
 ```
+
+## Entry and PnL cash-flow identities
+
+Option prices are BTC **per one option contract**. The selected contract amount scales those prices into total BTC cash flows; USD ledgers convert each cash flow using the BTC index at that cash flow's timestamp.
+
+For a credit spread:
+
+```text
+gross entry credit = sold premium received - bought premium paid
+net opening cash flow = gross entry credit * amount - opening fees
+mark-to-close PnL = opening cash flow - closing cost - exit fees
+```
+
+A debit spread mirrors those directions: its opening cash flow is the negative gross debit less opening fees, and its closing proceeds are positive. The first valuation-path point models a hypothetical immediate close. It includes opening and closing fees, so it may be negative and is not the gross entry credit or debit.
+
+Green, Yellow, and Red are evidence-reliability grades only. They never indicate whether a position was profitable. Entry pricing evidence and each independent exit's pricing evidence retain separate grades; the displayed overall grade combines entry evidence with the selected exit only.

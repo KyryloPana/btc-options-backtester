@@ -203,6 +203,7 @@ export interface ValuationPoint {
   rawCreditCapturedPct?: number;
   ivCreditCapturedPct?: number;
   qualityFlag: QualityFlag;
+  qualityReason: string;
   soldLegGapMin?: number;
   boughtLegGapMin?: number;
   indexMismatch?: number;
@@ -218,8 +219,51 @@ export interface ExitResult {
   rawPnlUsd?: number;
   ivPnlUsd?: number;
   qualityFlag?: QualityFlag;
+  qualityReason: string;
   status: "hit" | "not-hit" | "unavailable";
 }
+
+export type EntryPricingMethod = "raw-vwap" | "iv-normalized";
+
+/** A complete, unit-explicit opening cash-flow ledger produced by the engine. */
+export interface EntryLedger {
+  pricingMethod: EntryPricingMethod;
+  spreadKind: SpreadKind;
+  soldInstrumentName: string;
+  boughtInstrumentName: string;
+  expiryTimestamp: number;
+  expiryLabel: string;
+  optionType: OptionType;
+  soldStrikeUsd: number;
+  boughtStrikeUsd: number;
+  contractAmount: number;
+  soldPriceBtcPerContract: number;
+  soldProceedsBtc: number;
+  boughtPriceBtcPerContract: number;
+  boughtCostBtc: number;
+  soldLegFeeBtc: number;
+  boughtLegFeeBtc?: number;
+  comboFeeBtc?: number;
+  totalOpeningFeesBtc: number;
+  grossEntryBtcPerContract: number;
+  grossEntryTotalBtc: number;
+  netOpeningCashFlowBtc: number;
+  entryIndexUsdPerBtc: number;
+  soldProceedsUsd: number;
+  boughtCostUsd: number;
+  totalOpeningFeesUsd: number;
+  grossEntryTotalUsd: number;
+  netOpeningCashFlowUsd: number;
+  soldPricingTimestamp: number;
+  boughtPricingTimestamp: number;
+  normalizationWindowMinutes: number;
+  executionMode: ExecutionMode;
+  qualityFlag: QualityFlag;
+  qualityReason: string;
+}
+
+export interface EntryLedgers { raw: EntryLedger; iv: EntryLedger }
+export interface ValuationRun { path: ValuationPoint[]; entryLedgers?: EntryLedgers }
 
 const MONTHS: Record<string, number> = {
   JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5,
@@ -830,6 +874,59 @@ function feesForPair(soldPrice: number, boughtPrice: number, amount: number, com
   return comboExecution ? Math.max(soldFee, boughtFee) : soldFee + boughtFee;
 }
 
+function makeEntryLedger(
+  spread: RetrievedSpread,
+  normalization: SpreadNormalization,
+  method: EntryPricingMethod,
+  executionMode: ExecutionMode,
+  amount: number,
+  comboExecution: boolean,
+): EntryLedger | undefined {
+  if (!spread.soldContract || !spread.boughtContract || !spread.expiryTimestamp || !spread.expiryLabel) return undefined;
+  const soldPrice = method === "raw-vwap" ? normalization.sold.vwapPriceBtc : normalization.sold.ivNormalizedPriceBtc;
+  const boughtPrice = method === "raw-vwap" ? normalization.bought.vwapPriceBtc : normalization.bought.ivNormalizedPriceBtc;
+  if (soldPrice === undefined || boughtPrice === undefined || !normalization.soldLegTimestamp || !normalization.boughtLegTimestamp) return undefined;
+  const soldLegFeeBtc = optionFeeBtc(soldPrice, amount);
+  const calculatedBoughtFee = optionFeeBtc(boughtPrice, amount);
+  const comboFeeBtc = comboExecution ? Math.max(soldLegFeeBtc, calculatedBoughtFee) : undefined;
+  const boughtLegFeeBtc = comboExecution ? undefined : calculatedBoughtFee;
+  const totalOpeningFeesBtc = comboFeeBtc ?? soldLegFeeBtc + calculatedBoughtFee;
+  const grossEntryBtcPerContract = spreadValue(spread.spreadKind, soldPrice, boughtPrice);
+  const grossEntryTotalBtc = grossEntryBtcPerContract * amount;
+  // Credit opens with cash received; debit opens with cash paid. Fees are always cash paid.
+  const netOpeningCashFlowBtc = (spread.spreadKind === "credit" ? grossEntryTotalBtc : -grossEntryTotalBtc) - totalOpeningFeesBtc;
+  const index = normalization.targetIndex;
+  return {
+    pricingMethod: method, spreadKind: spread.spreadKind,
+    soldInstrumentName: spread.soldContract.instrumentName, boughtInstrumentName: spread.boughtContract.instrumentName,
+    expiryTimestamp: spread.expiryTimestamp, expiryLabel: spread.expiryLabel, optionType: spread.optionType,
+    soldStrikeUsd: spread.soldContract.strike, boughtStrikeUsd: spread.boughtContract.strike,
+    contractAmount: amount,
+    soldPriceBtcPerContract: soldPrice, soldProceedsBtc: soldPrice * amount,
+    boughtPriceBtcPerContract: boughtPrice, boughtCostBtc: boughtPrice * amount,
+    soldLegFeeBtc, boughtLegFeeBtc, comboFeeBtc, totalOpeningFeesBtc,
+    grossEntryBtcPerContract, grossEntryTotalBtc, netOpeningCashFlowBtc,
+    entryIndexUsdPerBtc: index,
+    soldProceedsUsd: soldPrice * amount * index, boughtCostUsd: boughtPrice * amount * index,
+    totalOpeningFeesUsd: totalOpeningFeesBtc * index, grossEntryTotalUsd: grossEntryTotalBtc * index,
+    netOpeningCashFlowUsd: netOpeningCashFlowBtc * index,
+    soldPricingTimestamp: normalization.soldLegTimestamp, boughtPricingTimestamp: normalization.boughtLegTimestamp,
+    normalizationWindowMinutes: normalization.sold.windowMinutes, executionMode,
+    qualityFlag: normalization.qualityFlag, qualityReason: normalization.qualityReason,
+  };
+}
+
+export function buildEntryLedgers(
+  spread: RetrievedSpread, event: BacktestEvent, executionMode: ExecutionMode, amount: number, comboExecution: boolean,
+): EntryLedgers | undefined {
+  if (!event.entryTimestamp) return undefined;
+  const normalization = normalizeSpread(spread, event.entryTimestamp, event.entryPrice, executionMode);
+  if (!normalization) return undefined;
+  const raw = makeEntryLedger(spread, normalization, "raw-vwap", executionMode, amount, comboExecution);
+  const iv = makeEntryLedger(spread, normalization, "iv-normalized", executionMode, amount, comboExecution);
+  return raw && iv ? { raw, iv } : undefined;
+}
+
 export function buildValuationPath(
   spread: RetrievedSpread,
   event: BacktestEvent,
@@ -844,14 +941,15 @@ export function buildValuationPath(
   const entryIndex = event.entryPrice;
   const entryNorm = normalizeSpread(spread, event.entryTimestamp, entryIndex, executionMode);
   if (!entryNorm) return [];
+  const entryLedgers = buildEntryLedgers(spread, event, executionMode, amount, comboExecution);
   const rawEntrySold = entryNorm.sold.vwapPriceBtc;
   const rawEntryBought = entryNorm.bought.vwapPriceBtc;
   const ivEntrySold = entryNorm.sold.ivNormalizedPriceBtc;
   const ivEntryBought = entryNorm.bought.ivNormalizedPriceBtc;
   const rawEntryValue = rawEntrySold !== undefined && rawEntryBought !== undefined ? spreadValue(spread.spreadKind, rawEntrySold, rawEntryBought) : undefined;
   const ivEntryValue = ivEntrySold !== undefined && ivEntryBought !== undefined ? spreadValue(spread.spreadKind, ivEntrySold, ivEntryBought) : undefined;
-  const rawEntryFees = rawEntrySold !== undefined && rawEntryBought !== undefined ? feesForPair(rawEntrySold, rawEntryBought, amount, comboExecution) : undefined;
-  const ivEntryFees = ivEntrySold !== undefined && ivEntryBought !== undefined ? feesForPair(ivEntrySold, ivEntryBought, amount, comboExecution) : undefined;
+  const rawEntryFees = entryLedgers?.raw.totalOpeningFeesBtc;
+  const ivEntryFees = entryLedgers?.iv.totalOpeningFeesBtc;
   let maxAdverse = 0;
   let maxFavorable = 0;
   return timestamps.map(timestamp => {
@@ -867,20 +965,26 @@ export function buildValuationPath(
         : (spread.spreadKind === "credit" ? entryValue - value : value - entryValue) * amount - entryFees;
       const rawPnlBtc = makePnl(rawEntryValue, rawEntryFees);
       const ivPnlBtc = makePnl(ivEntryValue, ivEntryFees);
+      const makeUsdPnl = (entryValue?: number, entryFees?: number) => entryValue === undefined || entryFees === undefined
+        ? undefined
+        : (spread.spreadKind === "credit"
+          ? entryValue * entryIndex - value * btcIndex
+          : value * btcIndex - entryValue * entryIndex) * amount - entryFees * entryIndex;
+      const rawPnlUsd = makeUsdPnl(rawEntryValue, rawEntryFees);
+      const ivPnlUsd = makeUsdPnl(ivEntryValue, ivEntryFees);
       const primary = ivPnlBtc ?? rawPnlBtc ?? 0;
       maxAdverse = Math.min(maxAdverse, primary);
       maxFavorable = Math.max(maxFavorable, primary);
       return {
         timestamp, btcIndex, rawSpreadValue: value, ivSpreadValue: value,
         rawPnlBtc, ivPnlBtc,
-        rawPnlUsd: rawPnlBtc !== undefined ? rawPnlBtc * btcIndex : undefined,
-        ivPnlUsd: ivPnlBtc !== undefined ? ivPnlBtc * btcIndex : undefined,
-        qualityFlag: "yellow" as QualityFlag,
+        rawPnlUsd, ivPnlUsd,
+        qualityFlag: "yellow" as QualityFlag, qualityReason: "Expiry settlement uses intrinsic value rather than contemporaneous option prints.",
         maxAdversePnlSoFar: maxAdverse,
         maxFavorablePnlSoFar: maxFavorable,
       };
     }
-    if (!normalization) return { timestamp, btcIndex, qualityFlag: "red" as QualityFlag };
+    if (!normalization) return { timestamp, btcIndex, qualityFlag: "red" as QualityFlag, qualityReason: "Both legs could not be priced at this timestamp." };
     const rawSold = normalization.sold.vwapPriceBtc;
     const rawBought = normalization.bought.vwapPriceBtc;
     const ivSold = normalization.sold.ivNormalizedPriceBtc;
@@ -912,6 +1016,7 @@ export function buildValuationPath(
       rawCreditCapturedPct: spread.spreadKind === "credit" && rawEntryValue && rawCurrent !== undefined ? (rawEntryValue - rawCurrent) / rawEntryValue : undefined,
       ivCreditCapturedPct: spread.spreadKind === "credit" && ivEntryValue && ivCurrent !== undefined ? (ivEntryValue - ivCurrent) / ivEntryValue : undefined,
       qualityFlag: normalization.qualityFlag,
+      qualityReason: normalization.qualityReason,
       soldLegGapMin: normalization.sold.nearestTimeGapMin,
       boughtLegGapMin: normalization.bought.nearestTimeGapMin,
       indexMismatch: normalization.indexDiffPct,
@@ -919,6 +1024,16 @@ export function buildValuationPath(
       maxFavorablePnlSoFar: maxFavorable,
     };
   });
+}
+
+export function buildValuation(
+  spread: RetrievedSpread, event: BacktestEvent, candles: Candle[], executionMode: ExecutionMode,
+  amount: number, comboExecution: boolean, specialTimestamps: number[] = [],
+): ValuationRun {
+  return {
+    entryLedgers: buildEntryLedgers(spread, event, executionMode, amount, comboExecution),
+    path: buildValuationPath(spread, event, candles, executionMode, amount, comboExecution, specialTimestamps),
+  };
 }
 
 function nearestPathPoint(path: ValuationPoint[], timestamp: number) {
@@ -935,24 +1050,25 @@ export function evaluateExits(path: ValuationPoint[], spread: RetrievedSpread, e
     rawPnlUsd: point.rawPnlUsd,
     ivPnlUsd: point.ivPnlUsd,
     qualityFlag: point.qualityFlag,
+    qualityReason: point.qualityReason,
     status: "hit",
-  } : { rule, status: "not-hit" };
+  } : { rule, status: "not-hit", qualityReason: "The exit condition was not reached." };
   const vpocTouch = event.vpocPrice ? firstTouch(candles, event.vpocPrice, event.entryTimestamp) : undefined;
   const invalidation = firstInvalidationClose(candles, event, event.entryTimestamp);
   const results: ExitResult[] = [
-    event.vpocPrice ? toExit("VPOC hit", vpocTouch ? nearestPathPoint(path, vpocTouch.openTime) : undefined) : { rule: "VPOC hit", status: "unavailable" },
+    event.vpocPrice ? toExit("VPOC hit", vpocTouch ? nearestPathPoint(path, vpocTouch.openTime) : undefined) : { rule: "VPOC hit", status: "unavailable", qualityReason: "No VPOC target was configured." },
   ];
   if (spread.spreadKind === "credit") {
     results.push(toExit("50% credit", path.find(point => (point.ivCreditCapturedPct ?? point.rawCreditCapturedPct ?? -Infinity) >= 0.5)));
     results.push(toExit("70% credit", path.find(point => (point.ivCreditCapturedPct ?? point.rawCreditCapturedPct ?? -Infinity) >= 0.7)));
   } else {
-    results.push({ rule: "50% credit", status: "unavailable" }, { rule: "70% credit", status: "unavailable" });
+    results.push({ rule: "50% credit", status: "unavailable", qualityReason: "Credit capture does not apply to debit spreads." }, { rule: "70% credit", status: "unavailable", qualityReason: "Credit capture does not apply to debit spreads." });
   }
   for (const days of [3, 5, 7, 14]) {
     const timestamp = event.entryTimestamp + days * 86_400_000;
     results.push(toExit(`${days}D fixed`, path.find(point => point.timestamp >= timestamp)));
   }
-  results.push(invalidation ? toExit("4H invalidation", nearestPathPoint(path, invalidation.openTime)) : { rule: "4H invalidation", status: "not-hit" });
+  results.push(invalidation ? toExit("4H invalidation", nearestPathPoint(path, invalidation.openTime)) : { rule: "4H invalidation", status: "not-hit", qualityReason: "The invalidation condition was not reached." });
   results.push(toExit("Expiry", path[path.length - 1]));
   return results;
 }
