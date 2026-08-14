@@ -27,6 +27,7 @@ import {
   windowComparison,
 } from "./lib/backtester";
 import { aggregateObservations, buildObservationExport, runEventBacktest, type StrategyObservation, type StrategyVariantConfig } from "./lib/observation-ledger";
+import { calculateContractSizeScenario, validateScenarioAmount, type ContractSizeScenario } from "./lib/contract-size-scenario";
 import { CHART_GEOMETRY, CHART_SERIES, hitExitGroups, nearestPoint, splitSeriesAtMissing, timestampAtX, timeX, visibleMatrixSpreads, type ChartMetric, type ChartSeriesKey } from "./lib/valuation-chart";
 
 type Section = "events" | "construction" | "contracts" | "analysis";
@@ -39,6 +40,7 @@ interface AnalysisResult {
   exits: ExitResult[];
   selectedExit?: ExitResult;
   eventQuality: QualityFlag;
+  scenarioInput: { event: BacktestEvent; candidates: RetrievedSpread[]; candles: Candle[]; config: StrategyVariantConfig };
 }
 
 const DTE_OPTIONS = [7, 14, 30];
@@ -226,6 +228,9 @@ export default function Home() {
   const [resultsFilter, setResultsFilter] = useState<"all" | "trusted" | "green">("all");
   const [selectedResultId, setSelectedResultId] = useState<string>();
   const [expandedResultIds, setExpandedResultIds] = useState<string[]>([]);
+  const [scenarioAmount, setScenarioAmount] = useState("");
+  const [scenario, setScenario] = useState<ContractSizeScenario>();
+  const [scenarioCalculating, setScenarioCalculating] = useState(false);
   const sectionRefs = useRef<Record<Section, HTMLElement | null>>({ events: null, construction: null, contracts: null, analysis: null });
 
   const selectedEvent = events.find(event => event.id === selectedEventId) ?? events[0];
@@ -252,6 +257,30 @@ export default function Home() {
     return true;
   });
   const aggregateGroups = useMemo(() => aggregateObservations(analysisResults.map(result => result.observation)), [analysisResults]);
+
+  const scenarioError = selectedAnalysis ? validateScenarioAmount(Number(scenarioAmount), selectedAnalysis.spread.soldContract?.amountMetadata, selectedAnalysis.spread.boughtContract?.amountMetadata) : undefined;
+
+  useEffect(() => {
+    if (!selectedAnalysis || !scenarioAmount) return;
+    const nextAmount = Number(scenarioAmount);
+    if (scenarioError) return;
+    let stale = false;
+    const timer = window.setTimeout(() => {
+      if (stale) return;
+      const input = selectedAnalysis.scenarioInput;
+      const result = calculateContractSizeScenario({ event: input.event, candidates: input.candidates, candles: input.candles, baseConfig: input.config, amount: nextAmount });
+      if (!stale) { setScenario(result); setScenarioCalculating(false); }
+    }, 180);
+    return () => { stale = true; window.clearTimeout(timer); };
+  }, [scenarioAmount, scenarioError, selectedAnalysis]);
+
+  function selectAnalysisResult(id: string) {
+    const next = analysisResults.find(result => result.spread.id === id);
+    setSelectedResultId(id);
+    setScenarioAmount(next ? String(next.scenarioInput.config.amount) : "");
+    setScenario(undefined);
+    setScenarioCalculating(Boolean(next));
+  }
 
   function jump(next: Section) {
     setSection(next);
@@ -427,10 +456,13 @@ export default function Home() {
         const selectedExit: ExitResult | undefined = lifecycle ? { rule: lifecycle.rule, timestamp: lifecycle.fillTimestamp ?? lifecycle.triggerTimestamp, triggerTimestamp: lifecycle.triggerTimestamp, decisionAvailableTimestamp: lifecycle.decisionTimestamp, status: lifecycle.status === "filled" || lifecycle.status === "settled" ? "hit" : lifecycle.status === "not-triggered" ? "not-hit" : "unavailable", reasonCode: lifecycle.status === "settled" ? "settlement" : lifecycle.status === "filled" ? "triggered" : lifecycle.status === "not-triggered" ? "not-hit" : "causal-valuation-unavailable", qualityReason: lifecycle.reasonCode } : undefined;
         const exits: ExitResult[] = observation.independentExitOutcomes?.map(exit => ({ rule: exit.rule, timestamp: exit.triggerTimestamp, triggerTimestamp: exit.triggerTimestamp, status: exit.status === "triggered" || exit.status === "available" ? "hit" : "not-hit", reasonCode: exit.status === "available" ? "settlement" : exit.status === "triggered" ? "triggered" : "not-hit", qualityReason: exit.reasonCode })) ?? [];
         const eventQuality: QualityFlag = observation.eventOutcome === "executed" || observation.eventOutcome === "settled" ? "green" : observation.eventOutcome === "data-unavailable" ? "red" : "yellow";
-        return { observation, spread: observation.spread ?? spread, path, exits, selectedExit, eventQuality };
+        return { observation, spread: observation.spread ?? spread, path, exits, selectedExit, eventQuality, scenarioInput: { event: { ...selectedEvent, entryTimestamp }, candidates, candles, config } };
       });
       setAnalysisResults(next);
       setSelectedResultId(next[0]?.spread.id);
+      setScenarioAmount(next[0] ? String(next[0].scenarioInput.config.amount) : "");
+      setScenario(undefined);
+      setScenarioCalculating(Boolean(next[0]));
       setAnalysisStatus(`${next.length} original-event × strategy-variant observations produced by the causal execution ledger.`);
       jump("analysis");
     } catch (error) {
@@ -602,19 +634,19 @@ export default function Home() {
               const best = Math.max(...result.path.map(point => point.ivPnlUsd ?? -Infinity));
               const worst = Math.min(...result.path.map(point => point.ivPnlUsd ?? Infinity));
               const expanded = expandedResultIds.includes(result.spread.id);
-              return <Fragment key={result.spread.id}><tr className={selectedAnalysis?.spread.id === result.spread.id ? "row-selected" : ""} onClick={() => setSelectedResultId(result.spread.id)}><td><button className="expand-button" aria-expanded={expanded} aria-controls={`ledger-${result.spread.id}`} aria-label={`${expanded ? "Collapse" : "Expand"} opening ledgers for ${result.spread.structure}`} onClick={event => { event.stopPropagation(); setExpandedResultIds(current => expanded ? current.filter(id => id !== result.spread.id) : [...current, result.spread.id]); }}><span className="expand-chevron" aria-hidden="true" /></button></td><td><span className={flagClass(result.eventQuality)}>{result.eventQuality}</span><small>Entry {result.entryLedgers?.iv.qualityFlag ?? "red"} · exit {result.selectedExit?.qualityFlag ?? "red"}</small></td><td><strong>{result.spread.structure}</strong><small className="mono">{result.spread.soldContract?.strike} / {result.spread.boughtContract?.strike} {result.spread.optionType}</small></td><td>{result.spread.expiryLabel}<small>Target ~{result.spread.targetDte}D · actual {result.spread.actualDte?.toFixed(1)}D · rank #{result.spread.expiryRank}</small></td><td>{money(result.spread.actualWidth)}</td><td>{btc(result.entryLedgers?.raw.grossEntryBtcPerContract)}</td><td>{btc(result.entryLedgers?.iv.grossEntryBtcPerContract)}</td><td className="positive">{best === -Infinity ? "—" : money(best)}</td><td className="negative">{worst === Infinity ? "—" : money(worst)}</td><td>{result.selectedExit?.rule ?? "—"}<small>{money(result.selectedExit?.ivPnlUsd ?? result.selectedExit?.rawPnlUsd)}</small></td></tr>{expanded && <tr className="ledger-detail-row"><td colSpan={10}><div id={`ledger-${result.spread.id}`} className="ledger-pair">{result.entryLedgers ? <><Ledger ledger={result.entryLedgers.raw}/><Ledger ledger={result.entryLedgers.iv}/></> : <p>Opening evidence was insufficient to produce complete ledgers.</p>}</div></td></tr>}</Fragment>;
+              return <Fragment key={result.spread.id}><tr className={selectedAnalysis?.spread.id === result.spread.id ? "row-selected" : ""} onClick={() => selectAnalysisResult(result.spread.id)}><td><button className="expand-button" aria-expanded={expanded} aria-controls={`ledger-${result.spread.id}`} aria-label={`${expanded ? "Collapse" : "Expand"} opening ledgers for ${result.spread.structure}`} onClick={event => { event.stopPropagation(); setExpandedResultIds(current => expanded ? current.filter(id => id !== result.spread.id) : [...current, result.spread.id]); }}><span className="expand-chevron" aria-hidden="true" /></button></td><td><span className={flagClass(result.eventQuality)}>{result.eventQuality}</span><small>Entry {result.entryLedgers?.iv.qualityFlag ?? "red"} · exit {result.selectedExit?.qualityFlag ?? "red"}</small></td><td><strong>{result.spread.structure}</strong><small className="mono">{result.spread.soldContract?.strike} / {result.spread.boughtContract?.strike} {result.spread.optionType}</small></td><td>{result.spread.expiryLabel}<small>Target ~{result.spread.targetDte}D · actual {result.spread.actualDte?.toFixed(1)}D · rank #{result.spread.expiryRank}</small></td><td>{money(result.spread.actualWidth)}</td><td>{btc(result.entryLedgers?.raw.grossEntryBtcPerContract)}</td><td>{btc(result.entryLedgers?.iv.grossEntryBtcPerContract)}</td><td className="positive">{best === -Infinity ? "—" : money(best)}</td><td className="negative">{worst === Infinity ? "—" : money(worst)}</td><td>{result.selectedExit?.rule ?? "—"}<small>{money(result.selectedExit?.ivPnlUsd ?? result.selectedExit?.rawPnlUsd)}</small></td></tr>{expanded && <tr className="ledger-detail-row"><td colSpan={10}><div id={`ledger-${result.spread.id}`} className="ledger-pair">{result.entryLedgers ? <><Ledger ledger={result.entryLedgers.raw}/><Ledger ledger={result.entryLedgers.iv}/></> : <p>Opening evidence was insufficient to produce complete ledgers.</p>}</div></td></tr>}</Fragment>;
             })}
             {!filteredResults.length && <tr><td colSpan={10} className="empty-cell">Run the backtest after importing eligible contract histories. Red tests remain visible in “All tests.”</td></tr>}
           </tbody></table></div></div>
 
           {selectedAnalysis && <div className="analysis-detail">
             <div className="path-card card">
-              <div className="card-title-row"><div><p className="eyebrow">Selected combination</p><h3>4H valuation path · IV-normalized unrealized PnL · USD</h3></div><span className={flagClass(selectedAnalysis.eventQuality)}>{selectedAnalysis.eventQuality} event</span></div>
-              <ValuationChart path={selectedAnalysis.path} exits={selectedAnalysis.exits}/>
-              <div className="path-metrics"><span><small>Best unrealized<InfoTooltip term="extrema" label="Explain Best unrealized and Max adverse" /></small><strong className="positive">{money(Math.max(...selectedAnalysis.path.map(point => point.ivPnlUsd ?? point.rawPnlUsd ?? -Infinity)))}</strong></span><span><small>Max adverse</small><strong className="negative">{money(Math.min(...selectedAnalysis.path.map(point => point.ivPnlUsd ?? point.rawPnlUsd ?? Infinity)))}</strong></span><span><small>Grid points</small><strong>{selectedAnalysis.path.length}</strong></span></div>
+              <div className="card-title-row"><div><p className="eyebrow">Selected combination · size scenario</p><h3>4H valuation path · IV-normalized unrealized PnL · USD</h3></div><span className={flagClass(selectedAnalysis.eventQuality)}>{selectedAnalysis.eventQuality} event</span></div>
+              <ValuationChart path={scenario?.executable ? scenario.observation.valuationPath ?? [] : selectedAnalysis.path} exits={selectedAnalysis.exits}/>
+              <div className="path-metrics scenario-metrics"><span><small>Best unrealized · IV · {scenarioAmount || "—"} contracts<InfoTooltip term="extrema" label="Explain Best unrealized and Max adverse" /></small><strong className="positive">{scenario?.executable ? money(scenario.pathMetrics.bestUnrealized) : "—"}</strong></span><span><small>Max adverse · IV · {scenarioAmount || "—"} contracts</small><strong className="negative">{scenario?.executable ? money(scenario.pathMetrics.maxAdverse) : "—"}</strong></span><span><small>Grid points</small><strong>{scenario?.executable ? scenario.pathMetrics.gridPoints : selectedAnalysis.path.length}</strong></span><label className="scenario-input"><small>Contract size</small><input type="number" inputMode="decimal" value={scenarioAmount} min={selectedAnalysis.spread.soldContract?.amountMetadata?.minimumTradeAmount} step={selectedAnalysis.spread.soldContract?.amountMetadata?.amountStep} onChange={event => { setScenarioAmount(event.target.value); setScenario(undefined); setScenarioCalculating(true); }} /></label><span className="capital-metric"><small>Estimated account balance required<InfoTooltip term="scenarioCapital" label="Explain estimated account balance required" /></small><strong>{money(scenario?.capitalRequirement.minimumStartingBalanceUsd)}</strong><em>{scenario?.capitalRequirement.minimumStartingBalance === undefined ? "—" : btc(scenario.capitalRequirement.minimumStartingBalance)}</em></span><span className="scenario-status"><small>Scenario status</small><strong>{scenarioError ? scenarioError : scenarioCalculating ? "Calculating…" : scenario?.executable ? "Executable size scenario" : scenario ? "Not executable at this size" : "—"}</strong></span></div>
               <div className="table-scroll compact path-table"><table><thead><tr><th>Timestamp</th><th>BTC index</th><th>Raw value</th><th>IV value</th><th>Raw PnL USD</th><th>IV PnL USD</th><th>Valuation evidence<InfoTooltip term="valuationEvidence" label="Explain valuation evidence at each timestamp" /></th></tr></thead><tbody>{selectedAnalysis.path.slice(0, 80).map(point => <tr key={point.timestamp}><td>{formatUtc(point.timestamp)}</td><td>{money(point.btcIndex)}<small>{point.btcIndexSource}{point.btcIndexTimestamp ? ` · ${formatUtc(point.btcIndexTimestamp)}` : ""}</small></td><td>{btc(point.rawSpreadValue)}</td><td>{btc(point.ivSpreadValue)}</td><td>{money(point.rawPnlUsd)}</td><td className={(point.ivPnlUsd ?? 0) >= 0 ? "positive" : "negative"}>{money(point.ivPnlUsd)}</td><td><details className="evidence-details"><summary><span className={flagClass(point.qualityFlag)}>{point.qualityFlag}</span></summary><p><strong>{point.valuationSource}</strong> · {point.qualityReason}</p><p><strong>Underlying:</strong> {point.btcIndexAvailabilityReason}</p><dl><div>Sold gap <b>{point.soldLegGapMin?.toFixed(1) ?? "—"}m</b></div><div>Bought gap <b>{point.boughtLegGapMin?.toFixed(1) ?? "—"}m</b></div><div>Sync gap <b>{point.synchronizationGapMin?.toFixed(1) ?? "—"}m</b></div><div>Index mismatch <b>{pct(point.indexMismatch)}</b></div><div>Direction fallback <b>{point.usedDirectionFallback ? "yes" : "no"}</b></div><div>Model fallback <b>{point.usedModelFallback ? "yes" : "no"}</b></div></dl></details></td></tr>)}</tbody></table></div>
             </div>
-            <aside className="exit-card card"><p className="eyebrow">Exit engine</p><h3>Independent outcomes</h3><p className="quality-reason"><strong>Entry pricing evidence:</strong> {selectedAnalysis.entryLedgers?.iv.qualityReason ?? "Unavailable"}</p><div className="exit-list">{selectedAnalysis.exits.map(exit => <div className={`exit-row ${exit.status}`} key={exit.rule}><span>{exit.qualityFlag ? <QualityDot flag={exit.qualityFlag} /> : <span className="quality-dot muted" />}{exit.rule}<small>{exit.timestamp ? formatUtc(exit.timestamp) : exit.status.replace("-", " ")} · {exit.qualityReason}</small></span><strong>{money(exit.ivPnlUsd ?? exit.rawPnlUsd)}</strong></div>)}</div><div className="ledger-note"><strong>Trust means reliability</strong><p>Red, Yellow, and Green describe pricing evidence only—not profitability. Displayed trust combines entry evidence with the selected exit’s own evidence.</p></div></aside>
+            <aside className="exit-card card"><p className="eyebrow">Exit engine · size scenario</p><h3>Independent outcomes</h3><p className="quality-reason"><strong>Scenario execution:</strong> {scenario?.executable ? `${scenario.amount} contracts entered from cached tapes` : scenario ? "No entry execution" : "Calculating or invalid"}</p><div className="exit-list">{(scenario?.outcomes ?? []).map(outcome => <div className={`exit-row ${outcome.status}`} key={outcome.rule}><span><span className="quality-dot muted" />{outcome.rule}<small>{outcome.status === "triggered-unfilled" ? "Unfilled" : outcome.status === "not-hit" ? "Not hit" : outcome.status === "unavailable" ? "Unavailable" : outcome.status === "no-entry" ? "No trade" : outcome.status}</small></span><strong>{outcome.pnlUsd === undefined ? outcome.status === "triggered-unfilled" ? "Unfilled" : outcome.status === "not-hit" ? "Not hit" : outcome.status === "unavailable" ? "Unavailable" : outcome.status === "no-entry" ? "No trade" : "—" : money(outcome.pnlUsd)}</strong></div>)}</div><div className="ledger-note"><strong>Diagnostic vs realized</strong><p>Path metrics are diagnostic unrealized valuations. Outcome PnL is shown only from recalculated fills or settlement after all applicable fees; trigger prices are never presented as realized profit.</p></div></aside>
           </div>}
         </section>
 

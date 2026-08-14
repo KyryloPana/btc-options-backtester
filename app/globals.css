@@ -343,6 +343,11 @@ tbody tr:hover { background: #15191a; }
 .path-metrics span { display: flex; flex-direction: column; gap: 3px; padding: 9px 12px; border-right: 1px solid var(--line-soft); }
 .path-metrics span:last-child { border-right: 0; }
 .path-metrics strong { color: var(--ink-strong); font: 500 11px var(--mono); }
+.scenario-metrics { grid-template-columns: repeat(3, 1fr); }
+.scenario-metrics label { display:flex; flex-direction:column; gap:3px; padding:9px 12px; border-right:1px solid var(--line-soft); }
+.scenario-input input { width:100%; min-width:0; height:25px; padding:0 7px; border:1px solid var(--line); color:var(--ink-strong); background:var(--input); font:10px var(--mono); }
+.capital-metric em { color:var(--muted); font:normal 8px var(--mono); }
+.scenario-status strong { font-size:8px; line-height:1.35; }
 .path-table { max-height: 410px; }
 .exit-card { padding: 13px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .exit-list { margin-top: 12px; border-top: 1px solid var(--line-soft); }
