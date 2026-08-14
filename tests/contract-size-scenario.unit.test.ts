@@ -20,7 +20,7 @@ test("default scenario reproduces the canonical observation without changing pri
 
 test("larger size accumulates cached tape, changing VWAP and fill timestamp rather than multiplying PnL", () => {
   const candidate = spread(); const one = calculateContractSizeScenario({ event, candidates: [candidate], candles, baseConfig: config, amount: 1 }); const two = calculateContractSizeScenario({ event, candidates: [candidate], candles, baseConfig: config, amount: 2 });
-  assert.equal(one.observation.entryExecution?.sold.fillPriceBtc, .05); assert.equal(two.observation.entryExecution?.sold.fillPriceBtc, .1); assert.equal(two.observation.entryExecution?.sold.fillTimestamp, 1200); assert.notEqual(two.observation.netPnl?.btc, (one.observation.netPnl?.btc ?? 0) * 2);
+  assert.equal(one.observation.entryExecution?.sold.fillPriceBtc, .05); assert.equal(two.observation.entryExecution?.sold.fillPriceBtc, .1); assert.equal(two.observation.entryExecution?.sold.fillTimestamp, 1200); assert.notEqual(two.observation.executedNetPnl?.btc ?? two.observation.settlementNetPnl?.btc, ((one.observation.executedNetPnl?.btc ?? one.observation.settlementNetPnl?.btc) ?? 0) * 2);
   assert.ok(two.observation.feeLedger!.opening.finalFee > one.observation.feeLedger!.opening.finalFee);
 });
 
@@ -34,19 +34,19 @@ test("metadata validation permits decimals but rejects invalid increments and pr
 });
 
 test("path metrics preserve missing values and grid count is independent of amount", () => {
-  const path = [{ timestamp: 1, ivPnlUsd: 4 }, { timestamp: 2 }, { timestamp: 3, ivPnlUsd: -2 }] as never;
-  assert.deepEqual(scenarioPathMetrics(path, 20), { bestUnrealized: 4, maxAdverse: -2, gridPoints: 3, series: "ivPnlUsd", amount: 20 }); assert.equal(scenarioPathMetrics([{ timestamp: 1 }] as never, 1).bestUnrealized, undefined);
+  const path = [{ timestamp: 1, pointRole: "diagnostic-mark", ivMarkRole: "iv-normalized-close-mark", diagnosticIvUnrealizedPnlUsd: 4 }, { timestamp: 2, pointRole: "not-executed" }, { timestamp: 3, pointRole: "diagnostic-mark", ivMarkRole: "iv-normalized-close-mark", diagnosticIvUnrealizedPnlUsd: -2 }] as never;
+  assert.deepEqual(scenarioPathMetrics(path, 20), { bestIvDiagnosticMark: 4, maxAdverseIvDiagnosticMark: -2, bestUnrealized: 4, maxAdverse: -2, gridPoints: 3, series: "diagnosticIvUnrealizedPnlUsd", amount: 20 }); assert.equal(scenarioPathMetrics([{ timestamp: 1 }] as never, 1).bestUnrealized, undefined);
 });
 
 test("independent filled PnL uses recalculated entry, closing fees, and selected amount", () => {
   const result = calculateContractSizeScenario({ event, candidates: [spread()], candles, baseConfig: config, amount: 2 }); const outcome = result.outcomes.find(x => x.rule === "VPOC target");
-  assert.equal(outcome?.status, "filled"); assert.equal(outcome?.pnlUsd, result.observation.netPnl?.usd); assert.match(result.observation.netPnl!.identity, /opening fees.*closing fees/);
+  assert.equal(outcome?.status, "filled"); assert.equal(outcome?.pnlUsd, outcome?.executedNetPnl?.usd); assert.match(outcome!.executedNetPnl!.identity, /net opening.*net closing/);
 });
 
 test("triggered but unfilled outcome never exposes hypothetical profit and settlement includes delivery fees", () => {
   const candidate = spread(); candidate.soldContract!.trades = candidate.soldContract!.trades.filter(x => x.direction === "sell"); candidate.boughtContract!.trades = candidate.boughtContract!.trades.filter(x => x.direction === "buy");
   const result = calculateContractSizeScenario({ event, candidates: [candidate], candles, baseConfig: config, amount: 1 });
-  assert.deepEqual(result.outcomes.find(x => x.rule === "VPOC target"), { rule: "VPOC target", status: "triggered-unfilled" }); assert.ok(result.observation.settlementLedger!.deliveryFeesBtc > 0); assert.equal(result.outcomes.find(x => x.rule === "Expiry settlement")?.pnlUsd, result.observation.netPnl?.usd);
+  const unfilled = result.outcomes.find(x => x.rule === "VPOC target"); assert.equal(unfilled?.status, "triggered-unfilled"); assert.equal(unfilled?.pnlUsd, undefined); assert.ok(result.observation.settlementLedger!.deliveryFeesBtc > 0); assert.equal(result.outcomes.find(x => x.rule === "Expiry settlement")?.pnlUsd, result.outcomes.find(x => x.rule === "Expiry settlement")?.settlementNetPnl?.usd);
 });
 
 test("opening balance subtracts received cash once, keeps maximum loss separate, and rejects PM without simulation", () => {

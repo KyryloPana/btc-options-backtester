@@ -12,7 +12,7 @@ export const INFO_TOOLTIP_DEFINITIONS = {
   grossEntry: "Premium received minus premium paid for a credit spread (reversed for a debit), before contract amount and fees.",
   netOpening: "Gross entry cash flow across the selected contract amount after separate-leg or combo opening fees; debit openings are negative.",
   pnlMethods: "Raw PnL marks the spread from observed VWAPs; IV-normalized PnL uses those prints’ IV at a common BTC index. Both include the configured cash flows and fees.",
-  extrema: "Best unrealized is the highest marked PnL on the 4H path; Max adverse is the lowest. Neither implies an executable exit between grid points.",
+  extrema: "Best IV diagnostic mark and Max adverse IV diagnostic mark are hypothetical IV-normalized close marks anchored to the actual executed entry. They are not guaranteed executable exits.",
   valuationEvidence: "For each 4H timestamp, records the print/model source, leg ages, synchronization, index mismatch, fallbacks, and resulting trust color.",
   vpocExit: "First 4H path point at which the event’s recorded VPOC target is touched, subject to available valuation evidence.",
   creditCapture: "First point where closing the credit spread realizes at least 50% or 70% of its opening credit after the configured fee treatment.",
