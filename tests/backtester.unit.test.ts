@@ -246,8 +246,8 @@ test("matrix toggle defaults off and disclosure buttons retain accessible relati
 });
 
 test("chart modes keep USD PnL and BTC contract series separate", () => {
-  assert.equal(CHART_SERIES.ivPnlUsd.metric, "pnl");
-  assert.equal(CHART_SERIES.rawPnlUsd.metric, "pnl");
+  assert.equal(CHART_SERIES.diagnosticIvUnrealizedPnlUsd.metric, "pnl");
+  assert.equal(CHART_SERIES.diagnosticRawUnrealizedPnlUsd.metric, "pnl");
   for (const key of ["rawSoldLegPrice", "rawBoughtLegPrice", "rawSpreadValue", "ivSoldLegPrice", "ivBoughtLegPrice", "ivSpreadValue"] as const) assert.equal(CHART_SERIES[key].metric, "values");
 });
 

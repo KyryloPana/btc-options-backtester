@@ -29,6 +29,7 @@ export interface FeeCalculation {
   discount: number;
   finalFee: number;
   feeCurrency: "BTC";
+  inputPriceBtc: number; absoluteAmount: number;
 }
 
 export function calculateOptionFee(
@@ -45,6 +46,7 @@ export function calculateOptionFee(
     scheduleEffectiveDate: schedule.effectiveDate, tier: schedule.tier, executionMode,
     baseFeeRate: schedule.baseFeeRate, premiumCap: schedule.premiumCap, grossFee,
     discount, finalFee: grossFee * (1 - discount), feeCurrency: schedule.currency,
+    inputPriceBtc: optionPriceBtc, absoluteAmount: Math.abs(absoluteAmount),
   };
 }
 

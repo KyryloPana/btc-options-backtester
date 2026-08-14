@@ -1,11 +1,11 @@
-import type { ExitResult, RetrievedSpread, ValuationPoint } from "./backtester";
+import type { ExitResult, RetrievedSpread } from "./backtester";
 
 export type ChartMetric = "pnl" | "values";
-export type ChartSeriesKey = "rawPnlUsd" | "ivPnlUsd" | "rawSoldLegPrice" | "rawBoughtLegPrice" | "rawSpreadValue" | "ivSoldLegPrice" | "ivBoughtLegPrice" | "ivSpreadValue";
+export type ChartSeriesKey = "diagnosticRawUnrealizedPnlUsd" | "diagnosticIvUnrealizedPnlUsd" | "rawSoldLegPrice" | "rawBoughtLegPrice" | "rawSpreadValue" | "ivSoldLegPrice" | "ivBoughtLegPrice" | "ivSpreadValue";
 
 export const CHART_SERIES: Record<ChartSeriesKey, { label: string; metric: ChartMetric }> = {
-  rawPnlUsd: { label: "Raw unrealized PnL · USD", metric: "pnl" },
-  ivPnlUsd: { label: "IV-normalized unrealized PnL · USD", metric: "pnl" },
+  diagnosticRawUnrealizedPnlUsd: { label: "Raw diagnostic unrealized · USD", metric: "pnl" },
+  diagnosticIvUnrealizedPnlUsd: { label: "IV diagnostic unrealized · USD", metric: "pnl" },
   rawSoldLegPrice: { label: "Sold-leg Raw price", metric: "values" },
   rawBoughtLegPrice: { label: "Bought-leg Raw price", metric: "values" },
   rawSpreadValue: { label: "Raw net spread value", metric: "values" },
@@ -28,14 +28,14 @@ export function visibleMatrixSpreads(spreads: RetrievedSpread[], hideRed: boolea
   return hideRed ? spreads.filter(spread => spread.entryLiquidityQuality !== "red") : spreads;
 }
 
-export function nearestPoint(points: ValuationPoint[], timestamp: number) {
+export function nearestPoint<T extends { timestamp: number }>(points: T[], timestamp: number) {
   return points.reduce((nearest, point) => Math.abs(point.timestamp - timestamp) < Math.abs(nearest.timestamp - timestamp) ? point : nearest, points[0]);
 }
 
 /** Preserve the source grid: an absent value terminates, rather than bridges, a line. */
-export function splitSeriesAtMissing(points: ValuationPoint[], key: keyof ValuationPoint) {
-  const segments: ValuationPoint[][] = [];
-  let segment: ValuationPoint[] = [];
+export function splitSeriesAtMissing<T extends { timestamp: number }>(points: T[], key: keyof T) {
+  const segments: T[][] = [];
+  let segment: T[] = [];
   for (const point of points) {
     if (typeof point[key] === "number") segment.push(point);
     else if (segment.length) { segments.push(segment); segment = []; }

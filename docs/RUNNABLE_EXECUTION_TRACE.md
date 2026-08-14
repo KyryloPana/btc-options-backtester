@@ -1,28 +1,12 @@
-# Runnable causal execution trace
+# Runnable execution and observation trace
 
-## Call graphs
+The Run Backtest button delegates its non-visual work to `buildAndRunObservationRequests`, the same integration boundary exercised by the observation-ledger tests. The builder groups expiry candidates by `eventId::strategyVariantId`, calls `runEventBacktest` once per group, retains alternatives as candidate attempts, and throws if the orchestration stage produces a duplicate key. The repository does not include a browser interaction framework; testing the exact shared handler is the strongest available UI integration boundary without adding a large browser dependency.
 
-**Pre-remediation:** `Run Backtest` → `buildValuation`/centered normalization → `evaluateExits` → most convenient hit/path PnL → filtered UI result/export.
+A runnable valuation path is constructed only after `simulateTakerSpread` confirms both causal post-order fills. `buildExecutedValuationPath` receives an immutable executed-entry basis: both actual prices and timestamps, filled amount, actual opening fees and net cash flow, route, and entry index evidence. It never calls retrospective entry-ledger construction. Raw and IV marks differ only in the estimated causal closing mark:
 
-**Runnable v1:** `Run Backtest` → `runEventBacktest` → rank-1 candidate → `simulateTakerSpread` → fill cash flow/fees/margin → configured VPOC policy → `simulateTakerExit` → fill cash flow **or** `buildOptionSettlementLedger` fallback → observation net PnL. Tables, details, chart, full-set aggregates and JSON export retain the observation ledger. `buildValuationPath` is invoked only after an entry fill and is a diagnostic research mark; it never supplies primary fills or PnL.
+- raw diagnostic = actual net opening cash flow + raw estimated closing cash flow - raw estimated closing fees;
+- IV diagnostic = actual net opening cash flow + IV-normalized estimated closing cash flow - IV estimated closing fees.
 
-## Event A deterministic trace
+These are explicitly `diagnostic-mark` values. Realized results are emitted separately as `executedNetPnl` from causal close fills or `settlementNetPnl` from the versioned settlement ledger.
 
-| Item | Timestamp/value | Ledger meaning |
-|---|---:|---|
-| Source hourly candle | 0–1000 ms | Touch is not actionable at candle open. |
-| Decision available | 1000 ms | Source candle close. |
-| Entry submitted | 1010 ms | 10 ms configured latency. |
-| Sold-leg fill | 1020 ms @ 0.050 BTC | +0.050 BTC. |
-| Bought-leg fill | 1025 ms @ 0.020 BTC | −0.020 BTC. |
-| Gross entry cash flow | +0.030 BTC | Actual taker fills only. |
-| Opening fees | −0.000600 BTC | Synchronized-leg proxy; both legs charged. |
-| Target candle / decision | 2000–2100 ms | Trigger available at close. |
-| Exit submitted | 2110 ms | A 1900 ms print is ignored. |
-| Short buyback | 2120 ms @ 0.010 BTC | −0.010 BTC. |
-| Long sale | 2125 ms @ 0.005 BTC | +0.005 BTC. |
-| Gross close cash flow | −0.005 BTC | Actual closing fills only. |
-| Closing fees | −0.000600 BTC | Both closing legs charged. |
-| **Net PnL** | **+0.023800 BTC / $1,190 at $50,000** | `0.030 - 0.005 - 0.0006 - 0.0006`. |
-
-The denominator is one `original event × strategyVariantId`; candidate expiries are child attempts. The deterministic selected policy is VPOC target with settlement fallback. An unfilled triggered close remains open and settles; expiry is never modeled as a taker exit. Official-combo fee treatment requires an actual evidence flag. Margin defaults to a dedicated segregated Standard Margin subaccount and a causal historical formula estimate.
+`buildObservationExport` performs structured chronology, amount, cash-flow, fee, settlement, outcome, uniqueness, and aggregate reconciliation validation. The ordinary UI export is blocked whenever any invariant fails.
