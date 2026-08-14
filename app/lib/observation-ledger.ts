@@ -3,7 +3,7 @@ import { buildExecutedValuationPath, executionClock, firstTouch, simulateTakerEx
 import { DEFAULT_DEPLOYMENT, estimateStandardOptionMargin, portfolioMarginResult, type MarginResult } from "./margin.ts";
 
 export const OBSERVATION_SCHEMA_VERSION = "strategy-observation/2.0.0";
-export type ObservationOutcome = "executed" | "no-trade:no-executable-structure" | "no-trade:no-entry-fill" | "data-unavailable" | "entered-exit-unfilled" | "settled" | "exit-policy-unconfigured";
+export type ObservationOutcome = "executed" | "no-trade:no-listed-structure" | "no-trade:no-entry-fill" | "data-unavailable" | "entered-exit-unfilled" | "settled" | "exit-policy-unconfigured";
 export type SelectedExitPolicy = { rule: "vpoc-target"; fallback: "settlement" } | { rule: "fixed-time"; afterMs: number; fallback: "settlement" } | { rule: "none"; fallback?: never };
 export interface PortfolioMarginEvidence { response: { margin_model: string; initial_margin: number; maintenance_margin: number; margin_balance?: number; available_funds?: number }; accountState: unknown; simulationTimestamp: number }
 export interface StrategyVariantConfig {
@@ -58,9 +58,9 @@ export function runEventBacktest(input: EventBacktestInput): StrategyObservation
   const candidates = [...input.candidates].sort((a,b)=>(a.expiryRank ?? Infinity)-(b.expiryRank ?? Infinity)); const selected = candidates.find(c=>c.expiryRank===1) ?? candidates[0];
   const attempts = candidates.map(candidate => ({ candidateId: candidate.id, rank: candidate.expiryRank, status: candidate.dataStatus === "data-unavailable" ? "data-unavailable" : candidate.retrievalStatus, executable: candidate.id === selected?.id, reason: candidate.id === selected?.id ? "Rank-1 candidate selected before execution." : "Retained diagnostic alternative; causal fallback was not configured." }));
   const base = { eventId:event.id, strategyVariantId:stableVariantId(config), configuredAmount:config.amount, strategyConfiguration:config, signalClock, candidateSelection:{policy:config.candidateRankPolicy,selectedCandidateId:selected?.id,selectedRank:selected?.expiryRank,reason:selected?"Only the pre-ranked primary candidate may execute.":"No candidate was available."},candidateAttempts:attempts };
-  if (!selected) return {...base,eventOutcome:"no-trade:no-executable-structure",executedNetPnl:zeroPnl(signalClock.orderSubmittedAt,event.entryPrice),unavailableReason:"No viable ranked structure."};
+  if (!selected) return {...base,eventOutcome:"no-trade:no-listed-structure",executedNetPnl:zeroPnl(signalClock.orderSubmittedAt,event.entryPrice),unavailableReason:"Complete manifest evidence contains no listed structure for this strategy variant."};
   if (selected.dataStatus === "data-unavailable" || selected.retrievalStatus === "partial") return {...base,spread:selected,eventOutcome:"data-unavailable",unavailableReason:selected.retrievalNote||"Required contract retrieval was incomplete."};
-  if (!selected.soldContract||!selected.boughtContract||!selected.expiryTimestamp||selected.retrievalStatus!=="ready") return {...base,spread:selected,eventOutcome:"no-trade:no-executable-structure",executedNetPnl:zeroPnl(signalClock.orderSubmittedAt,event.entryPrice),unavailableReason:selected.retrievalNote||"No complete two-leg structure."};
+  if (!selected.soldContract||!selected.boughtContract||!selected.expiryTimestamp||selected.retrievalStatus!=="ready") return {...base,spread:selected,eventOutcome:"data-unavailable",unavailableReason:selected.retrievalNote||"Resolved contract identity or history is incomplete."};
   const entryExecution=simulateTakerSpread(selected,signalClock,config.amount,config.slippageBps,config.synchronizationThresholdMs);
   if(entryExecution.status!=="filled") return {...base,spread:selected,eventOutcome:"no-trade:no-entry-fill",entryExecution,executedNetPnl:zeroPnl(signalClock.orderSubmittedAt,event.entryPrice),unavailableReason:entryExecution.reason};
   const route=effectiveRoute(config); const opening=routedFees(entryExecution.sold.fillPriceBtc!,entryExecution.bought.fillPriceBtc!,config.amount,route);
