@@ -14,7 +14,7 @@ export type ValuationPurpose = "entry" | "close" | "settlement";
 export type CandidateDataStatus = "available" | "data-unavailable";
 export type SignalPrecision = "trade" | "millisecond" | "second" | "minute" | "candle" | "manual";
 export type FillStatus = "filled" | "no-fill" | "insufficient-amount" | "stale-evidence" | "data-unavailable" | "missing-contract" | "opportunity-only";
-export type EventOutcome = "executed" | "no-trade:no-executable-structure" | "no-trade:no-entry-fill" | "data-unavailable" | "entered-exit-unfilled" | "settled";
+export type EventOutcome = "executed" | "no-trade:no-listed-structure" | "no-trade:no-entry-fill" | "data-unavailable" | "entered-exit-unfilled" | "settled";
 
 export interface ExecutionClock {
   signalTimestamp: number;
@@ -40,6 +40,11 @@ export interface TapeFill {
   fillTimestamp?: number;
   supportingTrades: ContractTrade[];
   supportingTradeTimestamps: number[];
+  reasonCode: "contract-history-unavailable" | "no-compatible-print-after-order" | "insufficient-compatible-amount" | "filled";
+  totalPrintsLoaded: number;
+  printsBeforeOrder: number;
+  compatiblePrintsAfterOrder: number;
+  compatibleAmountBeforeSearchEnd: number;
 }
 
 export interface SpreadExecution {
@@ -49,6 +54,7 @@ export interface SpreadExecution {
   bought: TapeFill;
   status: "filled" | "no-trade" | "opportunity-only";
   reason: string;
+  reasonCode: "filled" | "short-leg-rejected" | "long-leg-rejected" | "both-legs-rejected" | "leg-synchronization-exceeded";
 }
 
 export interface ExitExecution extends SpreadExecution {
@@ -207,6 +213,10 @@ export interface EntryLiquidityMetrics {
 }
 
 export interface RetrievedSpread extends DesiredSpread {
+  resolvedSoldInstrumentName?: string;
+  resolvedBoughtInstrumentName?: string;
+  resolvedSoldStrike?: number;
+  resolvedBoughtStrike?: number;
   expiryTimestamp?: number;
   expiryLabel?: string;
   actualDte?: number;
@@ -459,11 +469,12 @@ export function executionClock(input: {
 }
 
 function tapeFill(series: ContractSeries | undefined, action: TradeSide, clock: ExecutionClock, amount: number, slippageBps: number): TapeFill {
-  const base = { action, compatibleDirection: action, requestedAmount: amount, filledAmount: 0, supportingTrades: [], supportingTradeTimestamps: [] };
-  if (!series) return { ...base, status: "missing-contract", reason: "Contract is missing; no executable price was constructed." };
+  const base = { action, compatibleDirection: action, requestedAmount: amount, filledAmount: 0, supportingTrades: [], supportingTradeTimestamps: [], totalPrintsLoaded: series?.trades.length ?? 0, printsBeforeOrder: series?.trades.filter(t => t.timestamp <= clock.orderSubmittedAt).length ?? 0, compatiblePrintsAfterOrder: 0, compatibleAmountBeforeSearchEnd: 0 };
+  if (!series) return { ...base, status: "missing-contract", reasonCode: "contract-history-unavailable", reason: "Contract history is unavailable; no executable price was constructed." };
   const compatible = series.trades
     .filter(trade => trade.timestamp > clock.orderSubmittedAt && trade.timestamp <= clock.fillSearchEnd && trade.direction === action)
     .sort((a, b) => a.timestamp - b.timestamp);
+  const compatibleAmountBeforeSearchEnd = compatible.reduce((sum, trade) => sum + trade.amount, 0);
   const supportingTrades: ContractTrade[] = [];
   let remaining = amount;
   let notional = 0;
@@ -475,10 +486,10 @@ function tapeFill(series: ContractSeries | undefined, action: TradeSide, clock: 
     remaining -= used;
   }
   const filledAmount = amount - remaining;
-  if (remaining > 1e-12) return { ...base, status: compatible.length ? "insufficient-amount" : "no-fill", reason: compatible.length ? "Post-order compatible tape amount is insufficient." : "No compatible post-order trade in the forward fill window.", filledAmount, supportingTrades, supportingTradeTimestamps: supportingTrades.map(t => t.timestamp) };
+  if (remaining > 1e-12) return { ...base, compatiblePrintsAfterOrder: compatible.length, compatibleAmountBeforeSearchEnd, status: compatible.length ? "insufficient-amount" : "no-fill", reasonCode: compatible.length ? "insufficient-compatible-amount" : "no-compatible-print-after-order", reason: compatible.length ? `Required ${amount} contracts of post-order ${action}-direction tape between ${clock.orderSubmittedAt} and ${clock.fillSearchEnd}; only ${compatibleAmountBeforeSearchEnd} was observed (${base.printsBeforeOrder} prints existed before the order).` : `Required ${amount} contracts of post-order ${action}-direction tape between ${clock.orderSubmittedAt} and ${clock.fillSearchEnd}; none was observed (${base.printsBeforeOrder} prints existed before the order).`, filledAmount, supportingTrades, supportingTradeTimestamps: supportingTrades.map(t => t.timestamp) };
   const tapeVwapBtc = notional / amount;
   const adverseMultiplier = action === "buy" ? 1 + slippageBps / 10_000 : 1 - slippageBps / 10_000;
-  return { ...base, status: "filled", reason: "Requested amount covered chronologically by compatible post-order prints.", filledAmount, tapeVwapBtc, fillPriceBtc: tapeVwapBtc * adverseMultiplier, fillTimestamp: supportingTrades.at(-1)!.timestamp, supportingTrades, supportingTradeTimestamps: supportingTrades.map(t => t.timestamp) };
+  return { ...base, compatiblePrintsAfterOrder: compatible.length, compatibleAmountBeforeSearchEnd, status: "filled", reasonCode: "filled", reason: "Requested amount covered chronologically by compatible post-order prints.", filledAmount, tapeVwapBtc, fillPriceBtc: tapeVwapBtc * adverseMultiplier, fillTimestamp: supportingTrades.at(-1)!.timestamp, supportingTrades, supportingTradeTimestamps: supportingTrades.map(t => t.timestamp) };
 }
 
 /** Conservative baseline proxy, not a claim about an exact historical market-order fill. */
@@ -487,7 +498,8 @@ export function simulateTakerSpread(spread: Pick<RetrievedSpread, "soldContract"
   const bought = tapeFill(spread.boughtContract, "buy", clock, amount, slippageBps);
   const complete = sold.status === "filled" && bought.status === "filled";
   const synchronized = complete && Math.abs(sold.fillTimestamp! - bought.fillTimestamp!) <= maxLegSyncMs;
-  return { scenario: "taker-tape-proxy", clock, sold, bought, status: complete && synchronized ? "filled" : "no-trade", reason: !complete ? "Both legs did not obtain complete post-order evidence; partial spreads are forbidden." : synchronized ? "Both legs filled within delay and synchronization constraints." : "Leg fills exceeded the synchronization constraint; partial spread discarded." };
+  const reasonCode = complete ? (synchronized ? "filled" : "leg-synchronization-exceeded") : sold.status === "filled" ? "long-leg-rejected" : bought.status === "filled" ? "short-leg-rejected" : "both-legs-rejected";
+  return { scenario: "taker-tape-proxy", clock, sold, bought, status: complete && synchronized ? "filled" : "no-trade", reasonCode, reason: !complete ? "Both legs did not obtain complete post-order evidence; partial spreads are forbidden." : synchronized ? "Both legs filled within delay and synchronization constraints." : "Leg fills exceeded the synchronization constraint; partial spread discarded." };
 }
 
 /** Close-side execution starts only after independently established trigger evidence. */
@@ -498,7 +510,8 @@ export function simulateTakerExit(spread: Pick<RetrievedSpread, "soldContract" |
   const complete = sold.status === "filled" && bought.status === "filled";
   const synchronized = complete && Math.abs(sold.fillTimestamp! - bought.fillTimestamp!) <= maxLegSyncMs;
   const filled = complete && synchronized;
-  return { scenario: "taker-tape-proxy", clock, sold, bought, status: filled ? "filled" : "no-trade", reason: filled ? "Causal trigger was followed by synchronized closing-side tape evidence." : "Trigger established, but a complete synchronized close fill was not found; position remains open for fallback or settlement.", triggerTimestamp: clock.signalTimestamp, sourceCandleCloseTimestamp: clock.signalSourceCandle?.closeTimestamp, exitOrderTimestamp: clock.orderSubmittedAt, exitFillTimestamp: filled ? Math.max(sold.fillTimestamp!, bought.fillTimestamp!) : undefined, triggerEvidenceTimestamp, exitStatus: filled ? "filled" : "triggered-unfilled" };
+  const reasonCode = complete ? (synchronized ? "filled" : "leg-synchronization-exceeded") : sold.status === "filled" ? "long-leg-rejected" : bought.status === "filled" ? "short-leg-rejected" : "both-legs-rejected";
+  return { scenario: "taker-tape-proxy", clock, sold, bought, status: filled ? "filled" : "no-trade", reasonCode, reason: filled ? "Causal trigger was followed by synchronized closing-side tape evidence." : "Trigger established, but a complete synchronized close fill was not found; position remains open for fallback or settlement.", triggerTimestamp: clock.signalTimestamp, sourceCandleCloseTimestamp: clock.signalSourceCandle?.closeTimestamp, exitOrderTimestamp: clock.orderSubmittedAt, exitFillTimestamp: filled ? Math.max(sold.fillTimestamp!, bought.fillTimestamp!) : undefined, triggerEvidenceTimestamp, exitStatus: filled ? "filled" : "triggered-unfilled" };
 }
 
 /** Maker prints establish only an optimistic opportunity and never a confirmed fill. */
@@ -507,7 +520,7 @@ export function assessMakerOpportunity(series: ContractSeries | undefined, actio
   const rows = (series?.trades ?? []).filter(t => t.timestamp > clock.orderSubmittedAt && t.timestamp <= clock.fillSearchEnd && t.direction === opposingDirection && (action === "buy" ? t.price <= limitPrice : t.price >= limitPrice));
   const opposingVolume = rows.reduce((sum, row) => sum + row.amount, 0);
   const progressed = Math.min(amount, Math.max(0, opposingVolume - Math.max(0, assumedQueueAhead)));
-  return { status: "opportunity-only", reason: `Maker opportunity — optimistic. Assumed queue ahead: ${Math.max(0, assumedQueueAhead)} contracts; this is an assumption, not observed fact.`, action, compatibleDirection: opposingDirection, requestedAmount: amount, filledAmount: progressed, supportingTrades: rows, supportingTradeTimestamps: rows.map(row => row.timestamp) };
+  return { status: "opportunity-only", reasonCode: rows.length ? "insufficient-compatible-amount" : "no-compatible-print-after-order", reason: `Maker opportunity — optimistic. Assumed queue ahead: ${Math.max(0, assumedQueueAhead)} contracts; this is an assumption, not observed fact.`, action, compatibleDirection: opposingDirection, requestedAmount: amount, filledAmount: progressed, supportingTrades: rows, supportingTradeTimestamps: rows.map(row => row.timestamp), totalPrintsLoaded: series?.trades.length ?? 0, printsBeforeOrder: series?.trades.filter(t => t.timestamp <= clock.orderSubmittedAt).length ?? 0, compatiblePrintsAfterOrder: rows.length, compatibleAmountBeforeSearchEnd: rows.reduce((sum, row) => sum + row.amount, 0) };
 }
 
 export function summarizeEventExecutions(events: EventExecutionRecord[]) {
@@ -984,6 +997,10 @@ export function buildExpiryCandidates(
         actualWidth: manifest.soldStrike !== undefined && manifest.boughtStrike !== undefined
           ? Math.abs(manifest.soldStrike - manifest.boughtStrike)
           : undefined,
+        resolvedSoldInstrumentName: manifest.soldInstrumentName,
+        resolvedBoughtInstrumentName: manifest.boughtInstrumentName,
+        resolvedSoldStrike: manifest.soldStrike,
+        resolvedBoughtStrike: manifest.boughtStrike,
         soldContract,
         boughtContract,
         soldExistedAtEntry,
@@ -1055,7 +1072,10 @@ export function buildExpiryCandidates(
         ...base,
         entryLiquidity,
         entryLiquidityQuality: dataUnavailable ? undefined : quality as QualityFlag,
-        retrievalStatus: viable ? (quality === "green" ? "ready" : "partial") : "missing",
+        // Retrieval completeness and liquidity quality are independent. A yellow
+        // candidate still has two complete tapes and is runnable; `partial` is
+        // reserved for an incomplete retrieval, never a quality grade.
+        retrievalStatus: soldContract && boughtContract && !dataUnavailable ? "ready" : dataUnavailable ? "partial" : "missing",
         retrievalNote: reason,
         candidateStatus: viable ? "candidate" : "rejected",
         selectedForTest: false,
