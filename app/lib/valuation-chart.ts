@@ -32,6 +32,18 @@ export function nearestPoint(points: ValuationPoint[], timestamp: number) {
   return points.reduce((nearest, point) => Math.abs(point.timestamp - timestamp) < Math.abs(nearest.timestamp - timestamp) ? point : nearest, points[0]);
 }
 
+/** Preserve the source grid: an absent value terminates, rather than bridges, a line. */
+export function splitSeriesAtMissing(points: ValuationPoint[], key: keyof ValuationPoint) {
+  const segments: ValuationPoint[][] = [];
+  let segment: ValuationPoint[] = [];
+  for (const point of points) {
+    if (typeof point[key] === "number") segment.push(point);
+    else if (segment.length) { segments.push(segment); segment = []; }
+  }
+  if (segment.length) segments.push(segment);
+  return segments;
+}
+
 export function hitExitGroups(exits: ExitResult[]) {
   const groups = new Map<number, string[]>();
   exits.filter(exit => exit.status === "hit" && exit.timestamp !== undefined).forEach(exit => groups.set(exit.timestamp!, [...(groups.get(exit.timestamp!) ?? []), exit.rule]));

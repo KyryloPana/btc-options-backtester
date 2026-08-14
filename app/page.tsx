@@ -19,8 +19,6 @@ import {
   type SpreadKind,
   type ValuationPoint,
   buildExpiryCandidates,
-  buildValuation,
-  evaluateExits,
   firstTouch,
   formatUtc,
   generateDesiredSpreads,
@@ -28,11 +26,13 @@ import {
   qualityRank,
   windowComparison,
 } from "./lib/backtester";
-import { CHART_GEOMETRY, CHART_SERIES, hitExitGroups, nearestPoint, timestampAtX, timeX, visibleMatrixSpreads, type ChartMetric, type ChartSeriesKey } from "./lib/valuation-chart";
+import { aggregateObservations, buildObservationExport, runEventBacktest, type StrategyObservation, type StrategyVariantConfig } from "./lib/observation-ledger";
+import { CHART_GEOMETRY, CHART_SERIES, hitExitGroups, nearestPoint, splitSeriesAtMissing, timestampAtX, timeX, visibleMatrixSpreads, type ChartMetric, type ChartSeriesKey } from "./lib/valuation-chart";
 
 type Section = "events" | "construction" | "contracts" | "analysis";
 
 interface AnalysisResult {
+  observation: StrategyObservation;
   spread: RetrievedSpread;
   path: ValuationPoint[];
   entryLedgers?: EntryLedgers;
@@ -155,7 +155,7 @@ function ValuationChart({ path, exits }: { path: ValuationPoint[]; exits: ExitRe
         {dateTicks.map(timestamp => <g key={timestamp}><line x1={x(timestamp)} x2={x(timestamp)} y1={plotBottom} y2={plotBottom+5} className="axis-tick"/><text x={x(timestamp)} y={plotBottom+20} textAnchor="middle" className="axis-label">{new Date(timestamp).toLocaleDateString("en-GB",{timeZone:"UTC",month:"short",day:"2-digit"})}</text><text x={x(timestamp)} y={plotBottom+34} textAnchor="middle" className="axis-label">{new Date(timestamp).toLocaleTimeString("en-GB",{timeZone:"UTC",hour:"2-digit",minute:"2-digit",hour12:false})} UTC</text></g>)}
         <text x="4" y="12" className="axis-unit">{metric === "pnl" ? "USD" : "BTC / contract"}</text>
         {showExits && hitExitGroups(exits).map(group => <g key={group.timestamp} className="exit-marker"><line x1={x(group.timestamp)} x2={x(group.timestamp)} y1={plotTop} y2={plotBottom}/><text x={x(group.timestamp)+5} y={plotTop+10}>{group.labels.join(" + ")}</text></g>)}
-        {active.map(key => { const series = path.filter(point => typeof point[key] === "number"); return <polyline key={key} points={series.map(point => `${x(point.timestamp)},${y(point[key] as number)}`).join(" ")} className="chart-series" style={{ stroke: SERIES_COLORS[key] }}/>; })}
+        {active.flatMap(key => splitSeriesAtMissing(path, key).map((series, index) => <polyline key={`${key}-${index}`} data-series={key} data-segment={index} points={series.map(point => `${x(point.timestamp)},${y(point[key] as number)}`).join(" ")} className="chart-series" style={{ stroke: SERIES_COLORS[key], strokeDasharray: key.startsWith("iv") ? "5 4" : undefined }}/>) )}
         {selected && <g className="crosshair"><line x1={x(selected.timestamp)} x2={x(selected.timestamp)} y1={plotTop} y2={plotBottom}/>{active.map(key => typeof selected[key] === "number" && <circle key={key} cx={x(selected.timestamp)} cy={y(selected[key] as number)} r="4" style={{fill:SERIES_COLORS[key]}}/>)}</g>}
       </svg>}
       {selected && <div className={`chart-tooltip ${x(selected.timestamp)>(plotLeft+plotRight)/2 ? "align-right" : ""}`}><strong>{formatUtc(selected.timestamp)}</strong><span>BTC index <b>{money(selected.btcIndex)}</b></span><span>Selected value <b>{active.map(key => `${CHART_SERIES[key].label}: ${metric === "pnl" ? money(selected[key]) : btc(selected[key])}`).join(" · ") || "—"}</b></span><span>Raw / IV PnL <b>{money(selected.rawPnlUsd)} / {money(selected.ivPnlUsd)}</b></span><span>Raw / IV spread <b>{btc(selected.rawSpreadValue)} / {btc(selected.ivSpreadValue)}</b></span><span>Sold Raw / IV <b>{btc(selected.rawSoldLegPrice)} / {btc(selected.ivSoldLegPrice)}</b></span><span>Bought Raw / IV <b>{btc(selected.rawBoughtLegPrice)} / {btc(selected.ivBoughtLegPrice)}</b></span><span>Evidence <b>{selected.qualityFlag} · {selected.valuationSource}</b></span><em>{selected.qualityReason}</em></div>}
@@ -235,8 +235,8 @@ export default function Home() {
     [selectedEvent, dtes, widths, spreadKind],
   );
   const retrievedSpreads = useMemo(
-    () => buildExpiryCandidates(desiredSpreads, candidateManifests, effectiveEntryTimestamp, selectedEvent.entryPrice, inventory, executionMode, expirySelectionMode),
-    [desiredSpreads, candidateManifests, effectiveEntryTimestamp, selectedEvent.entryPrice, inventory, executionMode, expirySelectionMode],
+    () => buildExpiryCandidates(desiredSpreads, candidateManifests, effectiveEntryTimestamp, selectedEvent.entryPrice, inventory, "taker", expirySelectionMode),
+    [desiredSpreads, candidateManifests, effectiveEntryTimestamp, selectedEvent.entryPrice, inventory, expirySelectionMode],
   );
   const visibleRetrievedSpreads = useMemo(() => visibleMatrixSpreads(retrievedSpreads, hideRed), [retrievedSpreads, hideRed]);
   const selectedSpread = visibleRetrievedSpreads.find(spread => spread.id === selectedSpreadId) ?? visibleRetrievedSpreads[0];
@@ -251,6 +251,7 @@ export default function Home() {
     if (resultsFilter === "trusted") return qualityRank(result.eventQuality) >= 1;
     return true;
   });
+  const aggregateGroups = useMemo(() => aggregateObservations(analysisResults.map(result => result.observation)), [analysisResults]);
 
   function jump(next: Section) {
     setSection(next);
@@ -407,7 +408,7 @@ export default function Home() {
   }, []);
 
   async function runBacktest() {
-    const runnable = retrievedSpreads.filter(spread => spread.selectedForTest && spread.entryLiquidity?.viable && spread.soldContract && spread.boughtContract && spread.expiryTimestamp);
+    const runnable = retrievedSpreads.filter(spread => spread.selectedForTest || spread.expiryRank === 1);
     if (!runnable.length) {
       setAnalysisStatus("No complete spread can be valued. Load both legs for at least one generated combination.");
       return;
@@ -417,21 +418,20 @@ export default function Home() {
       const entryTimestamp = selectedEvent.entryTimestamp ?? effectiveEntryTimestamp;
       const maxExpiry = Math.max(...runnable.map(spread => spread.expiryTimestamp!));
       const candles = await fetchCandles(entryTimestamp - 3_600_000, maxExpiry + 3_600_000);
-      const vpocTouch = selectedEvent.vpocPrice ? firstTouch(candles, selectedEvent.vpocPrice, entryTimestamp)?.openTime : undefined;
       const next = runnable.map(spread => {
-        const specials = [selectedEvent.vpocTimestamp, selectedEvent.exitTimestamp, vpocTouch].filter(Boolean) as number[];
-        const valuation = buildValuation(spread, { ...selectedEvent, entryTimestamp }, candles, executionMode, amount, comboExecution, specials);
-        const { path, entryLedgers } = valuation;
-        const exits = evaluateExits(path, spread, { ...selectedEvent, entryTimestamp }, candles);
-        const selectedExit = exits.find(exit => exit.rule === "VPOC hit" && exit.status === "hit") ?? exits.find(exit => exit.status === "hit");
-        const entryQuality = entryLedgers?.iv.qualityFlag ?? entryLedgers?.raw.qualityFlag ?? "red";
-        const exitQuality = selectedExit?.qualityFlag ?? "red";
-        const eventQuality: QualityFlag = entryQuality === "red" || exitQuality === "red" ? "red" : entryQuality === "green" && exitQuality === "green" ? "green" : "yellow";
-        return { spread, path, entryLedgers, exits, selectedExit, eventQuality };
+        const config: StrategyVariantConfig = { targetExpiryHorizonDays: spread.targetDte, widthUsd: spread.targetWidth, spreadKind, expirySelectionPolicy: expirySelectionMode, candidateRankPolicy: "rank-1-only", amount, primaryExecutionScenario: "taker-tape-proxy", latencyMs: 1_000, fillWaitMs: 30 * 60_000, synchronizationThresholdMs: 60_000, slippageBps: 0, exitPolicy: { rule: "vpoc-target", fallback: "settlement" }, requestedPackaging: comboExecution ? "combo" : "legs", executionRoute: "synchronized-leg-proxy", officialComboEvidence: false, feeTier: "standard", marginModel: "segregated_sm" };
+        const candidates = retrievedSpreads.filter(candidate => candidate.targetDte === spread.targetDte && candidate.targetWidth === spread.targetWidth && candidate.optionType === spread.optionType);
+        const observation = runEventBacktest({ event: { ...selectedEvent, entryTimestamp }, candidates, candles, config });
+        const path = observation.valuationPath ?? [];
+        const lifecycle = observation.selectedExitLifecycle;
+        const selectedExit: ExitResult | undefined = lifecycle ? { rule: lifecycle.rule, timestamp: lifecycle.fillTimestamp ?? lifecycle.triggerTimestamp, triggerTimestamp: lifecycle.triggerTimestamp, decisionAvailableTimestamp: lifecycle.decisionTimestamp, status: lifecycle.status === "filled" || lifecycle.status === "settled" ? "hit" : lifecycle.status === "not-triggered" ? "not-hit" : "unavailable", reasonCode: lifecycle.status === "settled" ? "settlement" : lifecycle.status === "filled" ? "triggered" : lifecycle.status === "not-triggered" ? "not-hit" : "causal-valuation-unavailable", qualityReason: lifecycle.reasonCode } : undefined;
+        const exits: ExitResult[] = observation.independentExitOutcomes?.map(exit => ({ rule: exit.rule, timestamp: exit.triggerTimestamp, triggerTimestamp: exit.triggerTimestamp, status: exit.status === "triggered" || exit.status === "available" ? "hit" : "not-hit", reasonCode: exit.status === "available" ? "settlement" : exit.status === "triggered" ? "triggered" : "not-hit", qualityReason: exit.reasonCode })) ?? [];
+        const eventQuality: QualityFlag = observation.eventOutcome === "executed" || observation.eventOutcome === "settled" ? "green" : observation.eventOutcome === "data-unavailable" ? "red" : "yellow";
+        return { observation, spread: observation.spread ?? spread, path, exits, selectedExit, eventQuality };
       });
       setAnalysisResults(next);
       setSelectedResultId(next[0]?.spread.id);
-      setAnalysisStatus(`${next.length} spread${next.length === 1 ? "" : "s"} valued on a 4H grid. Results retain raw VWAP and IV-normalized ledgers separately.`);
+      setAnalysisStatus(`${next.length} original-event × strategy-variant observations produced by the causal execution ledger.`);
       jump("analysis");
     } catch (error) {
       setAnalysisStatus(error instanceof Error ? error.message : "The valuation run failed.");
@@ -439,12 +439,8 @@ export default function Home() {
   }
 
   function exportResults() {
-    const payload = {
-      generatedAt: new Date().toISOString(),
-      event: selectedEvent,
-      configuration: { expiryHorizons: dtes, dteTolerances, expirySelectionMode, widths, spreadKind, executionMode, comboExecution, amount, pricingModes },
-      results: analysisResults,
-    };
+    const configuration = { expiryHorizons: dtes, dteTolerances, expirySelectionMode, widths, spreadKind, primaryExecutionScenario: "taker-tape-proxy", makerDisplaySelection: executionMode, comboRequested: comboExecution, amount, pricingModes };
+    const payload = buildObservationExport(analysisResults.map(result => result.observation), configuration, events);
     const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
@@ -599,6 +595,7 @@ export default function Home() {
         <section className="workspace-section" ref={node => { sectionRefs.current.analysis = node; }}>
           <div className="section-heading"><div><span className="step-number">04</span><p className="eyebrow">Path-aware output</p><h2>PnL, exits & trust filters</h2></div><button className="secondary-button" disabled={!analysisResults.length} onClick={exportResults}>Export JSON</button></div>
           <div className="filter-row"><div className="segmented">{([['all','All tests'],['trusted','Green / yellow'],['green','Green only']] as const).map(([value,label]) => <button className={resultsFilter === value ? "active" : ""} onClick={() => setResultsFilter(value)} key={value}>{label}</button>)}</div><span>{filteredResults.length} / {analysisResults.length} results visible</span></div>
+          {!!aggregateGroups.length && <div className="source-strip" aria-label="Unfiltered observation aggregates"><span><small>Original signals</small><strong>{aggregateGroups.reduce((sum, group) => sum + group.totalOriginalSignals, 0)}</strong></span><span><small>Executed / complete</small><strong>{aggregateGroups.reduce((sum, group) => sum + group.executedTrades, 0)} / {aggregateGroups.reduce((sum, group) => sum + group.completeEvents, 0)}</strong></span><span><small>Coverage</small><strong>{pct(100 * aggregateGroups.reduce((sum, group) => sum + group.completeEvents, 0) / aggregateGroups.reduce((sum, group) => sum + group.totalOriginalSignals, 0))}</strong></span></div>}
           <div className="cashflow-explainer card"><strong>Cash-flow identities</strong><p>Credit: gross entry credit = sold premium received − bought premium paid; net opening cash flow = gross entry credit × amount − opening fees; mark-to-close PnL = opening cash flow − closing cost − exit fees. Debit spreads mirror the cash-flow direction: opening cash flow is negative and closing proceeds are positive.</p><p>The first path point is a hypothetical immediate close, including both opening and closing fees. It can be negative and is not the gross entry credit or debit.</p></div>
           <div className="table-card card"><div className="table-scroll"><table><thead><tr><th><span className="sr-only">Expand</span></th><th>Selected-exit trust</th><th>Spread</th><th>Expiry</th><th>Width</th><th>{spreadKind === "credit" ? "Gross entry credit · Raw" : "Gross entry debit · Raw"}</th><th>{spreadKind === "credit" ? "Gross entry credit · IV" : "Gross entry debit · IV"}</th><th>Best IV PnL<InfoTooltip term="pnlMethods" label="Explain Raw versus IV-normalized PnL" /></th><th>Worst IV PnL</th><th>Selected exit</th></tr></thead><tbody>
             {filteredResults.map(result => {
