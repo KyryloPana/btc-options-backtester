@@ -20,6 +20,7 @@ export const INFO_TOOLTIP_DEFINITIONS = {
   invalidation4h: "First 4H valuation point where BTC invalidates the event’s recorded range boundary for its trade direction.",
   expirySettlement: "At Deribit’s 08:00 UTC expiry, remaining option legs use intrinsic settlement payoff rather than a trade-derived mark.",
   feeTreatment: "Separate-leg execution charges each option leg; combo execution applies the recorded combo fee treatment. The ledger states which path was used.",
+  scenarioCapital: "Uses the selected segregated standard-margin model and a dedicated empty BTC account. It is a historical formula estimate across the protective-leg-first opening sequence, not a guaranteed exchange requirement; other account positions can change actual margin.",
 } as const;
 
 export type InfoTooltipTerm = keyof typeof INFO_TOOLTIP_DEFINITIONS;

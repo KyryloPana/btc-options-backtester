@@ -128,6 +128,15 @@ export interface ContractSeries {
   lastTradeTimestamp: number;
   sourceFiles: string[];
   creationTimestamp?: number;
+  /** Authoritative amount rules returned with the historical instrument manifest. */
+  amountMetadata?: InstrumentAmountMetadata;
+}
+
+export interface InstrumentAmountMetadata {
+  minimumTradeAmount: number;
+  amountStep: number;
+  amountPrecision: number;
+  source: "deribit-instrument-metadata";
 }
 
 export interface DesiredSpread {
