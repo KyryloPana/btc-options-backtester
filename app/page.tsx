@@ -39,6 +39,7 @@ interface AnalysisResult {
   exits: ExitResult[];
   selectedExit?: ExitResult;
   eventQuality: QualityFlag;
+  scenarioInput: { event: BacktestEvent; candidates: RetrievedSpread[]; candles: Candle[]; config: StrategyVariantConfig };
 }
 
 const DTE_OPTIONS = [7, 14, 30];
@@ -226,6 +227,9 @@ export default function Home() {
   const [resultsFilter, setResultsFilter] = useState<"all" | "trusted" | "green">("all");
   const [selectedResultId, setSelectedResultId] = useState<string>();
   const [expandedResultIds, setExpandedResultIds] = useState<string[]>([]);
+  const [scenarioAmount, setScenarioAmount] = useState("");
+  const [scenario, setScenario] = useState<ContractSizeScenario>();
+  const [scenarioCalculating, setScenarioCalculating] = useState(false);
   const sectionRefs = useRef<Record<Section, HTMLElement | null>>({ events: null, construction: null, contracts: null, analysis: null });
 
   const selectedEvent = events.find(event => event.id === selectedEventId) ?? events[0];
@@ -252,6 +256,30 @@ export default function Home() {
     return true;
   });
   const aggregateGroups = useMemo(() => aggregateObservations(analysisResults.map(result => result.observation)), [analysisResults]);
+
+  const scenarioError = selectedAnalysis ? validateScenarioAmount(Number(scenarioAmount), selectedAnalysis.spread.soldContract?.amountMetadata, selectedAnalysis.spread.boughtContract?.amountMetadata) : undefined;
+
+  useEffect(() => {
+    if (!selectedAnalysis || !scenarioAmount) return;
+    const nextAmount = Number(scenarioAmount);
+    if (scenarioError) return;
+    let stale = false;
+    const timer = window.setTimeout(() => {
+      if (stale) return;
+      const input = selectedAnalysis.scenarioInput;
+      const result = calculateContractSizeScenario({ event: input.event, candidates: input.candidates, candles: input.candles, baseConfig: input.config, amount: nextAmount });
+      if (!stale) { setScenario(result); setScenarioCalculating(false); }
+    }, 180);
+    return () => { stale = true; window.clearTimeout(timer); };
+  }, [scenarioAmount, scenarioError, selectedAnalysis]);
+
+  function selectAnalysisResult(id: string) {
+    const next = analysisResults.find(result => result.spread.id === id);
+    setSelectedResultId(id);
+    setScenarioAmount(next ? String(next.scenarioInput.config.amount) : "");
+    setScenario(undefined);
+    setScenarioCalculating(Boolean(next));
+  }
 
   function jump(next: Section) {
     setSection(next);
@@ -435,6 +463,9 @@ export default function Home() {
       });
       setAnalysisResults(next);
       setSelectedResultId(next[0]?.spread.id);
+      setScenarioAmount(next[0] ? String(next[0].scenarioInput.config.amount) : "");
+      setScenario(undefined);
+      setScenarioCalculating(Boolean(next[0]));
       setAnalysisStatus(`${next.length} original-event × strategy-variant observations produced by the causal execution ledger.`);
       jump("analysis");
     } catch (error) {

@@ -7,7 +7,7 @@ import { buildInventory, type ContractTrade } from "../app/lib/backtester.ts";
 const API_PREFIX = "/__deribit/history";
 const DAY_MS = 86_400_000;
 const MAX_COUNT = 1_000;
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 
 export interface DeribitInstrumentManifest {
   instrumentName: string;
@@ -18,6 +18,9 @@ export interface DeribitInstrumentManifest {
   optionType: "C" | "P";
   status: "active" | "expired";
   priceIndex: string;
+  minimumTradeAmount?: number;
+  amountStep?: number;
+  amountPrecision?: number;
 }
 export interface DesiredRequest { requestId: string; targetDte: number; minDte: number; maxDte: number; soldStrike: number; boughtStrike: number; optionType: "C" | "P" }
 export interface DeribitCandidateManifest extends Omit<DesiredRequest, "soldStrike" | "boughtStrike"> {
@@ -107,7 +110,10 @@ export class DeribitHistoryService {
         const name = String(row.instrument_name ?? ""); const expiry = Number(row.expiration_timestamp); const strike = Number(row.strike);
         const type = row.option_type === "call" ? "C" : row.option_type === "put" ? "P" : undefined;
         if (!name || !Number.isFinite(expiry) || !Number.isFinite(strike) || !type) continue;
-        map.set(name, { instrumentName: name, expiryTimestamp: expiry, expiryLabel: expiryLabel(expiry), creationTimestamp: Number.isFinite(Number(row.creation_timestamp)) ? Number(row.creation_timestamp) : undefined, strike, optionType: type, status, priceIndex: String(row.price_index ?? "btc_usd") });
+        const minimumTradeAmount = Number(row.min_trade_amount);
+        const amountStep = Number(row.amount_step ?? row.min_trade_amount);
+        const amountPrecision = amountStep > 0 ? Math.max(0, (String(amountStep).split(".")[1] ?? "").length) : undefined;
+        map.set(name, { instrumentName: name, expiryTimestamp: expiry, expiryLabel: expiryLabel(expiry), creationTimestamp: Number.isFinite(Number(row.creation_timestamp)) ? Number(row.creation_timestamp) : undefined, strike, optionType: type, status, priceIndex: String(row.price_index ?? "btc_usd"), minimumTradeAmount: minimumTradeAmount > 0 ? minimumTradeAmount : undefined, amountStep: amountStep > 0 ? amountStep : undefined, amountPrecision });
       }
       this.manifest = [...map.values()].sort((a, b) => a.expiryTimestamp - b.expiryTimestamp || a.strike - b.strike);
       await mkdir(dirname(this.cachePath), { recursive: true });
@@ -198,7 +204,7 @@ export class DeribitHistoryService {
       candidate.dataStatus = affected.length ? "data-unavailable" : "available";
       if (affected.length) { candidate.failedInstruments = affected.map(failure => failure.instrumentName); candidate.retrievalErrors = affected; }
     }
-    const inventory = buildInventory(files).map(series => { const manifest = selected.get(series.instrumentName); return { ...series, creationTimestamp: manifest?.creationTimestamp }; });
+    const inventory = buildInventory(files).map(series => { const manifest = selected.get(series.instrumentName); const hasAmountRules = manifest?.minimumTradeAmount !== undefined && manifest.amountStep !== undefined && manifest.amountPrecision !== undefined; return { ...series, creationTimestamp: manifest?.creationTimestamp, amountMetadata: hasAmountRules ? { minimumTradeAmount: manifest.minimumTradeAmount!, amountStep: manifest.amountStep!, amountPrecision: manifest.amountPrecision!, source: "deribit-instrument-metadata" as const } : undefined }; });
     return { complete: failures.length === 0, inventory, candidates, failures: failures.map(failure => ({ ...failure, requestIds: candidates.filter(candidate => candidate.failedInstruments?.includes(failure.instrumentName)).map(candidate => candidate.requestId), candidateIds: candidates.filter(candidate => candidate.failedInstruments?.includes(failure.instrumentName)).map(candidate => `${candidate.requestId}:${candidate.expiryTimestamp}`) })), deliveryFailures, diagnostics: { indexedContracts: this.manifest!.length, selectedContracts: selected.size, contractsLoaded: files.length, cacheHits, apiRequestCount: this.requestCount-requestStart, failedContracts: failures.map(failure => failure.instrumentName), unavailableRequests: unavailable, candidateExpiries: candidates.length, validTrades: inventory.reduce((n,x)=>n+x.trades.length,0) } };
   }
 }
