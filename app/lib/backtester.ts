@@ -413,6 +413,20 @@ export interface EntryLedger {
 export interface EntryLedgers { raw: EntryLedger; iv: EntryLedger }
 export interface ValuationRun { path: ValuationPoint[]; entryLedgers?: EntryLedgers }
 
+export interface ExecutedEntryBasis {
+  soldFillPriceBtc: number; boughtFillPriceBtc: number; filledAmount: number;
+  soldFillTimestamp: number; boughtFillTimestamp: number; openingFeesBtc: number;
+  netOpeningCashFlowBtc: number; executionRoute: ExecutionRoute;
+  entryIndexUsdPerBtc: number; entryIndexSource: string;
+}
+
+export interface DiagnosticValuationPoint extends Omit<ValuationPoint, "rawPnlBtc" | "ivPnlBtc" | "rawPnlUsd" | "ivPnlUsd"> {
+  pointRole: "diagnostic-mark" | "not-executed";
+  rawMarkRole?: "raw-close-mark"; ivMarkRole?: "iv-normalized-close-mark";
+  diagnosticRawUnrealizedPnlBtc?: number; diagnosticIvUnrealizedPnlBtc?: number;
+  diagnosticRawUnrealizedPnlUsd?: number; diagnosticIvUnrealizedPnlUsd?: number;
+}
+
 const MONTHS: Record<string, number> = {
   JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5,
   JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11,
@@ -1355,6 +1369,71 @@ export function buildValuationPath(
       newestSupportingPrintTimestamp: normalization.latestEvidenceTimestamp,
       rawExitFeesBtc: rawExitFees,
       ivExitFeesBtc: ivExitFees,
+    };
+  });
+}
+
+/** Diagnostic marks anchored exclusively to a confirmed causal execution. */
+export function buildExecutedValuationPath(
+  spread: RetrievedSpread,
+  event: BacktestEvent,
+  candles: Candle[],
+  entry: ExecutedEntryBasis,
+  specialTimestamps: number[] = [],
+): DiagnosticValuationPoint[] {
+  if (!spread.expiryTimestamp || !spread.soldContract || !spread.boughtContract || entry.filledAmount <= 0) return [];
+  const soldContract = spread.soldContract; const boughtContract = spread.boughtContract;
+  const entryTimestamp = Math.max(entry.soldFillTimestamp, entry.boughtFillTimestamp);
+  return valuationTimestamps(entryTimestamp, spread.expiryTimestamp, specialTimestamps).map(timestamp => {
+    const settlement = timestamp === spread.expiryTimestamp;
+    const candle = settlement ? undefined : latestCompletedCandleAtOrBefore(candles, timestamp);
+    const btcIndex = settlement ? spread.deliveryPrice : candle?.close;
+    const indexEvidence = {
+      btcIndex,
+      btcIndexSource: settlement && btcIndex !== undefined ? "deribit-delivery-price" as const : candle ? "completed-candle" as const : "unavailable" as const,
+      btcIndexTimestamp: btcIndex === undefined ? undefined : settlement ? timestamp : candle?.closeTime,
+      btcIndexSourceCandleOpenTime: candle?.openTime,
+      btcIndexSourceCandleCloseTime: candle?.closeTime,
+      btcIndexAgeMs: btcIndex === undefined ? undefined : timestamp - (settlement ? timestamp : candle!.closeTime),
+      btcIndexAvailabilityReason: btcIndex === undefined ? "No causal underlying evidence is available for this diagnostic mark." : settlement ? "Official delivery price used only as a diagnostic close mark; realized settlement is recorded separately." : "Latest completed candle at or before the diagnostic timestamp.",
+    };
+    const unavailable = (reason: string): DiagnosticValuationPoint => ({ timestamp, ...indexEvidence, pointRole: "not-executed", qualityFlag: btcIndex === undefined ? "underlying-unavailable" : "red", valuationSource: "unavailable", qualityReason: reason, usedDirectionFallback: false, usedModelFallback: false, valuationPurpose: settlement ? "settlement" : "close", soldRequiredAction: "buy", boughtRequiredAction: "sell", soldCompatibleDirection: "buy", boughtCompatibleDirection: "sell", executionMode: "taker", evidenceWindowStart: timestamp, evidenceWindowEnd: timestamp });
+    if (btcIndex === undefined) return unavailable(indexEvidence.btcIndexAvailabilityReason);
+    let rawSold: number | undefined; let rawBought: number | undefined; let ivSold: number | undefined; let ivBought: number | undefined;
+    let normalization: SpreadNormalization | null = null;
+    if (settlement) {
+      rawSold = intrinsicPriceBtc(spread.optionType, btcIndex, soldContract.strike);
+      rawBought = intrinsicPriceBtc(spread.optionType, btcIndex, boughtContract.strike);
+      ivSold = rawSold; ivBought = rawBought;
+    } else {
+      normalization = normalizeSpread(spread, timestamp, btcIndex, "taker", undefined, "close");
+      if (!normalization?.sold.nearestTrade || !normalization.bought.nearestTrade) return unavailable("Causal closing-side evidence is unavailable for one or both legs.");
+      rawSold = normalization.sold.vwapPriceBtc; rawBought = normalization.bought.vwapPriceBtc;
+      ivSold = normalization.sold.ivNormalizedPriceBtc; ivBought = normalization.bought.ivNormalizedPriceBtc;
+    }
+    const diagnostic = (sold?: number, bought?: number) => {
+      if (sold === undefined || bought === undefined) return undefined;
+      const grossClose = (bought - sold) * entry.filledAmount;
+      const fees = settlement ? 0 : feesForPair(sold, bought, entry.filledAmount, entry.executionRoute === "official-combo", "taker");
+      const btc = entry.netOpeningCashFlowBtc + grossClose - fees;
+      const usd = entry.netOpeningCashFlowBtc * entry.entryIndexUsdPerBtc + (grossClose - fees) * btcIndex;
+      return { btc, usd, fees };
+    };
+    const raw = diagnostic(rawSold, rawBought); const iv = diagnostic(ivSold, ivBought);
+    return {
+      timestamp, ...indexEvidence, pointRole: "diagnostic-mark", rawMarkRole: raw ? "raw-close-mark" : undefined, ivMarkRole: iv ? "iv-normalized-close-mark" : undefined,
+      rawSpreadValue: rawSold !== undefined && rawBought !== undefined ? spreadValue(spread.spreadKind, rawSold, rawBought) : undefined,
+      ivSpreadValue: ivSold !== undefined && ivBought !== undefined ? spreadValue(spread.spreadKind, ivSold, ivBought) : undefined,
+      rawSoldLegPrice: rawSold, rawBoughtLegPrice: rawBought, ivSoldLegPrice: ivSold, ivBoughtLegPrice: ivBought,
+      diagnosticRawUnrealizedPnlBtc: raw?.btc, diagnosticIvUnrealizedPnlBtc: iv?.btc,
+      diagnosticRawUnrealizedPnlUsd: raw?.usd, diagnosticIvUnrealizedPnlUsd: iv?.usd,
+      rawExitFeesBtc: raw?.fees, ivExitFeesBtc: iv?.fees,
+      qualityFlag: settlement ? "settlement" : normalization?.qualityFlag ?? "red", valuationSource: settlement ? "settlement" : "trade-window",
+      qualityReason: settlement ? "Diagnostic intrinsic close mark anchored to actual executed opening cash flow; not realized settlement PnL." : "Diagnostic causal close mark anchored to actual executed opening cash flow.",
+      soldLegGapMin: normalization?.sold.nearestTimeGapMin, boughtLegGapMin: normalization?.bought.nearestTimeGapMin, synchronizationGapMin: normalization?.legTimeDiffMin, indexMismatch: normalization?.indexDiffPct,
+      usedDirectionFallback: Boolean(normalization?.sold.usedDirectionFallback || normalization?.bought.usedDirectionFallback), usedModelFallback: Boolean(normalization?.sold.usedModelFallback || normalization?.bought.usedModelFallback),
+      valuationPurpose: settlement ? "settlement" : "close", soldRequiredAction: "buy", boughtRequiredAction: "sell", soldCompatibleDirection: "buy", boughtCompatibleDirection: "sell", executionMode: "taker",
+      evidenceWindowStart: normalization?.windowStart ?? timestamp, evidenceWindowEnd: normalization?.windowEnd ?? timestamp, newestSupportingPrintTimestamp: normalization?.latestEvidenceTimestamp,
     };
   });
 }

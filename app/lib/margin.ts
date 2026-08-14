@@ -17,6 +17,7 @@ export interface MarginResult {
   state: "ok" | "insufficient-margin" | "liquidation" | "unavailable";
   indexPrice?: number; markPriceBtc?: number; observationTimestamp?: number;
   activeMarginModel?: string; accountState?: unknown; simulationTimestamp?: number;
+  requestedModel?: DeploymentModel; evidenceModel?: string; unavailabilityReason?: string;
 }
 
 export function estimateStandardOptionMargin(input: {
