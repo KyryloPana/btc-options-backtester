@@ -312,14 +312,16 @@ tbody tr:hover { background: #15191a; }
 .segmented button.active { color: var(--accent-strong); background: var(--accent-soft); box-shadow: inset 0 -1px var(--accent); }
 .positive { color: var(--green) !important; }
 .negative { color: var(--red) !important; }
-.analysis-detail { display: grid; grid-template-columns: minmax(0, 1fr) 292px; gap: 0; margin-top: 10px; }
-.path-card { min-width: 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-.chart-controls { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 12px 0; background:#0e1112; }
+.analysis-detail { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 292px); gap: 12px; margin-top: 10px; }
+.analysis-detail > * { min-width: 0; max-width: 100%; }
+.path-card { min-width: 0; max-width: 100%; overflow: hidden; border-bottom: 1px solid var(--line); }
+.chart-controls { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; min-width:0; padding:9px 12px 0; background:#0e1112; }
 .chart-toggle, .chart-legend label { display:flex; align-items:center; gap:5px; color:var(--muted); font-size:7px; cursor:pointer; }
-.chart-legend { display:flex; flex-wrap:wrap; gap:7px 13px; padding:8px 12px; border-bottom:1px solid var(--line-soft); background:#0e1112; }
+.chart-legend { display:flex; flex-wrap:wrap; gap:7px 13px; min-width:0; max-width:100%; padding:8px 12px; box-sizing:border-box; border-bottom:1px solid var(--line-soft); background:#0e1112; }
+.chart-legend label { min-width:0; max-width:100%; }
 .chart-legend i { width:12px; height:2px; }
-.mini-chart { position:relative; height:245px; padding:8px 13px 3px; border-bottom:1px solid var(--line-soft); background:#0e1112; touch-action:none; }
-.mini-chart svg { width:100%; height:100%; overflow:visible; outline:none; }
+.mini-chart { position:relative; width:100%; min-width:0; max-width:100%; height:245px; overflow:hidden; padding:8px 13px 3px; box-sizing:border-box; border-bottom:1px solid var(--line-soft); background:#0e1112; touch-action:none; }
+.mini-chart svg { display:block; width:100%; max-width:100%; height:100%; overflow:hidden; outline:none; }
 .mini-chart svg:focus { box-shadow:inset 0 0 0 1px var(--accent); }
 .grid-line { stroke:#252b2b; stroke-width:.25; vector-effect:non-scaling-stroke; }
 .axis-tick { stroke:#59605f; stroke-width:.4; vector-effect:non-scaling-stroke; }

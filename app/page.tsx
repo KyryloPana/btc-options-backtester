@@ -28,7 +28,7 @@ import {
 } from "./lib/backtester";
 import { aggregateObservations, buildAndRunObservationRequests, buildObservationExport, type StrategyObservation, type StrategyVariantConfig } from "./lib/observation-ledger";
 import { calculateContractSizeScenario, validateScenarioAmount, type ContractSizeScenario } from "./lib/contract-size-scenario";
-import { CHART_GEOMETRY, CHART_SERIES, hitExitGroups, nearestPoint, splitSeriesAtMissing, timestampAtX, timeX, visibleMatrixSpreads, type ChartMetric, type ChartSeriesKey } from "./lib/valuation-chart";
+import { CHART_GEOMETRY, CHART_SERIES, hitExitGroups, nearestPoint, splitSeriesAtMissing, timestampAtX, timeX, valuationChartTitle, visibleMatrixSpreads, type ChartMetric, type ChartSeriesKey } from "./lib/valuation-chart";
 
 type Section = "events" | "construction" | "contracts" | "analysis";
 
@@ -128,9 +128,8 @@ function QualityDot({ flag }: { flag: QualityFlag | "settlement" | "underlying-u
 
 const SERIES_COLORS: Record<ChartSeriesKey, string> = { diagnosticRawUnrealizedPnlUsd: "#898781", diagnosticIvUnrealizedPnlUsd: "#2a78d6", rawSoldLegPrice: "#fab219", rawBoughtLegPrice: "#d03b3b", rawSpreadValue: "#52514e", ivSoldLegPrice: "#c58a00", ivBoughtLegPrice: "#e66767", ivSpreadValue: "#3987e5" };
 
-function ValuationChart({ path, exits }: { path: DiagnosticValuationPoint[]; exits: ExitResult[] }) {
+function ValuationChart({ path, exits, metric, onMetricChange }: { path: DiagnosticValuationPoint[]; exits: ExitResult[]; metric: ChartMetric; onMetricChange: (metric: ChartMetric) => void }) {
   const { width, height, plotLeft, plotRight, plotTop, plotBottom } = CHART_GEOMETRY;
-  const [metric, setMetric] = useState<ChartMetric>("pnl");
   const [visible, setVisible] = useState<ChartSeriesKey[]>(["diagnosticIvUnrealizedPnlUsd"]);
   const [showExits, setShowExits] = useState(false);
   const [cursor, setCursor] = useState<number>();
@@ -147,7 +146,7 @@ function ValuationChart({ path, exits }: { path: DiagnosticValuationPoint[]; exi
   const dateTicks = Array.from({ length: 5 }, (_, index) => start + ((end - start) * index) / 4);
   const x = (timestamp: number) => timeX(timestamp, start, end, plotLeft, plotRight);
   const inspect = (clientX: number, rect: DOMRect) => setCursor(timestampAtX(((clientX - rect.left) / rect.width) * width, start, end, plotLeft, plotRight));
-  const changeMetric = (next: ChartMetric) => { setMetric(next); setVisible(next === "pnl" ? ["diagnosticIvUnrealizedPnlUsd"] : ["ivSpreadValue"]); setCursor(undefined); };
+  const changeMetric = (next: ChartMetric) => { onMetricChange(next); setVisible(next === "pnl" ? ["diagnosticIvUnrealizedPnlUsd"] : ["ivSpreadValue"]); setCursor(undefined); };
   return <>
     <div className="chart-controls"><div className="segmented" aria-label="Chart metric">{([['pnl','PnL · USD'],['values','Contract values · BTC']] as const).map(([value,label]) => <button key={value} className={metric === value ? "active" : ""} onClick={() => changeMetric(value)}>{label}</button>)}</div><label className="chart-toggle"><input type="checkbox" checked={showExits} onChange={event => setShowExits(event.target.checked)}/> Show exit markers</label></div>
     <div className="chart-legend" aria-label="Visible chart series">{keys.map(key => <label key={key}><input type="checkbox" checked={active.includes(key)} onChange={() => setVisible(current => current.includes(key) ? current.filter(item => item !== key) : [...current, key])}/><i style={{ background: SERIES_COLORS[key] }}/>{CHART_SERIES[key].label}</label>)}</div>
@@ -231,6 +230,7 @@ export default function Home() {
   const [scenarioAmount, setScenarioAmount] = useState("");
   const [scenario, setScenario] = useState<ContractSizeScenario>();
   const [scenarioCalculating, setScenarioCalculating] = useState(false);
+  const [chartMetric, setChartMetric] = useState<ChartMetric>("pnl");
   const sectionRefs = useRef<Record<Section, HTMLElement | null>>({ events: null, construction: null, contracts: null, analysis: null });
 
   const selectedEvent = events.find(event => event.id === selectedEventId) ?? events[0];
@@ -647,8 +647,8 @@ export default function Home() {
 
           {selectedAnalysis && <div className="analysis-detail">
             <div className="path-card card">
-              <div className="card-title-row"><div><p className="eyebrow">Selected combination</p><h3>Causal-entry anchored diagnostic valuation path · USD</h3></div><span className={flagClass(selectedAnalysis.eventQuality)}>{selectedAnalysis.eventQuality} event</span></div>
-              <ValuationChart path={selectedAnalysis.path} exits={selectedAnalysis.exits}/>
+              <div className="card-title-row"><div><p className="eyebrow">Selected combination</p><h3 aria-live="polite">{valuationChartTitle(chartMetric)}</h3></div><span className={flagClass(selectedAnalysis.eventQuality)}>{selectedAnalysis.eventQuality} event</span></div>
+              <ValuationChart path={selectedAnalysis.path} exits={selectedAnalysis.exits} metric={chartMetric} onMetricChange={setChartMetric}/>
               <div className="path-metrics"><span><small>Best IV diagnostic mark<InfoTooltip term="extrema" label="Explain IV diagnostic extrema" /></small><strong className="positive">{money(Math.max(...selectedAnalysis.path.filter(point => point.pointRole === "diagnostic-mark" && point.ivMarkRole === "iv-normalized-close-mark").map(point => point.diagnosticIvUnrealizedPnlUsd ?? -Infinity)))}</strong></span><span><small>Max adverse IV diagnostic mark</small><strong className="negative">{money(Math.min(...selectedAnalysis.path.filter(point => point.pointRole === "diagnostic-mark" && point.ivMarkRole === "iv-normalized-close-mark").map(point => point.diagnosticIvUnrealizedPnlUsd ?? Infinity)))}</strong></span><span><small>Grid points</small><strong>{selectedAnalysis.path.length}</strong></span></div>
               <div className="table-scroll compact path-table"><table><thead><tr><th>Timestamp</th><th>BTC index</th><th>Raw value</th><th>IV value</th><th>Raw diagnostic unrealized USD</th><th>IV diagnostic unrealized USD</th><th>Valuation evidence<InfoTooltip term="valuationEvidence" label="Explain valuation evidence at each timestamp" /></th></tr></thead><tbody>{selectedAnalysis.path.slice(0, 80).map(point => <tr key={point.timestamp}><td>{formatUtc(point.timestamp)}</td><td>{money(point.btcIndex)}<small>{point.btcIndexSource}{point.btcIndexTimestamp ? ` · ${formatUtc(point.btcIndexTimestamp)}` : ""}</small></td><td>{btc(point.rawSpreadValue)}</td><td>{btc(point.ivSpreadValue)}</td><td>{money(point.diagnosticRawUnrealizedPnlUsd)}</td><td className={(point.diagnosticIvUnrealizedPnlUsd ?? 0) >= 0 ? "positive" : "negative"}>{money(point.diagnosticIvUnrealizedPnlUsd)}</td><td><details className="evidence-details"><summary><span className={flagClass(point.qualityFlag)}>{point.qualityFlag}</span></summary><p><strong>{point.valuationSource}</strong> · {point.qualityReason}</p><p><strong>Underlying:</strong> {point.btcIndexAvailabilityReason}</p><dl><div>Sold gap <b>{point.soldLegGapMin?.toFixed(1) ?? "—"}m</b></div><div>Bought gap <b>{point.boughtLegGapMin?.toFixed(1) ?? "—"}m</b></div><div>Sync gap <b>{point.synchronizationGapMin?.toFixed(1) ?? "—"}m</b></div><div>Index mismatch <b>{pct(point.indexMismatch)}</b></div><div>Direction fallback <b>{point.usedDirectionFallback ? "yes" : "no"}</b></div><div>Model fallback <b>{point.usedModelFallback ? "yes" : "no"}</b></div></dl></details></td></tr>)}</tbody></table></div>
             </div>
