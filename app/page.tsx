@@ -209,7 +209,7 @@ export default function Home() {
   const [expirySelectionMode, setExpirySelectionMode] = useState<ExpirySelectionMode>("liquidity-aware");
   const [widths, setWidths] = useState(WIDTH_OPTIONS);
   const [spreadKind, setSpreadKind] = useState<SpreadKind>("credit");
-  const [executionMode, setExecutionMode] = useState<ExecutionMode>("maker");
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>("taker");
   const [comboExecution, setComboExecution] = useState(false);
   const [amount, setAmount] = useState(1);
   const [pricingModes, setPricingModes] = useState(["vwap", "iv"]);
@@ -531,7 +531,7 @@ export default function Home() {
               </div></div>
               <div className="config-block two-col">
                 <label>Payoff engine<select value={spreadKind} onChange={event => setSpreadKind(event.target.value as SpreadKind)}><option value="credit">Credit · MR default</option><option value="debit">Debit · same anchor rule</option></select></label>
-                <label>Historical execution<InfoTooltip term="execution" label="Explain Maker and Taker execution" /><select value={executionMode} onChange={event => setExecutionMode(event.target.value as ExecutionMode)}><option value="maker">Maker · default</option><option value="taker">Taker</option></select></label>
+                <label>Historical execution<InfoTooltip term="execution" label="Explain Maker and Taker execution" /><select value={executionMode} onChange={event => setExecutionMode(event.target.value as ExecutionMode)}><option value="taker">Taker tape proxy · primary</option><option value="maker">Maker opportunity — optimistic</option></select></label>
               </div>
               <div className="config-block two-col"><label>Order packaging<select value={comboExecution ? "combo" : "legs"} onChange={event => setComboExecution(event.target.value === "combo")}><option value="legs">Separate legs · conservative</option><option value="combo">Deribit option combo</option></select></label><label>Contracts<input type="number" min="0.1" step="0.1" value={amount} onChange={event => setAmount(Math.max(0.1, Number(event.target.value)))} /></label></div>
               <div className="config-block"><label className="config-label">Pricing output <small>both retained by default</small></label><div className="check-row"><label className={`check-chip ${pricingModes.includes("vwap") ? "checked" : ""}`}><input type="checkbox" checked={pricingModes.includes("vwap")} onChange={() => setPricingModes(current => current.includes("vwap") ? current.filter(value => value !== "vwap") : [...current, "vwap"])} />Raw VWAP<InfoTooltip term="rawVwap" label="Explain Raw VWAP" /></label><label className={`check-chip ${pricingModes.includes("iv") ? "checked" : ""}`}><input type="checkbox" checked={pricingModes.includes("iv")} onChange={() => setPricingModes(current => current.includes("iv") ? current.filter(value => value !== "iv") : [...current, "iv"])} />IV normalized<InfoTooltip term="ivNormalized" label="Explain IV-normalized price" /></label></div></div>
