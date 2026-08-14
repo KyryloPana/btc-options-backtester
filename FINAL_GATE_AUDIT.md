@@ -1,10 +1,10 @@
 # Independent Post-Remediation Correctness Audit
 
 **Canonical revision audited:** `eb67a3a99a0474c4d01b3ee77b6caee02f6d8f00`  
-**Audit date:** 2026-08-14 UTC  
+**Audit date:** 2026-08-14 UTC (fresh adversarial rerun)
 **Decision:** **FAIL** — the combined revision is not eligible for research use.
 
-This was a read-only audit of production code. No implementation was repaired. The findings below trace the runnable UI path and treat existing names, comments, and tests only as leads, not proof.
+This was a read-only audit of production code at the exact integration revision. No implementation was repaired. Audit-only deterministic counterexamples were added in `tests/final-gate-audit.test.ts`; they document accepted tampering rather than correcting it. The findings below trace the runnable UI path and treat existing names, comments, and tests only as leads, not proof.
 
 ## Executive findings
 
@@ -20,8 +20,8 @@ This was a read-only audit of production code. No implementation was repaired. T
 
 | Check | Result | Evidence |
 |---|---|---|
-| Clean starting branch | PASS | `git status --short --branch` returned only `## work`. |
-| Canonical HEAD | PASS | `git rev-parse HEAD` returned `eb67a3a99a0474c4d01b3ee77b6caee02f6d8f00`. |
+| Exact target resolved | PASS | The integration revision is `eb67a3a99a0474c4d01b3ee77b6caee02f6d8f00`; the pre-existing audit-doc commit `ec3a12c` is its direct child and contains no production change. |
+| Production tree isolation | PASS | `git diff ec3a12c -- app db worker scripts public` was empty before this audit; this pass changes only the report, audit test, and test-suite registration. |
 | Calculator merge is in HEAD | PASS | `git merge-base --is-ancestor a22c06d eb67a3a...` exited 0. |
 | Calculator implementation is in merge | PASS | `git merge-base --is-ancestor 5194e13 a22c06d` exited 0. |
 | Containing branch | PASS | Both `git branch --contains` commands returned `work`. |
@@ -29,7 +29,7 @@ This was a read-only audit of production code. No implementation was repaired. T
 Canonical graph:
 
 ```text
-* eb67a3a (HEAD -> work) fix: enforce observation and export invariants (#13)
+* eb67a3a fix: enforce observation and export invariants (#13)
 *   a22c06d Merge pull request #12 ... add-contract-size-scenario-calculator
 |\
 | * 5194e13 feat: add contract-size PnL scenario calculator
@@ -215,9 +215,14 @@ Canonical graph:
 
 ## Validation summary
 
-- `git diff --check`: passed with this audit document present.
-- `npm run test:unit`: **failed** — 70 passed, 1 failed. Failure: `independent filled PnL uses recalculated entry, closing fees, and selected amount`, with `TypeError` reading `identity` from undefined `observation.netPnl`.
-- The remaining mandatory commands are recorded in the final response after execution.
+- `node --experimental-strip-types --test tests/final-gate-audit.test.ts`: **passed (3/3)**. The actual validator returned `valid: true` after (a) a causal-fill/fee-input mismatch, (b) an official-combo claim backed only by the mutable boolean and no combo order identifier, and (c) calculator data injected into a primary observation.
+- `npm run test:unit`: **failed** — 73 passed, 1 failed (including all three passing audit counterexamples). Failure: `independent filled PnL uses recalculated entry, closing fees, and selected amount`, with `TypeError` reading `identity` from undefined `observation.netPnl`.
+- `npm run typecheck`: **failed** with the removed `netPnl` references, missing calculator imports/types, missing `scenarioInput`, and the non-empty UI result adapter mismatch.
+- `npm run lint`: **passed with three warnings** for unused calculator/UI orchestration state.
+- `npm run build`: **passed**, but the build transpiler does not perform the failed TypeScript semantic check.
+- `npm run validate:artifact`: **passed** for the generated worker and hosting manifest.
+- `npm test`: **failed** at its first `test:unit` stage (the same calculator exception), so later chained stages did not run in that command.
+- `git diff --check`: passed for the audit-only patch.
 - Browser screenshots are not semantic evidence and were not required to establish these failures. Their absence is not part of the fail decision.
 
 ## Final decision
