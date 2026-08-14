@@ -1,106 +1,32 @@
-import type { BacktestEvent, Candle, InstrumentAmountMetadata, RetrievedSpread, ValuationPoint } from "./backtester.ts";
-import { runEventBacktest, type StrategyObservation, type StrategyVariantConfig } from "./observation-ledger.ts";
+import type { BacktestEvent, Candle, DiagnosticValuationPoint, InstrumentAmountMetadata, RetrievedSpread } from "./backtester.ts";
+import { runEventBacktest, type CashFlowLedger, type SelectedExitLifecycle, type StrategyObservation, type StrategyVariantConfig } from "./observation-ledger.ts";
 import type { DeploymentModel } from "./margin.ts";
-import { buildOptionSettlementLedger } from "./accounting.ts";
+import { buildOptionSettlementLedger, type OptionSettlementLedger, type RoutedFees } from "./accounting.ts";
 
+export interface OpeningCapitalState { sequence: number; label: string; filledInstrument?: string; cashFlowBtc: number; cumulativeCashFlowBtc: number; marginBtc: number; requiredBalanceBtc: number }
 export interface OpeningCapitalRequirement {
-  amount: number;
-  marginModel: DeploymentModel;
-  collateralCurrency: string;
-  estimatedInitialMargin?: number;
-  estimatedMaintenanceMargin?: number;
-  minimumStartingBalance?: number;
-  minimumStartingBalanceUsd?: number;
-  calculationSource: "historical-formula-estimate" | "deribit-account-simulation" | "unavailable";
-  openingSequence: string[];
-  reason?: string;
+  status: "available" | "unavailable"; estimatedBtcRequirement?: number; estimatedUsdRequirement?: number;
+  requestedMarginModel: DeploymentModel; evidenceMarginModel?: string; collateralCurrency: string; accountConfiguration: string; dedicatedAccountAssumption: boolean;
+  executionRoute: string; officialComboEvidenceExists: boolean; configuredLegSequence: Array<"bought" | "sold">; requestedAmount: number;
+  sourceTimestamp?: number; conversionPriceUsdPerBtc?: number; conversionSource?: string; conversionTimestamp?: number; marginSimulationTimestamp?: number;
+  intermediateOpeningStates: OpeningCapitalState[]; governingMaximumState?: OpeningCapitalState; theoreticalMaximumLossBtc?: number; reasonCode?: string;
+  /** Compatibility display names; both are identical to the audited estimates. */
+  minimumStartingBalance?: number; minimumStartingBalanceUsd?: number; calculationSource: "historical-formula-estimate" | "deribit-account-simulation" | "unavailable"; openingSequence: string[];
 }
-
-export interface ScenarioPathMetrics {
-  bestUnrealized?: number;
-  maxAdverse?: number;
-  gridPoints: number;
-  series: "ivPnlUsd" | "rawPnlUsd";
-  amount: number;
-}
-
+export interface ScenarioPathMetrics { bestIvDiagnosticMark?: number; maxAdverseIvDiagnosticMark?: number; gridPoints: number; series: "diagnosticIvUnrealizedPnlUsd"; amount: number; bestUnrealized?: number; maxAdverse?: number }
 export interface ScenarioOutcome {
-  rule: string;
+  policy: "vpoc" | "credit-capture" | "fixed-time" | "invalidation" | "settlement"; rule: string; threshold?: number;
   status: "filled" | "settlement" | "triggered-unfilled" | "not-hit" | "unavailable" | "no-entry";
-  pnlUsd?: number;
+  triggerTimestamp?: number; triggerEvidence?: string; sourceCandleCloseTimestamp?: number; decisionAvailableTimestamp?: number; exitOrderTimestamp?: number;
+  execution?: SelectedExitLifecycle["execution"]; closingFees?: RoutedFees; closingCashFlow?: CashFlowLedger; settlementLedger?: { legs: OptionSettlementLedger[]; cashFlowBtc: number; deliveryFeesBtc: number };
+  executedNetPnl?: StrategyObservation["executedNetPnl"]; settlementNetPnl?: StrategyObservation["settlementNetPnl"]; pnlUsd?: number; reasonCode: string;
 }
-
-export interface ContractSizeScenario {
-  amount: number;
-  observation: StrategyObservation;
-  pathMetrics: ScenarioPathMetrics;
-  capitalRequirement: OpeningCapitalRequirement;
-  outcomes: ScenarioOutcome[];
-  executable: boolean;
-}
-
-const closeEnough = (a: number, b: number) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
-
-export function validateScenarioAmount(raw: number, sold?: InstrumentAmountMetadata, bought?: InstrumentAmountMetadata): string | undefined {
-  if (!Number.isFinite(raw) || raw <= 0) return "Enter a finite, positive contract size.";
-  if (!sold || !bought) return "Instrument amount metadata is unavailable.";
-  const rules = [sold, bought];
-  for (const rule of rules) {
-    if (raw < rule.minimumTradeAmount && !closeEnough(raw, rule.minimumTradeAmount)) return `Minimum trade amount is ${rule.minimumTradeAmount}.`;
-    const units = raw / rule.amountStep;
-    if (!Number.isInteger(Math.round(units)) || !closeEnough(units, Math.round(units))) return `Contract size must use a ${rule.amountStep} increment.`;
-    const decimalPlaces = (String(raw).split(".")[1] ?? "").length;
-    if (decimalPlaces > rule.amountPrecision) return `Contract size permits ${rule.amountPrecision} decimal places.`;
-  }
-  return undefined;
-}
-
-export function scenarioPathMetrics(path: ValuationPoint[], amount: number, series: "ivPnlUsd" | "rawPnlUsd" = "ivPnlUsd"): ScenarioPathMetrics {
-  const values = path.map(point => point[series]).filter((value): value is number => value !== undefined && Number.isFinite(value));
-  return { bestUnrealized: values.length ? Math.max(...values) : undefined, maxAdverse: values.length ? Math.min(...values) : undefined, gridPoints: path.length, series, amount };
-}
-
-export function openingCapitalRequirement(observation: StrategyObservation): OpeningCapitalRequirement {
-  const model = observation.marginResult?.deployment.model ?? "segregated_sm";
-  const base = { amount: observation.entryExecution?.sold.requestedAmount ?? 0, marginModel: model, collateralCurrency: observation.marginResult?.deployment.collateralCurrency ?? "BTC" };
-  if (model.endsWith("_pm")) return { ...base, calculationSource: "unavailable", openingSequence: [], reason: "PM capital requirement needs valid portfolio simulation evidence." };
-  const entry = observation.entryCashFlow;
-  const margin = observation.marginResult;
-  const execution = observation.entryExecution;
-  if (!entry || !margin || !execution || margin.initialMarginBtc === undefined) return { ...base, calculationSource: "unavailable", openingSequence: [], reason: "Reliable entry execution and margin state are required." };
-  const boughtPremium = execution.bought.fillPriceBtc! * execution.bought.filledAmount;
-  const boughtFee = observation.feeLedger?.opening.buyAggregate ?? 0;
-  // Long options require premium rather than an additional short-option margin charge.
-  const firstLegRequirement = boughtPremium + boughtFee;
-  // Net cash flow is positive when already received, and negative when already paid.
-  const finalRequirement = margin.initialMarginBtc - entry.netBtc;
-  const officialCombo = observation.feeLedger?.route === "official-combo" && observation.feeLedger.officialComboEvidence;
-  const minimumStartingBalance = officialCombo ? Math.max(0, finalRequirement) : Math.max(0, firstLegRequirement, finalRequirement);
-  return { ...base, estimatedInitialMargin: margin.initialMarginBtc, estimatedMaintenanceMargin: margin.maintenanceMarginBtc, minimumStartingBalance, minimumStartingBalanceUsd: minimumStartingBalance * entry.conversionPriceUsdPerBtc, calculationSource: "historical-formula-estimate", openingSequence: officialCombo ? ["official combined order / final spread"] : ["protective bought leg", "short leg / final spread"] };
-}
-
-export function scenarioOutcomes(observation: StrategyObservation): ScenarioOutcome[] {
-  if (!observation.entryExecution || observation.entryExecution.status !== "filled") return (observation.independentExitOutcomes ?? []).map(item => ({ rule: item.rule, status: "no-entry" }));
-  const lifecycle = observation.selectedExitLifecycle;
-  const vpoc = observation.independentExitOutcomes?.find(item => item.rule === "VPOC target");
-  const triggeredUnfilled = lifecycle?.reasonCode === "triggered-unfilled-carried-to-settlement" || (vpoc?.status === "triggered" && lifecycle?.status !== "filled");
-  const primary: ScenarioOutcome = !vpoc || vpoc.status !== "triggered" ? { rule: "VPOC target", status: "not-hit" } : triggeredUnfilled ? { rule: "VPOC target", status: "triggered-unfilled" } : lifecycle?.status === "filled" ? { rule: "VPOC target", status: "filled", pnlUsd: observation.netPnl?.usd } : { rule: "VPOC target", status: "unavailable" };
-  let settlement: ScenarioOutcome = { rule: "Expiry settlement", status: "unavailable" };
-  const spread = observation.spread;
-  if (observation.eventOutcome === "settled") settlement = { rule: "Expiry settlement", status: "settlement", pnlUsd: observation.netPnl?.usd };
-  else if (spread?.deliveryPrice !== undefined && spread.expiryTimestamp && spread.soldContract && spread.boughtContract && observation.entryCashFlow) {
-    const amount = observation.entryExecution.sold.filledAmount;
-    const legs = [buildOptionSettlementLedger({ expiryTimestamp: spread.expiryTimestamp, optionType: spread.optionType, side: "short", amount, strike: spread.soldContract.strike, deliveryPrice: spread.deliveryPrice, dailyOption: false }), buildOptionSettlementLedger({ expiryTimestamp: spread.expiryTimestamp, optionType: spread.optionType, side: "long", amount, strike: spread.boughtContract.strike, deliveryPrice: spread.deliveryPrice, dailyOption: false })];
-    const settlementCash = legs.reduce((sum, leg) => sum + leg.futureEconomicPnlBtc, 0);
-    const deliveryFees = legs.reduce((sum, leg) => sum + leg.aggregateDeliveryFeeBtc, 0);
-    settlement = { rule: "Expiry settlement", status: "settlement", pnlUsd: (observation.entryCashFlow.grossBtc + settlementCash - observation.entryCashFlow.feesBtc - deliveryFees) * spread.deliveryPrice };
-  }
-  return [primary, settlement];
-}
-
-/** Pure local orchestration: candidates contain the already-loaded tapes, so this performs no retrieval. */
-export function calculateContractSizeScenario(input: { event: BacktestEvent; candidates: RetrievedSpread[]; candles: Candle[]; baseConfig: StrategyVariantConfig; amount: number; series?: "ivPnlUsd" | "rawPnlUsd" }): ContractSizeScenario {
-  const observation = runEventBacktest({ event: input.event, candidates: input.candidates, candles: input.candles, config: { ...input.baseConfig, amount: input.amount } });
-  const executable = observation.entryExecution?.status === "filled";
-  return { amount: input.amount, observation, executable, pathMetrics: scenarioPathMetrics(observation.valuationPath ?? [], input.amount, input.series), capitalRequirement: openingCapitalRequirement(observation), outcomes: scenarioOutcomes(observation) };
-}
+export interface ContractSizeScenario { amount: number; observation: StrategyObservation; pathMetrics: ScenarioPathMetrics; capitalRequirement: OpeningCapitalRequirement; outcomes: ScenarioOutcome[]; executable: boolean; executionMessage?: string }
+const closeEnough = (a:number,b:number)=>Math.abs(a-b)<=1e-9*Math.max(1,Math.abs(a),Math.abs(b));
+export function validateScenarioAmount(raw:number,sold?:InstrumentAmountMetadata,bought?:InstrumentAmountMetadata){if(!Number.isFinite(raw)||raw<=0)return "Enter a finite, positive contract size.";if(!sold||!bought)return "Instrument amount metadata is unavailable.";for(const rule of [sold,bought]){if(raw<rule.minimumTradeAmount&&!closeEnough(raw,rule.minimumTradeAmount))return `Minimum trade amount is ${rule.minimumTradeAmount}.`;const units=raw/rule.amountStep;if(!closeEnough(units,Math.round(units)))return `Contract size must use a ${rule.amountStep} increment.`;const decimals=(String(raw).split(".")[1]??"").length;if(decimals>rule.amountPrecision)return `Contract size permits ${rule.amountPrecision} decimal places.`;}return undefined;}
+export function scenarioPathMetrics(path:DiagnosticValuationPoint[],amount:number):ScenarioPathMetrics {const values=path.filter(p=>p.pointRole==="diagnostic-mark"&&p.ivMarkRole==="iv-normalized-close-mark").map(p=>p.diagnosticIvUnrealizedPnlUsd).filter((v):v is number=>v!==undefined&&Number.isFinite(v));const best=values.length?Math.max(...values):undefined, adverse=values.length?Math.min(...values):undefined;return {bestIvDiagnosticMark:best,maxAdverseIvDiagnosticMark:adverse,bestUnrealized:best,maxAdverse:adverse,gridPoints:path.length,series:"diagnosticIvUnrealizedPnlUsd",amount};}
+function unavailableCapital(o:StrategyObservation,reasonCode:string):OpeningCapitalRequirement {const model=o.marginResult?.requestedModel??o.marginResult?.deployment.model??o.strategyConfiguration.marginModel;return {status:"unavailable",requestedMarginModel:model,evidenceMarginModel:o.marginResult?.evidenceModel,collateralCurrency:o.marginResult?.deployment.collateralCurrency??"BTC",accountConfiguration:o.marginResult?.deployment.accountAssumption??"dedicated-empty-strategy-subaccount",dedicatedAccountAssumption:true,executionRoute:o.feeLedger?.route??o.strategyConfiguration.executionRoute,officialComboEvidenceExists:false,configuredLegSequence:["bought","sold"],requestedAmount:o.configuredAmount,intermediateOpeningStates:[],theoreticalMaximumLossBtc:o.marginResult?.theoreticalMaximumSpreadLossBtc,reasonCode,calculationSource:"unavailable",openingSequence:[]};}
+export function openingCapitalRequirement(o:StrategyObservation):OpeningCapitalRequirement {const e=o.entryExecution,m=o.marginResult,cf=o.entryCashFlow;if(!e||e.status!=="filled"||!m||!cf||m.initialMarginBtc===undefined)return unavailableCapital(o,"opening-evidence-unavailable");const requested=m.deployment.model;if(requested.endsWith("_pm")&&(m.state==="unavailable"||m.simulationTimestamp===undefined||m.evidenceModel!==requested))return unavailableCapital(o,"matching-pm-simulation-unavailable");const boughtCost=e.bought.fillPriceBtc!*e.bought.filledAmount+(o.feeLedger?.opening.buyAggregate??0);const soldCredit=e.sold.fillPriceBtc!*e.sold.filledAmount-(o.feeLedger?.opening.sellAggregate??0);const states:OpeningCapitalState[]=[{sequence:1,label:"protective bought leg filled",filledInstrument:o.spread?.boughtContract?.instrumentName,cashFlowBtc:-boughtCost,cumulativeCashFlowBtc:-boughtCost,marginBtc:0,requiredBalanceBtc:boughtCost},{sequence:2,label:"short leg filled; spread margin active",filledInstrument:o.spread?.soldContract?.instrumentName,cashFlowBtc:soldCredit,cumulativeCashFlowBtc:-boughtCost+soldCredit,marginBtc:m.initialMarginBtc,requiredBalanceBtc:Math.max(0,m.initialMarginBtc-(-boughtCost+soldCredit))}];const governing=states.reduce((a,b)=>a.requiredBalanceBtc>=b.requiredBalanceBtc?a:b);const result:OpeningCapitalRequirement={status:"available",estimatedBtcRequirement:governing.requiredBalanceBtc,estimatedUsdRequirement:governing.requiredBalanceBtc*cf.conversionPriceUsdPerBtc,requestedMarginModel:requested,evidenceMarginModel:m.evidenceModel,collateralCurrency:m.deployment.collateralCurrency,accountConfiguration:m.deployment.accountAssumption,dedicatedAccountAssumption:true,executionRoute:o.feeLedger?.route??o.strategyConfiguration.executionRoute,officialComboEvidenceExists:false,configuredLegSequence:["bought","sold"],requestedAmount:o.configuredAmount,sourceTimestamp:m.observationTimestamp??Math.max(e.sold.fillTimestamp!,e.bought.fillTimestamp!),conversionPriceUsdPerBtc:cf.conversionPriceUsdPerBtc,conversionSource:cf.conversionSource,conversionTimestamp:cf.conversionTimestamp,marginSimulationTimestamp:m.simulationTimestamp,intermediateOpeningStates:states,governingMaximumState:governing,theoreticalMaximumLossBtc:m.theoreticalMaximumSpreadLossBtc,minimumStartingBalance:governing.requiredBalanceBtc,minimumStartingBalanceUsd:governing.requiredBalanceBtc*cf.conversionPriceUsdPerBtc,calculationSource:requested.endsWith("_pm")?"deribit-account-simulation":"historical-formula-estimate",openingSequence:states.map(s=>s.label)};return result;}
+function outcomeFromObservation(policy:ScenarioOutcome["policy"],rule:string,o:StrategyObservation,threshold?:number):ScenarioOutcome {const l=o.selectedExitLifecycle;if(!o.entryExecution||o.entryExecution.status!=="filled")return {policy,rule,threshold,status:"no-entry",reasonCode:"no-executed-entry"};if(!l||l.status==="not-triggered")return {policy,rule,threshold,status:"not-hit",reasonCode:l?.reasonCode??"not-hit"};if(l.status==="triggered-unfilled"||l.reasonCode==="triggered-unfilled-carried-to-settlement")return {policy,rule,threshold,status:"triggered-unfilled",triggerTimestamp:l.triggerTimestamp,decisionAvailableTimestamp:l.decisionTimestamp,exitOrderTimestamp:l.orderTimestamp,execution:l.execution,reasonCode:l.reasonCode};if(l.status==="filled")return {policy,rule,threshold,status:"filled",triggerTimestamp:l.triggerTimestamp,sourceCandleCloseTimestamp:l.triggerTimestamp,decisionAvailableTimestamp:l.decisionTimestamp,exitOrderTimestamp:l.orderTimestamp,execution:l.execution,closingFees:o.feeLedger?.closing,closingCashFlow:o.closingCashFlow,executedNetPnl:o.executedNetPnl,pnlUsd:o.executedNetPnl?.usd,reasonCode:l.reasonCode};return {policy,rule,threshold,status:"unavailable",reasonCode:l.reasonCode};}
+function settlementOutcome(o:StrategyObservation):ScenarioOutcome {if(!o.entryExecution||o.entryExecution.status!=="filled")return {policy:"settlement",rule:"Expiry settlement",status:"no-entry",reasonCode:"no-executed-entry"};const s=o.spread;if(!s?.soldContract||!s.boughtContract||s.deliveryPrice===undefined||!o.entryCashFlow)return {policy:"settlement",rule:"Expiry settlement",status:"unavailable",reasonCode:"settlement-data-unavailable"};const legs=[buildOptionSettlementLedger({expiryTimestamp:s.expiryTimestamp!,optionType:s.optionType,side:"short",amount:o.configuredAmount,strike:s.soldContract.strike,deliveryPrice:s.deliveryPrice,dailyOption:false}),buildOptionSettlementLedger({expiryTimestamp:s.expiryTimestamp!,optionType:s.optionType,side:"long",amount:o.configuredAmount,strike:s.boughtContract.strike,deliveryPrice:s.deliveryPrice,dailyOption:false})];const cash=legs.reduce((n,l)=>n+l.futureEconomicPnlBtc,0),fees=legs.reduce((n,l)=>n+l.aggregateDeliveryFeeBtc,0),btc=o.entryCashFlow.netBtc+cash-fees;const net={btc,usd:btc*s.deliveryPrice,conversionTimestamp:s.expiryTimestamp!,conversionPriceUsdPerBtc:s.deliveryPrice,conversionSource:"deribit-delivery-price",identity:`net opening ${o.entryCashFlow.netBtc} + settlement ${cash} - delivery fees ${fees}`};return {policy:"settlement",rule:"Expiry settlement",status:"settlement",triggerTimestamp:s.expiryTimestamp,decisionAvailableTimestamp:s.expiryTimestamp,settlementLedger:{legs,cashFlowBtc:cash,deliveryFeesBtc:fees},settlementNetPnl:net,pnlUsd:net.usd,reasonCode:"versioned-settlement-ledger"};}
+export function calculateContractSizeScenario(input:{event:BacktestEvent;candidates:RetrievedSpread[];candles:Candle[];baseConfig:StrategyVariantConfig;amount:number}):ContractSizeScenario {const base={...input.baseConfig,amount:input.amount};const observation=runEventBacktest({...input,config:base});const executable=observation.entryExecution?.status==="filled";const outcomes:ScenarioOutcome[]=[];if(executable){outcomes.push(outcomeFromObservation("vpoc","VPOC target",runEventBacktest({...input,config:{...base,exitPolicy:{rule:"vpoc-target",fallback:"settlement"}}})));for(const days of [3,5,7,14]){const at=(input.event.entryTimestamp??0)+days*86_400_000;if(observation.spread?.expiryTimestamp!==undefined&&at>observation.spread.expiryTimestamp)outcomes.push({policy:"fixed-time",rule:`${days}D fixed`,threshold:days,status:"unavailable",triggerTimestamp:at,reasonCode:"after-expiry"});else outcomes.push(outcomeFromObservation("fixed-time",`${days}D fixed`,runEventBacktest({...input,config:{...base,exitPolicy:{rule:"fixed-time",afterMs:days*86_400_000,fallback:"settlement"}}}),days));}for(const threshold of [.5,.7]){const point=(observation.valuationPath??[]).find(candidate=>candidate.pointRole==="diagnostic-mark"&&candidate.ivMarkRole==="iv-normalized-close-mark"&&(candidate.ivCreditCapturedPct??-Infinity)>=threshold);if(!point)outcomes.push({policy:"credit-capture",rule:`${threshold*100}% credit`,threshold,status:"not-hit",reasonCode:"independent-causal-threshold-not-hit"});else{const evaluated=runEventBacktest({...input,config:{...base,exitPolicy:{rule:"fixed-time",afterMs:Math.max(0,point.timestamp-observation.signalClock.orderSubmittedAt),fallback:"settlement"}}});const result=outcomeFromObservation("credit-capture",`${threshold*100}% credit`,evaluated,threshold);result.triggerTimestamp=point.timestamp;result.triggerEvidence=`ivCreditCapturedPct=${point.ivCreditCapturedPct}`;outcomes.push(result);}}const invalidation=input.event.invalidationPrice?input.candles.filter(c=>c.closeTime>observation.signalClock.orderSubmittedAt).sort((a,b)=>a.closeTime-b.closeTime).find(c=>input.event.direction==="long"?c.close<input.event.invalidationPrice!:c.close>input.event.invalidationPrice!):undefined;if(!invalidation)outcomes.push({policy:"invalidation",rule:"4H invalidation",status:"not-hit",reasonCode:"independent-causal-invalidation-not-hit"});else{const evaluated=runEventBacktest({...input,config:{...base,exitPolicy:{rule:"fixed-time",afterMs:Math.max(0,invalidation.closeTime-observation.signalClock.orderSubmittedAt),fallback:"settlement"}}});const result=outcomeFromObservation("invalidation","4H invalidation",evaluated);result.triggerTimestamp=invalidation.closeTime;result.sourceCandleCloseTimestamp=invalidation.closeTime;result.triggerEvidence=`close=${invalidation.close}`;outcomes.push(result);}}else for(const [policy,rule] of [["vpoc","VPOC target"],["credit-capture","50% credit"],["credit-capture","70% credit"],["invalidation","4H invalidation"]] as const)outcomes.push({policy,rule,status:"no-entry",reasonCode:"no-executed-entry"});outcomes.push(settlementOutcome(observation));return {amount:input.amount,observation,executable,executionMessage:executable?undefined:"Not executable at this size",pathMetrics:scenarioPathMetrics(observation.valuationPath??[],input.amount),capitalRequirement:openingCapitalRequirement(observation),outcomes};}

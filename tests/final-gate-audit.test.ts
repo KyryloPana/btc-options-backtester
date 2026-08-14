@@ -3,8 +3,7 @@ import test from "node:test";
 import { runEventBacktest, validateObservationLedger, type StrategyVariantConfig } from "../app/lib/observation-ledger.ts";
 import type { BacktestEvent, Candle, ContractSeries, RetrievedSpread, TradeSide } from "../app/lib/backtester.ts";
 
-// Audit-only counterexamples.  These tests intentionally preserve the observed
-// vulnerabilities rather than changing production behavior.
+// Permanent regressions converted from the independent audit counterexamples.
 const metadata = { minimumTradeAmount: 0.1, amountStep: 0.1, amountPrecision: 1, source: "deribit-instrument-metadata" as const };
 const series = (name: string, strike: number, rows: Array<[number, number, TradeSide]>): ContractSeries => ({
   instrumentName: name, strike, expiryTimestamp: 10_000, expiryLabel: "fixture", optionType: "C", amountMetadata: metadata,
@@ -25,23 +24,28 @@ const candles: Candle[] = [
 ];
 const config: StrategyVariantConfig = { targetExpiryHorizonDays: 7, widthUsd: 1_000, spreadKind: "credit", expirySelectionPolicy: "liquidity-aware", candidateRankPolicy: "rank-1-only", amount: 1, primaryExecutionScenario: "taker-tape-proxy", latencyMs: 10, fillWaitMs: 500, synchronizationThresholdMs: 20, slippageBps: 0, exitPolicy: { rule: "vpoc-target", fallback: "settlement" }, requestedPackaging: "legs", executionRoute: "synchronized-leg-proxy", feeTier: "standard", marginModel: "segregated_sm" };
 
-test("audit counterexample: altered fee input remains valid when the capped fee total is unchanged", () => {
+test("rejects altered fee inputs even when the capped total is unchanged", () => {
   const observation = structuredClone(runEventBacktest({ event, candidates: [candidate], candles, config }));
   assert.equal(validateObservationLedger([observation]).valid, true);
   observation.feeLedger!.opening.legs[0].fee.inputPriceBtc += 0.01;
   assert.notEqual(observation.feeLedger!.opening.legs[0].fee.inputPriceBtc, observation.entryExecution!.sold.fillPriceBtc);
-  assert.equal(validateObservationLedger([observation]).valid, true);
+  const validation = validateObservationLedger([observation]);
+  assert.equal(validation.valid, false);
+  assert.ok(validation.errors.some(error => error.code === "fee-input-mismatch"));
 });
 
-test("audit counterexample: a bare official-combo boolean is accepted as route evidence", () => {
+test("rejects a bare official-combo boolean as route evidence", () => {
   const observation = runEventBacktest({ event, candidates: [candidate], candles, config: { ...config, requestedPackaging: "combo", executionRoute: "official-combo", officialComboEvidence: true } });
   assert.equal(observation.feeLedger?.route, "official-combo");
-  assert.equal(validateObservationLedger([observation]).valid, true);
-  assert.equal("comboOrderId" in observation.feeLedger!, false);
+  const validation = validateObservationLedger([observation]);
+  assert.equal(validation.valid, false);
+  assert.ok(validation.errors.some(error => error.code === "combo-evidence-required"));
 });
 
-test("audit counterexample: calculator scenario data can enter a primary observation export", () => {
+test("rejects calculator data inserted into a primary observation", () => {
   const observation = runEventBacktest({ event, candidates: [candidate], candles, config }) as ReturnType<typeof runEventBacktest> & { calculatorScenario?: unknown };
   observation.calculatorScenario = { amount: 99, pnlUsd: 123_456 };
-  assert.equal(validateObservationLedger([observation]).valid, true);
+  const validation = validateObservationLedger([observation]);
+  assert.equal(validation.valid, false);
+  assert.ok(validation.errors.some(error => error.code === "unexpected-field" && error.path === "calculatorScenario"));
 });
