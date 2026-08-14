@@ -120,7 +120,7 @@ function CheckboxGroup({ values, selected, onChange, formatter }: {
   );
 }
 
-function QualityDot({ flag }: { flag: QualityFlag }) {
+function QualityDot({ flag }: { flag: QualityFlag | "settlement" | "underlying-unavailable" }) {
   return <span className={`quality-dot ${flag}`} aria-label={`${flag} quality`} />;
 }
 
