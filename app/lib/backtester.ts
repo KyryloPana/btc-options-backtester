@@ -10,6 +10,62 @@ export type BtcIndexSource = "event-entry-price" | "completed-candle" | "deribit
 export type ExpirySelectionMode = "liquidity-aware" | "closest-dte" | "all-eligible";
 export type ValuationPurpose = "entry" | "close" | "settlement";
 export type CandidateDataStatus = "available" | "data-unavailable";
+export type SignalPrecision = "trade" | "millisecond" | "second" | "minute" | "candle" | "manual";
+export type FillStatus = "filled" | "no-fill" | "insufficient-amount" | "stale-evidence" | "data-unavailable" | "missing-contract" | "opportunity-only";
+export type EventOutcome = "executed" | "no-trade:no-executable-structure" | "no-trade:no-entry-fill" | "data-unavailable" | "entered-exit-unfilled" | "settled";
+
+export interface ExecutionClock {
+  signalTimestamp: number;
+  signalSourceTimestamp: number;
+  signalSourceCandle?: { openTimestamp: number; closeTimestamp: number };
+  signalTimePrecision: SignalPrecision;
+  decisionAvailableTimestamp: number;
+  configuredLatencyMs: number;
+  orderSubmittedAt: number;
+  fillSearchStart: number;
+  fillSearchEnd: number;
+}
+
+export interface TapeFill {
+  status: FillStatus;
+  reason: string;
+  action: TradeSide;
+  compatibleDirection: TradeSide;
+  requestedAmount: number;
+  filledAmount: number;
+  tapeVwapBtc?: number;
+  fillPriceBtc?: number;
+  fillTimestamp?: number;
+  supportingTrades: ContractTrade[];
+  supportingTradeTimestamps: number[];
+}
+
+export interface SpreadExecution {
+  scenario: "taker-tape-proxy" | "maker-opportunity-optimistic";
+  clock: ExecutionClock;
+  sold: TapeFill;
+  bought: TapeFill;
+  status: "filled" | "no-trade" | "opportunity-only";
+  reason: string;
+}
+
+export interface ExitExecution extends SpreadExecution {
+  triggerTimestamp: number;
+  sourceCandleCloseTimestamp?: number;
+  exitOrderTimestamp: number;
+  exitFillTimestamp?: number;
+  triggerEvidenceTimestamp: number;
+  exitStatus: "filled" | "triggered-unfilled";
+}
+
+export interface EventExecutionRecord {
+  eventId: string;
+  outcome: EventOutcome;
+  pnl?: number;
+  dataComplete: boolean;
+  execution?: SpreadExecution;
+  reason: string;
+}
 
 export interface DteTolerance {
   min: number;
@@ -350,6 +406,91 @@ const MONTHS: Record<string, number> = {
 
 const WINDOWS = [15, 30, 60, 120, 720] as const;
 const DAY_MS = 86_400_000;
+
+/** Resolve when a signal was actually actionable; candle-only evidence is actionable at close. */
+export function executionClock(input: {
+  signalTimestamp: number; signalSourceTimestamp?: number; signalSourceCandle?: Candle;
+  signalTimePrecision: SignalPrecision; configuredLatencyMs: number; maxFillWaitMs: number;
+}): ExecutionClock {
+  const candle = input.signalSourceCandle;
+  const decisionAvailableTimestamp = input.signalTimePrecision === "candle" && candle
+    ? candle.closeTime
+    : Math.max(input.signalTimestamp, input.signalSourceTimestamp ?? input.signalTimestamp);
+  const orderSubmittedAt = decisionAvailableTimestamp + Math.max(0, input.configuredLatencyMs);
+  return {
+    signalTimestamp: input.signalTimestamp,
+    signalSourceTimestamp: input.signalSourceTimestamp ?? candle?.openTime ?? input.signalTimestamp,
+    signalSourceCandle: candle ? { openTimestamp: candle.openTime, closeTimestamp: candle.closeTime } : undefined,
+    signalTimePrecision: input.signalTimePrecision,
+    decisionAvailableTimestamp,
+    configuredLatencyMs: Math.max(0, input.configuredLatencyMs),
+    orderSubmittedAt,
+    fillSearchStart: orderSubmittedAt,
+    fillSearchEnd: orderSubmittedAt + Math.max(0, input.maxFillWaitMs),
+  };
+}
+
+function tapeFill(series: ContractSeries | undefined, action: TradeSide, clock: ExecutionClock, amount: number, slippageBps: number): TapeFill {
+  const base = { action, compatibleDirection: action, requestedAmount: amount, filledAmount: 0, supportingTrades: [], supportingTradeTimestamps: [] };
+  if (!series) return { ...base, status: "missing-contract", reason: "Contract is missing; no executable price was constructed." };
+  const compatible = series.trades
+    .filter(trade => trade.timestamp > clock.orderSubmittedAt && trade.timestamp <= clock.fillSearchEnd && trade.direction === action)
+    .sort((a, b) => a.timestamp - b.timestamp);
+  const supportingTrades: ContractTrade[] = [];
+  let remaining = amount;
+  let notional = 0;
+  for (const trade of compatible) {
+    if (remaining <= 0) break;
+    const used = Math.min(remaining, trade.amount);
+    supportingTrades.push({ ...trade, amount: used });
+    notional += trade.price * used;
+    remaining -= used;
+  }
+  const filledAmount = amount - remaining;
+  if (remaining > 1e-12) return { ...base, status: compatible.length ? "insufficient-amount" : "no-fill", reason: compatible.length ? "Post-order compatible tape amount is insufficient." : "No compatible post-order trade in the forward fill window.", filledAmount, supportingTrades, supportingTradeTimestamps: supportingTrades.map(t => t.timestamp) };
+  const tapeVwapBtc = notional / amount;
+  const adverseMultiplier = action === "buy" ? 1 + slippageBps / 10_000 : 1 - slippageBps / 10_000;
+  return { ...base, status: "filled", reason: "Requested amount covered chronologically by compatible post-order prints.", filledAmount, tapeVwapBtc, fillPriceBtc: tapeVwapBtc * adverseMultiplier, fillTimestamp: supportingTrades.at(-1)!.timestamp, supportingTrades, supportingTradeTimestamps: supportingTrades.map(t => t.timestamp) };
+}
+
+/** Conservative baseline proxy, not a claim about an exact historical market-order fill. */
+export function simulateTakerSpread(spread: Pick<RetrievedSpread, "soldContract" | "boughtContract">, clock: ExecutionClock, amount: number, slippageBps = 0, maxLegSyncMs = 60_000): SpreadExecution {
+  const sold = tapeFill(spread.soldContract, "sell", clock, amount, slippageBps);
+  const bought = tapeFill(spread.boughtContract, "buy", clock, amount, slippageBps);
+  const complete = sold.status === "filled" && bought.status === "filled";
+  const synchronized = complete && Math.abs(sold.fillTimestamp! - bought.fillTimestamp!) <= maxLegSyncMs;
+  return { scenario: "taker-tape-proxy", clock, sold, bought, status: complete && synchronized ? "filled" : "no-trade", reason: !complete ? "Both legs did not obtain complete post-order evidence; partial spreads are forbidden." : synchronized ? "Both legs filled within delay and synchronization constraints." : "Leg fills exceeded the synchronization constraint; partial spread discarded." };
+}
+
+/** Close-side execution starts only after independently established trigger evidence. */
+export function simulateTakerExit(spread: Pick<RetrievedSpread, "soldContract" | "boughtContract">, clock: ExecutionClock, triggerEvidenceTimestamp: number, amount: number, slippageBps = 0, maxLegSyncMs = 60_000): ExitExecution {
+  if (triggerEvidenceTimestamp > clock.decisionAvailableTimestamp) throw new Error("Exit decision cannot precede its trigger evidence.");
+  const sold = tapeFill(spread.soldContract, "buy", clock, amount, slippageBps);
+  const bought = tapeFill(spread.boughtContract, "sell", clock, amount, slippageBps);
+  const complete = sold.status === "filled" && bought.status === "filled";
+  const synchronized = complete && Math.abs(sold.fillTimestamp! - bought.fillTimestamp!) <= maxLegSyncMs;
+  const filled = complete && synchronized;
+  return { scenario: "taker-tape-proxy", clock, sold, bought, status: filled ? "filled" : "no-trade", reason: filled ? "Causal trigger was followed by synchronized closing-side tape evidence." : "Trigger established, but a complete synchronized close fill was not found; position remains open for fallback or settlement.", triggerTimestamp: clock.signalTimestamp, sourceCandleCloseTimestamp: clock.signalSourceCandle?.closeTimestamp, exitOrderTimestamp: clock.orderSubmittedAt, exitFillTimestamp: filled ? Math.max(sold.fillTimestamp!, bought.fillTimestamp!) : undefined, triggerEvidenceTimestamp, exitStatus: filled ? "filled" : "triggered-unfilled" };
+}
+
+/** Maker prints establish only an optimistic opportunity and never a confirmed fill. */
+export function assessMakerOpportunity(series: ContractSeries | undefined, action: TradeSide, clock: ExecutionClock, amount: number, limitPrice: number, assumedQueueAhead: number): TapeFill {
+  const opposingDirection = action === "buy" ? "sell" : "buy";
+  const rows = (series?.trades ?? []).filter(t => t.timestamp > clock.orderSubmittedAt && t.timestamp <= clock.fillSearchEnd && t.direction === opposingDirection && (action === "buy" ? t.price <= limitPrice : t.price >= limitPrice));
+  const opposingVolume = rows.reduce((sum, row) => sum + row.amount, 0);
+  const progressed = Math.min(amount, Math.max(0, opposingVolume - Math.max(0, assumedQueueAhead)));
+  return { status: "opportunity-only", reason: `Maker opportunity — optimistic. Assumed queue ahead: ${Math.max(0, assumedQueueAhead)} contracts; this is an assumption, not observed fact.`, action, compatibleDirection: opposingDirection, requestedAmount: amount, filledAmount: progressed, supportingTrades: rows, supportingTradeTimestamps: rows.map(row => row.timestamp) };
+}
+
+export function summarizeEventExecutions(events: EventExecutionRecord[]) {
+  const complete = events.filter(event => event.dataComplete);
+  const executed = events.filter(event => event.outcome === "executed" || event.outcome === "settled");
+  const noTrades = events.filter(event => event.outcome.startsWith("no-trade:"));
+  const unavailable = events.filter(event => event.outcome === "data-unavailable");
+  const completePnl = complete.reduce((sum, event) => sum + (event.pnl ?? 0), 0);
+  const executedPnl = executed.reduce((sum, event) => sum + (event.pnl ?? 0), 0);
+  return { totalSignals: events.length, completeEvents: complete.length, executedTrades: executed.length, noTrades: noTrades.length, unavailableEvents: unavailable.length, executionRate: complete.length ? executed.length / complete.length : 0, coverageRate: events.length ? complete.length / events.length : 0, averagePnlPerCompleteSignal: complete.length ? completePnl / complete.length : undefined, averagePnlPerExecutedTrade: executed.length ? executedPnl / executed.length : undefined };
+}
 
 export function parseUtcDate(date: string, time = "00:00") {
   return Date.parse(`${date}T${time}:00Z`);
@@ -833,7 +974,17 @@ export function buildExpiryCandidates(
         deliveryPriceDate: manifest.deliveryPriceDate,
         deliveryPriceSource: manifest.deliveryPriceSource,
       };
-      const normalization = normalizeSpread(base, entryTimestamp, entryIndex, executionMode, 120);
+      // Candidate selection may rank historical liquidity, but must never see prints
+      // that arrived after the selection timestamp.
+      const causalSeries = (series: ContractSeries | undefined) => series ? {
+        ...series,
+        trades: series.trades.filter(trade => trade.timestamp <= entryTimestamp),
+      } : undefined;
+      const normalization = normalizeSpread({
+        ...base,
+        soldContract: causalSeries(soldContract),
+        boughtContract: causalSeries(boughtContract),
+      }, entryTimestamp, entryIndex, executionMode, 120);
       const hasObservedPrices = Boolean(
         normalization?.sold.nearestTrade && normalization?.bought.nearestTrade &&
         normalization.sold.vwapPriceBtc !== undefined && normalization.bought.vwapPriceBtc !== undefined &&
