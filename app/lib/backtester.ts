@@ -1,3 +1,5 @@
+import { aggregateRoutedFees, calculateOptionFee, STANDARD_INVERSE_BTC_OPTION_FEE, type ExecutionRoute, type FeeCalculation } from "./accounting.ts";
+
 export type Direction = "long" | "short";
 export type OptionType = "C" | "P";
 export type TradeSide = "buy" | "sell";
@@ -367,6 +369,9 @@ export interface EntryLedger {
   soldLegFeeBtc: number;
   boughtLegFeeBtc?: number;
   comboFeeBtc?: number;
+  executionRoute: ExecutionRoute;
+  soldLegFeeCalculation: FeeCalculation;
+  boughtLegFeeCalculation: FeeCalculation;
   totalOpeningFeesBtc: number;
   grossEntryBtcPerContract: number;
   grossEntryTotalBtc: number;
@@ -941,7 +946,7 @@ export function buildExpiryCandidates(
   }
 
   return desiredSpreads.flatMap(combo => {
-    const candidates = (byRequest.get(combo.id) ?? []).map(manifest => {
+    const candidates: RetrievedSpread[] = (byRequest.get(combo.id) ?? []).map(manifest => {
       const soldContract = manifest.soldInstrumentName ? inventoryByName.get(manifest.soldInstrumentName) : undefined;
       const boughtContract = manifest.boughtInstrumentName ? inventoryByName.get(manifest.boughtInstrumentName) : undefined;
       // Listing metadata, not the first observed print, proves existence.
@@ -1079,7 +1084,7 @@ export function windowComparison(spread: RetrievedSpread, timestamp: number, tar
 }
 
 export function optionFeeBtc(optionPriceBtc: number, amount: number) {
-  return Math.min(0.0003, 0.125 * Math.max(optionPriceBtc, 0)) * amount;
+  return calculateOptionFee(optionPriceBtc, amount, "taker", STANDARD_INVERSE_BTC_OPTION_FEE).finalFee;
 }
 
 export function spreadValue(kind: SpreadKind, soldPrice: number, boughtPrice: number) {
@@ -1120,10 +1125,12 @@ export function valuationTimestamps(entryTimestamp: number, expiryTimestamp: num
   return [...points].filter(timestamp => timestamp >= entryTimestamp && timestamp <= expiryTimestamp).sort((a, b) => a - b);
 }
 
-function feesForPair(soldPrice: number, boughtPrice: number, amount: number, comboExecution: boolean) {
-  const soldFee = optionFeeBtc(soldPrice, amount);
-  const boughtFee = optionFeeBtc(boughtPrice, amount);
-  return comboExecution ? Math.max(soldFee, boughtFee) : soldFee + boughtFee;
+function feesForPair(soldPrice: number, boughtPrice: number, amount: number, comboExecution: boolean, executionMode: ExecutionMode) {
+  const route: ExecutionRoute = comboExecution ? "official-combo" : "separate-legs";
+  return aggregateRoutedFees([
+    { side: "buy", fee: calculateOptionFee(soldPrice, amount, executionMode, STANDARD_INVERSE_BTC_OPTION_FEE) },
+    { side: "sell", fee: calculateOptionFee(boughtPrice, amount, executionMode, STANDARD_INVERSE_BTC_OPTION_FEE) },
+  ], route).finalFee;
 }
 
 function makeEntryLedger(
@@ -1138,8 +1145,10 @@ function makeEntryLedger(
   const soldPrice = method === "raw-vwap" ? normalization.sold.vwapPriceBtc : normalization.sold.ivNormalizedPriceBtc;
   const boughtPrice = method === "raw-vwap" ? normalization.bought.vwapPriceBtc : normalization.bought.ivNormalizedPriceBtc;
   if (soldPrice === undefined || boughtPrice === undefined || !normalization.soldLegTimestamp || !normalization.boughtLegTimestamp) return undefined;
-  const soldLegFeeBtc = optionFeeBtc(soldPrice, amount);
-  const calculatedBoughtFee = optionFeeBtc(boughtPrice, amount);
+  const soldLegFeeCalculation = calculateOptionFee(soldPrice, amount, executionMode, STANDARD_INVERSE_BTC_OPTION_FEE);
+  const boughtLegFeeCalculation = calculateOptionFee(boughtPrice, amount, executionMode, STANDARD_INVERSE_BTC_OPTION_FEE);
+  const soldLegFeeBtc = soldLegFeeCalculation.finalFee;
+  const calculatedBoughtFee = boughtLegFeeCalculation.finalFee;
   const comboFeeBtc = comboExecution ? Math.max(soldLegFeeBtc, calculatedBoughtFee) : undefined;
   const boughtLegFeeBtc = comboExecution ? undefined : calculatedBoughtFee;
   const totalOpeningFeesBtc = comboFeeBtc ?? soldLegFeeBtc + calculatedBoughtFee;
@@ -1157,6 +1166,7 @@ function makeEntryLedger(
     soldPriceBtcPerContract: soldPrice, soldProceedsBtc: soldPrice * amount,
     boughtPriceBtcPerContract: boughtPrice, boughtCostBtc: boughtPrice * amount,
     soldLegFeeBtc, boughtLegFeeBtc, comboFeeBtc, totalOpeningFeesBtc,
+    executionRoute: comboExecution ? "official-combo" : "separate-legs", soldLegFeeCalculation, boughtLegFeeCalculation,
     grossEntryBtcPerContract, grossEntryTotalBtc, netOpeningCashFlowBtc,
     entryIndexUsdPerBtc: index,
     soldProceedsUsd: soldPrice * amount * index, boughtCostUsd: boughtPrice * amount * index,
@@ -1285,8 +1295,8 @@ export function buildValuationPath(
     const ivBought = normalization.bought.ivNormalizedPriceBtc;
     const rawCurrent = rawSold !== undefined && rawBought !== undefined ? spreadValue(spread.spreadKind, rawSold, rawBought) : undefined;
     const ivCurrent = ivSold !== undefined && ivBought !== undefined ? spreadValue(spread.spreadKind, ivSold, ivBought) : undefined;
-    const rawExitFees = rawSold !== undefined && rawBought !== undefined ? feesForPair(rawSold, rawBought, amount, comboExecution) : undefined;
-    const ivExitFees = ivSold !== undefined && ivBought !== undefined ? feesForPair(ivSold, ivBought, amount, comboExecution) : undefined;
+    const rawExitFees = rawSold !== undefined && rawBought !== undefined ? feesForPair(rawSold, rawBought, amount, comboExecution, executionMode) : undefined;
+    const ivExitFees = ivSold !== undefined && ivBought !== undefined ? feesForPair(ivSold, ivBought, amount, comboExecution, executionMode) : undefined;
     const calcPnl = (entryValue?: number, currentValue?: number, entryFees?: number, exitFees?: number) => {
       if (entryValue === undefined || currentValue === undefined || entryFees === undefined || exitFees === undefined) return undefined;
       return (spread.spreadKind === "credit" ? entryValue - currentValue : currentValue - entryValue) * amount - entryFees - exitFees;
