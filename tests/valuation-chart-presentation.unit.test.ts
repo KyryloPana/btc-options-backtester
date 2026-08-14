@@ -7,8 +7,8 @@ const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8")
 const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
 
 test("selected-analysis title follows the active chart tab", () => {
-  assert.equal(valuationChartTitle("pnl"), "4H valuation path · IV-normalized diagnostic PnL · USD");
-  assert.equal(valuationChartTitle("values"), "4H valuation path · Contract values · BTC/contract");
+  assert.equal(valuationChartTitle("pnl"), "Estimated 4H valuation path · PnL · USD");
+  assert.equal(valuationChartTitle("values"), "Estimated 4H valuation path · Contract values · BTC/contract");
   assert.match(page, /valuationChartTitle\(chartMetric\)/);
   assert.match(page, /onMetricChange=\{setChartMetric\}/);
 });
