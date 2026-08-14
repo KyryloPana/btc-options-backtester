@@ -1,6 +1,12 @@
 import type { ExitResult, RetrievedSpread } from "./backtester";
 
 export type ChartMetric = "pnl" | "values";
+
+export function valuationChartTitle(metric: ChartMetric) {
+  return metric === "pnl"
+    ? "4H valuation path · IV-normalized diagnostic PnL · USD"
+    : "4H valuation path · Contract values · BTC/contract";
+}
 export type ChartSeriesKey = "diagnosticRawUnrealizedPnlUsd" | "diagnosticIvUnrealizedPnlUsd" | "rawSoldLegPrice" | "rawBoughtLegPrice" | "rawSpreadValue" | "ivSoldLegPrice" | "ivBoughtLegPrice" | "ivSpreadValue";
 
 export const CHART_SERIES: Record<ChartSeriesKey, { label: string; metric: ChartMetric }> = {
@@ -14,7 +20,9 @@ export const CHART_SERIES: Record<ChartSeriesKey, { label: string; metric: Chart
   ivSpreadValue: { label: "IV-normalized net spread value", metric: "values" },
 };
 
-export const CHART_GEOMETRY = { width: 960, height: 280, plotLeft: 68, plotRight: 946, plotTop: 18, plotBottom: 224 } as const;
+// Plot bounds leave room inside the viewBox for both Y-axis values and the
+// centered first/last timestamp labels. The SVG then scales with its panel.
+export const CHART_GEOMETRY = { width: 960, height: 280, plotLeft: 76, plotRight: 910, plotTop: 22, plotBottom: 224 } as const;
 
 export function timeX(timestamp: number, start: number, end: number, left: number, right: number) {
   return end === start ? left : left + ((timestamp - start) / (end - start)) * (right - left);
