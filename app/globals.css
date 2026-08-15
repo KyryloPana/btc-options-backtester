@@ -653,3 +653,4 @@ footer { color: var(--muted); font-size: 10px; }
   .mini-chart { min-height: 260px; aspect-ratio: auto; }
   .matrix-header-actions { gap: 7px; }
 }
+.dataset-toolbar{display:flex;align-items:end;gap:.75rem;flex-wrap:wrap;padding:1rem;margin-bottom:.5rem}.dataset-toolbar label{display:grid;gap:.3rem;min-width:15rem}.dataset-toolbar>span{color:var(--muted);font-size:.82rem;margin-right:auto}.dirty-state{color:#a66500;font-size:.8rem}.dataset-note{margin:.25rem 0 1rem}.dataset-import{padding:1rem;margin-bottom:1rem}.dataset-import h3{margin-top:0}.dataset-error{color:#b42318}

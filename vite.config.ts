@@ -5,6 +5,7 @@ import type { Plugin } from "vite";
 import { defineConfig, loadEnv } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { deribitHistoryApiPlugin } from "./scripts/deribit-history-api";
+import { tradeDatasetApiPlugin } from "./scripts/trade-dataset-service";
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -100,6 +101,7 @@ export default defineConfig(async ({ mode }) => {
     },
     plugins: [
       vinext(),
+      tradeDatasetApiPlugin(),
       deribitHistoryApiPlugin({
         baseUrl: localEnv.DERIBIT_HISTORY_API_URL || process.env.DERIBIT_HISTORY_API_URL || "https://history.deribit.com/api/v2/public",
         cachePath: resolve(process.cwd(), ".local-cache", "deribit-instruments.json"),
