@@ -2,7 +2,8 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { InfoTooltip } from "./components/info-tooltip";
-import { BUNDLED_EVENTS, durationSummary } from "./data";
+import { durationSummary } from "./data";
+import { canLeaveDirty, validateTradeDataset, type ConflictResolution, type ImportMode, type ImportSummary, type TradeDataset, type TradeDatasetSummary } from "./lib/trade-datasets";
 import {
   type BacktestEvent,
   type Candle,
@@ -50,6 +51,7 @@ interface AnalysisResult {
 
 const DTE_OPTIONS = [7, 14, 30];
 const WIDTH_OPTIONS = [1000, 2000, 3000];
+const EMPTY_EVENT: BacktestEvent = { id: "", label: "No dataset loaded", direction: "long", entryDate: "1970-01-01", entryPrice: 0 };
 const DEFAULT_DTE_TOLERANCES: Record<number, DteTolerance> = {
   7: { min: 5, max: 10 },
   14: { min: 11, max: 18 },
@@ -190,8 +192,18 @@ export default function Home() {
   const stats = useMemo(() => durationSummary(), []);
   const [section, setSection] = useState<Section>("events");
   const [theme, setTheme] = useState<"light" | "dark">("light");
-  const [events, setEvents] = useState<BacktestEvent[]>(BUNDLED_EVENTS);
-  const [selectedEventId, setSelectedEventId] = useState(BUNDLED_EVENTS[1].id);
+  const [events, setEvents] = useState<BacktestEvent[]>([]);
+  const [selectedEventId, setSelectedEventId] = useState("");
+  const [datasets, setDatasets] = useState<TradeDatasetSummary[]>([]);
+  const [dataset, setDataset] = useState<TradeDataset>();
+  const [datasetDirty, setDatasetDirty] = useState(false);
+  const [datasetStatus, setDatasetStatus] = useState("Loading project trade datasets…");
+  const [persistenceAvailable, setPersistenceAvailable] = useState(true);
+  const [importDraft, setImportDraft] = useState<TradeDataset>();
+  const [importMode, setImportMode] = useState<ImportMode>("separate");
+  const [conflictResolution, setConflictResolution] = useState<ConflictResolution>("keep-existing");
+  const [importSummary, setImportSummary] = useState<ImportSummary>();
+  const importRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const savedTheme = window.localStorage.getItem("options-lab-theme");
@@ -234,7 +246,7 @@ export default function Home() {
   const [chartMetric, setChartMetric] = useState<ChartMetric>("pnl");
   const sectionRefs = useRef<Record<Section, HTMLElement | null>>({ events: null, construction: null, contracts: null, analysis: null });
 
-  const selectedEvent = events.find(event => event.id === selectedEventId) ?? events[0];
+  const selectedEvent = useMemo(() => events.find(event => event.id === selectedEventId) ?? events[0] ?? EMPTY_EVENT, [events, selectedEventId]);
   const effectiveEntryTimestamp = selectedEvent.entryTimestamp ?? parseUtcDate(selectedEvent.entryDate);
   const desiredSpreads = useMemo(
     () => generateDesiredSpreads(selectedEvent, dtes, widths, spreadKind),
@@ -288,8 +300,29 @@ export default function Home() {
     sectionRefs.current[next]?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  function clearEventAnalysis() { setAnalysisResults([]); setCandidateManifests([]); setInventory([]); setSelectedSpreadId(undefined); setSelectedResultId(undefined); setScenario(undefined); }
+
+  async function refreshDatasets(preferredId?: string) {
+    const response = await fetch("/__local/trade-datasets");
+    if (!response.ok) throw new Error("Persistent dataset editing requires the local application server.");
+    const payload = await response.json() as {datasets: TradeDatasetSummary[]}; setDatasets(payload.datasets);
+    const remembered = preferredId ?? window.localStorage.getItem("options-lab-trade-dataset");
+    const id = payload.datasets.some(item=>item.datasetId===remembered) ? remembered! : payload.datasets.some(item=>item.datasetId==="default-sample-trades") ? "default-sample-trades" : payload.datasets[0]?.datasetId;
+    if (!id) throw new Error("No valid project trade datasets were found."); await loadDataset(id, false);
+  }
+  async function loadDataset(id:string, guard=true) { if (guard && !canLeaveDirty(datasetDirty,()=>window.confirm("Discard unsaved changes and switch datasets?"))) return; const response=await fetch(`/__local/trade-datasets/${encodeURIComponent(id)}`); const payload=await response.json(); if(!response.ok) throw new Error(payload.error??"Dataset could not be loaded."); const checked=validateTradeDataset(payload); if(!checked.ok) throw new Error(checked.errors.map(e=>`${e.tradeId??"dataset"} · ${e.path}: ${e.message}`).join(" | ")); const loaded=checked.dataset; setDataset(loaded); setEvents(loaded.trades); setSelectedEventId(current=>loaded.trades.some(event=>event.id===current)?current:loaded.trades[0]?.id??""); setDatasetDirty(false); clearEventAnalysis(); window.localStorage.setItem("options-lab-trade-dataset",id); setDatasetStatus(""); }
+  async function saveDataset() { if(!dataset) return; const draft={...dataset,trades:events}; const checked=validateTradeDataset(draft); if(!checked.ok){setDatasetStatus(checked.errors.map(e=>`${e.tradeId??"dataset"} · ${e.path}: ${e.message}`).join(" | "));return;} try { const response=await fetch(`/__local/trade-datasets/${encodeURIComponent(dataset.datasetId)}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(checked.dataset)}); const payload=await response.json(); if(!response.ok) throw new Error(payload.details?.map((e:{tradeId?:string;path:string;message:string})=>`${e.tradeId??"dataset"} · ${e.path}: ${e.message}`).join(" | ")??payload.error); setDataset(payload);setEvents(payload.trades);setDatasetDirty(false);setDatasetStatus(`Saved to data/trade-datasets/${dataset.datasetId}.json`);await refreshDatasetList(); } catch(error){setDatasetStatus(error instanceof Error?error.message:"Save failed.");} }
+  async function refreshDatasetList(){const response=await fetch("/__local/trade-datasets");if(response.ok)setDatasets((await response.json()).datasets);}
+  function exportDataset(){if(!dataset||datasetDirty)return;const blob=new Blob([JSON.stringify(dataset,null,2)+"\n"],{type:"application/json"});const url=URL.createObjectURL(blob);const link=document.createElement("a");link.href=url;link.download=`${dataset.datasetId}.json`;link.click();URL.revokeObjectURL(url);}
+  async function chooseImport(file?:File){if(!file)return;if(!canLeaveDirty(datasetDirty,()=>window.confirm("Discard unsaved changes before importing?"))){if(importRef.current)importRef.current.value="";return;}try{const parsed=JSON.parse(await file.text());const checked=validateTradeDataset(parsed);if(!checked.ok)throw new Error(checked.errors.map(e=>`${e.tradeId??"dataset"} · ${e.path}: ${e.message}`).join(" | "));setImportDraft(checked.dataset);setImportSummary(undefined);setDatasetStatus("");}catch(error){setDatasetStatus(error instanceof Error?error.message:"Malformed JSON.");}}
+  async function previewImport(){if(!importDraft||!dataset)return;const response=await fetch("/__local/trade-datasets/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({dataset:importDraft,mode:importMode,currentDatasetId:dataset.datasetId,conflictResolution,preview:true})});const payload=await response.json();if(!response.ok){setDatasetStatus(payload.error);return;}setImportSummary(payload.summary);}
+  async function confirmImport(){if(!importDraft||!dataset||!importSummary)return;const response=await fetch("/__local/trade-datasets/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({dataset:importDraft,mode:importMode,currentDatasetId:dataset.datasetId,conflictResolution})});const payload=await response.json();if(!response.ok){setDatasetStatus(payload.error);return;}setImportDraft(undefined);setImportSummary(undefined);await refreshDatasets(payload.dataset.datasetId);setDatasetStatus(importMode==="separate"?`Imported as data/trade-datasets/${payload.filename}`:`Combined import saved to data/trade-datasets/${payload.filename}`);}
+
+  useEffect(()=>{queueMicrotask(()=>{refreshDatasets().catch(error=>{setPersistenceAvailable(false);setDatasetStatus(error instanceof Error?error.message:"Persistent dataset editing requires the local application server.");});});},[]); // Startup discovery intentionally runs once.
+
   function patchEvent(patch: Partial<BacktestEvent>) {
     setEvents(current => current.map(event => event.id === selectedEvent.id ? { ...event, ...patch } : event));
+    setDatasetDirty(true);
     setAnalysisResults([]);
     setCandidateManifests([]);
     setInventory([]);
@@ -320,6 +353,7 @@ export default function Home() {
       invalidationPrice: 0,
     };
     setEvents(current => [...current, event]);
+    setDatasetDirty(true);
     setSelectedEventId(id);
     setSection("events");
   }
@@ -512,7 +546,11 @@ export default function Home() {
         </section>
 
         <section className="workspace-section" ref={node => { sectionRefs.current.events = node; }}>
-          <div className="section-heading"><div><span className="step-number">01</span><p className="eyebrow">Signal definition</p><h2>Event & exact touch time</h2></div><button className="secondary-button" onClick={addEvent}>Add manual event</button></div>
+          <div className="dataset-toolbar card"><label>Trade dataset<select value={dataset?.datasetId??""} onChange={event=>void loadDataset(event.target.value)} disabled={!persistenceAvailable}>{datasets.map(item=><option key={item.datasetId} value={item.datasetId}>{item.name}</option>)}</select></label><span>{dataset ? `${dataset.trades.length} trades · updated ${new Date(dataset.updatedAt).toLocaleString()}` : "Unavailable"}</span><button className="primary-button" disabled={!datasetDirty||!persistenceAvailable} onClick={saveDataset}>Save changes</button><button className="secondary-button" disabled={datasetDirty||!dataset} title={datasetDirty?"Save changes before exporting":""} onClick={exportDataset}>Export dataset</button><button className="secondary-button" disabled={!persistenceAvailable} onClick={()=>importRef.current?.click()}>Import dataset</button><input ref={importRef} hidden type="file" accept=".json,application/json" onChange={event=>void chooseImport(event.target.files?.[0])}/>{datasetDirty&&<strong className="dirty-state">Unsaved changes</strong>}</div>
+          <p className="fine-print dataset-note">Save updates the project JSON file. Export downloads a copy. {datasetDirty&&"Save changes before exporting."}</p>
+          {datasetStatus&&<p className={`inline-status ${!persistenceAvailable?"dataset-error":""}`}>{datasetStatus}</p>}
+          {importDraft&&<div className="dataset-import card"><h3>Import {importDraft.name}</h3><div className="check-row"><label><input type="radio" checked={importMode==="separate"} onChange={()=>{setImportMode("separate");setImportSummary(undefined);}}/> Add as separate dataset</label><label><input type="radio" checked={importMode==="combine-current"} onChange={()=>{setImportMode("combine-current");setImportSummary(undefined);}}/> Combine with current dataset</label></div>{importMode==="combine-current"&&<div className="check-row"><label><input type="radio" checked={conflictResolution==="keep-existing"} onChange={()=>{setConflictResolution("keep-existing");setImportSummary(undefined);}}/> Keep existing</label><label><input type="radio" checked={conflictResolution==="replace-imported"} onChange={()=>{setConflictResolution("replace-imported");setImportSummary(undefined);}}/> Replace with imported</label></div>}{importSummary?<><p>Added {importSummary.added} · unchanged {importSummary.unchanged} · replaced {importSummary.replaced} · conflicts {importSummary.conflicts} · rejected {importSummary.rejected}</p><button className="primary-button" onClick={confirmImport}>Confirm import and write JSON</button></>:<button className="primary-button" onClick={previewImport}>Review import summary</button>} <button className="secondary-button" onClick={()=>setImportDraft(undefined)}>Cancel</button></div>}
+          <div className="section-heading"><div><span className="step-number">01</span><p className="eyebrow">Signal definition</p><h2>Event & exact touch time</h2></div><button className="secondary-button" disabled={!dataset} onClick={addEvent}>Add manual event</button></div>
           <div className="event-layout">
             <aside className="event-list card">
               <div className="card-title-row"><div><p className="eyebrow">Imported sample</p><h3>{events.length} MR trades</h3></div><span className="tiny-badge">BO excluded</span></div>
@@ -538,6 +576,11 @@ export default function Home() {
                 <label>VPOC target<input type="number" placeholder="Auction target" value={selectedEvent.vpocPrice ?? ""} onChange={event => patchEvent({ vpocPrice: Number(event.target.value) || undefined })} /></label>
                 <label>VPOC date<input type="date" value={selectedEvent.vpocDate ?? ""} onChange={event => patchEvent({ vpocDate: event.target.value || undefined, vpocTimestamp: undefined })} /></label>
                 <label>Invalidation / SL<input type="number" value={selectedEvent.invalidationPrice ?? ""} onChange={event => patchEvent({ invalidationPrice: Number(event.target.value) || undefined })} /></label>
+                <label>Exit date<input type="date" value={selectedEvent.exitDate ?? ""} onChange={event => patchEvent({ exitDate: event.target.value || undefined, exitTimestamp: undefined })} /></label>
+                <label>Exit price<input type="number" value={selectedEvent.exitPrice ?? ""} onChange={event => patchEvent({ exitPrice: event.target.value === "" ? undefined : Number(event.target.value), exitTimestamp: undefined })} /></label>
+                <label>Range low<input type="number" value={selectedEvent.rangeLow ?? ""} onChange={event => patchEvent({ rangeLow: event.target.value === "" ? undefined : Number(event.target.value) })} /></label>
+                <label>Range high<input type="number" value={selectedEvent.rangeHigh ?? ""} onChange={event => patchEvent({ rangeHigh: event.target.value === "" ? undefined : Number(event.target.value) })} /></label>
+                <label className="event-notes">Notes<input value={selectedEvent.notes ?? ""} onChange={event => patchEvent({ notes: event.target.value || undefined })} /></label>
               </div>
               <div className="time-resolver">
                 <div><p className="eyebrow">Entry timestamp</p><strong>{selectedEvent.entryTimestamp ? formatUtc(selectedEvent.entryTimestamp) : `${selectedEvent.entryDate} · unresolved`}</strong><small>{selectedEvent.entryTimestamp ? "First BTCUSDT 1H candle whose low/high contains the entry price." : "Contract retrieval uses 00:00 UTC provisionally until resolved."}</small></div>
