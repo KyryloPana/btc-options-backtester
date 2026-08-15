@@ -116,6 +116,10 @@ export interface ContractTrade {
   price: number;
   markPrice?: number;
   iv?: number;
+  /** Original Deribit API percentage value (for evidence/audit output). */
+  ivApiPercent?: number;
+  /** Canonical model input, normalized once at the API boundary (60 => 0.60). */
+  ivDecimal?: number;
   instrumentName: string;
   indexPrice: number;
   direction: TradeSide;
@@ -593,6 +597,8 @@ function normalizeTrade(raw: unknown): ContractTrade | null {
   const direction = String(row.direction ?? "").toLowerCase();
   if (!timestamp || price === undefined || amount === undefined || indexPrice === undefined || !parseInstrumentName(instrumentName)) return null;
   if (direction !== "buy" && direction !== "sell") return null;
+  const ivApiPercent = asNumber(row.iv);
+  const ivDecimal = ivApiPercent !== undefined && Number.isFinite(ivApiPercent) && ivApiPercent > 0 ? ivApiPercent / 100 : undefined;
   return {
     timestamp,
     price,
@@ -601,7 +607,9 @@ function normalizeTrade(raw: unknown): ContractTrade | null {
     instrumentName,
     direction,
     markPrice: asNumber(row.mark_price ?? row.markPrice),
-    iv: asNumber(row.iv),
+    iv: ivApiPercent,
+    ivApiPercent,
+    ivDecimal,
     tradeId: row.trade_id ? String(row.trade_id) : undefined,
   };
 }
