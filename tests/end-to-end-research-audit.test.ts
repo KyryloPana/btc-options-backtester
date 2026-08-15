@@ -64,7 +64,8 @@ test("Research outcome USD persists the valuation-point index rather than entry 
   assert.notEqual(outcome.estimatedNetPnlUsd,outcome.estimatedNetPnlBtc!*100_000);
   const source=await readFile(new URL("../app/page.tsx",import.meta.url),"utf8");
   assert.doesNotMatch(source,/outcome\.estimatedNetPnl\*result\.eventPrice/);
-  assert.match(source,/USD at outcome index/);
+  assert.doesNotMatch(source,/USD at outcome index/);
+  assert.match(source,/:money\(outcome\.estimatedNetPnlUsd\)/);
 });
 
 test("identity deduplication spans files, preserves economic twins, rejects conflicts, and reports malformed rows",()=>{
