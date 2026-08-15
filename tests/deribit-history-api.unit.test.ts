@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { DeribitHistoryService } from "../scripts/deribit-history-api.ts";
+import { DeribitHistoryService, resolveOrderedPair } from "../scripts/deribit-history-api.ts";
 
 const entry = Date.parse("2024-01-01T08:00:00Z");
 const expiry = entry + 7 * 86_400_000;
@@ -40,6 +40,15 @@ test("combines and deduplicates expired/active manifests, retains creation time,
     assert.deepEqual(new Set(tradeNames),new Set(["BTC-8JAN24-40000-P","BTC-8JAN24-39000-P"]));
     assert.equal(result.diagnostics.validTrades,4);
   } finally { await cleanup(); }
+});
+
+test("joint nearest-strike resolution preserves distinct bear-call and bull-put ordering", () => {
+  const chain = [127000, 130000].map(strike => ({ instrumentName:`BTC-30AUG26-${strike}-C`, expiryTimestamp:expiry, expiryLabel:"30AUG26", strike, optionType:"C" as const, status:"expired" as const, priceIndex:"btc_usd" }));
+  const bear = resolveOrderedPair(chain, 127500, 128000)!;
+  assert.deepEqual([bear.sold.strike, bear.bought.strike], [127000, 130000], "the next valid strike is used rather than resolving both legs to 127000");
+  const bull = resolveOrderedPair(chain, 129000, 127500)!;
+  assert.deepEqual([bull.sold.strike, bull.bought.strike], [130000, 127000]);
+  assert.equal(resolveOrderedPair(chain, 127000, 127000), undefined, "equal desired strikes are invalid");
 });
 
 test("trade pagination deduplicates, orders, and filters exact interval", async () => {

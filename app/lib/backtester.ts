@@ -225,6 +225,8 @@ export interface RetrievedSpread extends DesiredSpread {
   boughtContract?: ContractSeries;
   soldExistedAtEntry: boolean;
   boughtExistedAtEntry: boolean;
+  soldListingStatus?: "listed" | "listing-plausible" | "listing-unknown" | "not-listed";
+  boughtListingStatus?: "listed" | "listing-plausible" | "listing-unknown" | "not-listed";
   retrievalStatus: "ready" | "partial" | "missing";
   retrievalNote: string;
   candidateStatus?: "recommended" | "alternative" | "candidate" | "rejected";
@@ -972,6 +974,7 @@ export function buildExpiryCandidates(
   inventory: ContractSeries[],
   executionMode: ExecutionMode,
   selectionMode: ExpirySelectionMode,
+  pricingAssumption: "research-estimate" | "conservative-tape-check" = "conservative-tape-check",
 ): RetrievedSpread[] {
   const inventoryByName = new Map(inventory.map(series => [series.instrumentName, series]));
   const byRequest = new Map<string, ContractCandidateManifest[]>();
@@ -982,6 +985,7 @@ export function buildExpiryCandidates(
   }
 
   return desiredSpreads.flatMap(combo => {
+    const researchMode = pricingAssumption === "research-estimate";
     const candidates: RetrievedSpread[] = (byRequest.get(combo.id) ?? []).map(manifest => {
       const soldContract = manifest.soldInstrumentName ? inventoryByName.get(manifest.soldInstrumentName) : undefined;
       const boughtContract = manifest.boughtInstrumentName ? inventoryByName.get(manifest.boughtInstrumentName) : undefined;
@@ -1005,6 +1009,8 @@ export function buildExpiryCandidates(
         boughtContract,
         soldExistedAtEntry,
         boughtExistedAtEntry,
+        soldListingStatus: soldExistedAtEntry ? "listed" : manifest.soldCreationTimestamp !== undefined ? "not-listed" : "listing-unknown",
+        boughtListingStatus: boughtExistedAtEntry ? "listed" : manifest.boughtCreationTimestamp !== undefined ? "not-listed" : "listing-unknown",
         retrievalStatus: "missing",
         retrievalNote: manifest.strikeResolutionNote,
         dteMin: manifest.minDte,
@@ -1027,28 +1033,37 @@ export function buildExpiryCandidates(
       } : undefined;
       const normalization = normalizeSpread({
         ...base,
-        soldContract: causalSeries(soldContract),
-        boughtContract: causalSeries(boughtContract),
-      }, entryTimestamp, entryIndex, executionMode, 120);
+        soldContract: researchMode ? soldContract : causalSeries(soldContract),
+        boughtContract: researchMode ? boughtContract : causalSeries(boughtContract),
+        soldExistedAtEntry: soldExistedAtEntry || (researchMode && manifest.soldCreationTimestamp === undefined),
+        boughtExistedAtEntry: boughtExistedAtEntry || (researchMode && manifest.boughtCreationTimestamp === undefined),
+      }, entryTimestamp, entryIndex, executionMode, researchMode ? 720 : 120);
       const hasObservedPrices = Boolean(
         normalization?.sold.nearestTrade && normalization?.bought.nearestTrade &&
         normalization.sold.vwapPriceBtc !== undefined && normalization.bought.vwapPriceBtc !== undefined &&
         !normalization.sold.usedModelFallback && !normalization.bought.usedModelFallback,
       );
       const dataUnavailable = manifest.dataStatus === "data-unavailable";
+      const authoritativeNonListing = (manifest.soldCreationTimestamp !== undefined && manifest.soldCreationTimestamp > entryTimestamp)
+        || (manifest.boughtCreationTimestamp !== undefined && manifest.boughtCreationTimestamp > entryTimestamp);
+      const soldAuthoritativelyNotListed = manifest.soldCreationTimestamp !== undefined && manifest.soldCreationTimestamp > entryTimestamp;
+      const boughtAuthoritativelyNotListed = manifest.boughtCreationTimestamp !== undefined && manifest.boughtCreationTimestamp > entryTimestamp;
+      const boundedResearchEvidence = Boolean(researchMode && normalization?.sold.nearestTrade && normalization?.bought.nearestTrade);
+      const listingEligible = (soldExistedAtEntry && boughtExistedAtEntry) || (boundedResearchEvidence && !authoritativeNonListing);
       const viable = Boolean(
         !dataUnavailable &&
-        soldContract && boughtContract && soldExistedAtEntry && boughtExistedAtEntry &&
-        manifest.strikeResolutionSensible && hasObservedPrices && normalization && normalization.qualityFlag !== "red",
+        soldContract && boughtContract && listingEligible &&
+        manifest.strikeResolutionSensible && hasObservedPrices && normalization && (researchMode || normalization.qualityFlag !== "red"),
       );
       const quality: QualityFlag | "data-unavailable" = dataUnavailable ? "data-unavailable" : viable ? normalization!.qualityFlag : "red";
       let reason = normalization?.qualityReason ?? "Both contracts could not be priced from observed entry-window trades.";
       if (dataUnavailable) reason = `Required API data unavailable: ${manifest.retrievalErrors?.map(error => `${error.instrumentName}: ${error.cause}`).join("; ") ?? manifest.failedInstruments?.join(", ") ?? "retrieval failed"}.`;
       else if (!manifest.strikeResolutionSensible) reason = manifest.strikeResolutionNote;
       else if (!soldContract || !boughtContract) reason = "One or both resolved contracts could not be loaded.";
-      else if (manifest.soldCreationTimestamp === undefined || manifest.boughtCreationTimestamp === undefined) reason = "Listing existence at entry is unknown because creation metadata is missing.";
-      else if (!soldExistedAtEntry || !boughtExistedAtEntry) reason = "One or both contracts were created after entry.";
-      else if (!hasObservedPrices) reason = "Both legs require observed, non-model prices within ±2h of entry.";
+      else if ((manifest.soldCreationTimestamp === undefined || manifest.boughtCreationTimestamp === undefined) && !boundedResearchEvidence) reason = "Listing existence at entry is unknown because creation metadata is missing.";
+      else if (authoritativeNonListing) reason = "One or both contracts were created after entry.";
+      else if (!hasObservedPrices) reason = `Both legs require observed, non-model prices within ±${researchMode ? "12h" : "2h"} of entry.`;
+      else if (boundedResearchEvidence && (!soldExistedAtEntry || !boughtExistedAtEntry)) reason = "Listing plausible — exact contract observed within research window. Low-confidence bounded estimate.";
       const entryLiquidity: EntryLiquidityMetrics = {
         quality,
         viable,
@@ -1070,6 +1085,8 @@ export function buildExpiryCandidates(
       };
       return {
         ...base,
+        soldListingStatus: soldExistedAtEntry ? "listed" : soldAuthoritativelyNotListed ? "not-listed" : boundedResearchEvidence ? "listing-plausible" : "listing-unknown",
+        boughtListingStatus: boughtExistedAtEntry ? "listed" : boughtAuthoritativelyNotListed ? "not-listed" : boundedResearchEvidence ? "listing-plausible" : "listing-unknown",
         entryLiquidity,
         entryLiquidityQuality: dataUnavailable ? undefined : quality as QualityFlag,
         // Retrieval completeness and liquidity quality are independent. A yellow
@@ -1089,7 +1106,14 @@ export function buildExpiryCandidates(
       const activityB = liquidityActivity(b);
       return activityB.trades - activityA.trades || activityB.amount - activityA.amount;
     };
+    const compareEvidence = (a: RetrievedSpread, b: RetrievedSpread) =>
+      Math.max(a.entryLiquidity?.shortNearestGapMin ?? Infinity, a.entryLiquidity?.longNearestGapMin ?? Infinity)
+      - Math.max(b.entryLiquidity?.shortNearestGapMin ?? Infinity, b.entryLiquidity?.longNearestGapMin ?? Infinity)
+      || (a.entryLiquidity?.legTimeDiffMin ?? Infinity) - (b.entryLiquidity?.legTimeDiffMin ?? Infinity);
     viable.sort((a, b) => {
+      if (researchMode) return qualityRank(b.entryLiquidityQuality ?? "red") - qualityRank(a.entryLiquidityQuality ?? "red")
+        || compareEvidence(a, b)
+        || (a.dteDistance ?? Infinity) - (b.dteDistance ?? Infinity);
       if (selectionMode === "closest-dte") {
         return (a.dteDistance ?? Infinity) - (b.dteDistance ?? Infinity)
           || qualityRank(b.entryLiquidityQuality ?? "red") - qualityRank(a.entryLiquidityQuality ?? "red")
@@ -1107,7 +1131,9 @@ export function buildExpiryCandidates(
       candidate.selectedForTest = index < selectedCount;
       if (index === 0) {
         candidate.candidateStatus = "recommended";
-        candidate.expirySelectionReason = selectionSummary(candidate, selectionMode === "closest-dte" ? "Selected by DTE proximity" : "Selected");
+        candidate.expirySelectionReason = candidate.entryLiquidityQuality === "red" && researchMode
+          ? "Selected as a low-confidence bounded Research estimate."
+          : selectionSummary(candidate, selectionMode === "closest-dte" ? "Selected by DTE proximity" : "Selected");
       } else if (candidate.selectedForTest) {
         candidate.candidateStatus = selectionMode === "all-eligible" ? "candidate" : "alternative";
         candidate.expirySelectionReason = selectionSummary(candidate, selectionMode === "all-eligible" ? "Eligible candidate retained" : "Alternative retained");

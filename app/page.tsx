@@ -241,8 +241,8 @@ export default function Home() {
     [selectedEvent, dtes, widths, spreadKind],
   );
   const retrievedSpreads = useMemo(
-    () => buildExpiryCandidates(desiredSpreads, candidateManifests, effectiveEntryTimestamp, selectedEvent.entryPrice, inventory, "taker", expirySelectionMode),
-    [desiredSpreads, candidateManifests, effectiveEntryTimestamp, selectedEvent.entryPrice, inventory, expirySelectionMode],
+    () => buildExpiryCandidates(desiredSpreads, candidateManifests, effectiveEntryTimestamp, selectedEvent.entryPrice, inventory, "taker", expirySelectionMode, pricingAssumption),
+    [desiredSpreads, candidateManifests, effectiveEntryTimestamp, selectedEvent.entryPrice, inventory, expirySelectionMode, pricingAssumption],
   );
   const visibleRetrievedSpreads = useMemo(() => visibleMatrixSpreads(retrievedSpreads, hideRed), [retrievedSpreads, hideRed]);
   const selectedSpread = visibleRetrievedSpreads.find(spread => spread.id === selectedSpreadId) ?? visibleRetrievedSpreads[0];
@@ -593,9 +593,6 @@ export default function Home() {
             <div className="card-title-row"><div><p className="eyebrow">Generated matrix</p><h3>Desired → historical contract</h3></div><div className="matrix-header-actions"><label className="matrix-filter"><input type="checkbox" checked={hideRed} onChange={event => {
   const checked = event.target.checked;
   setHideRed(checked);
-  if (checked && retrievedSpreads.find(spread => spread.id === selectedSpreadId)?.entryLiquidityQuality === "red") {
-    setSelectedSpreadId(visibleMatrixSpreads(retrievedSpreads, true)[0]?.id);
-  }
 }} />Hide red</label><button className="secondary-button" onClick={() => jump("contracts")}>Load contracts</button></div></div>
             <div className="table-scroll"><table><thead><tr><th>Structure</th><th>Expiry horizon</th><th>Actual expiry</th><th>Desired → actual legs</th><th>Entry liquidity</th><th>DTE fit<InfoTooltip term="dteTolerance" label="Explain DTE tolerance and DTE fit" /></th><th>Selection</th></tr></thead><tbody>
               {visibleRetrievedSpreads.map(spread => (
@@ -603,10 +600,10 @@ export default function Home() {
                   <td><strong>{spread.structure}</strong>{spread.buffered && <small className="buffer-tag">buffer</small>}</td>
                   <td><strong>~{spread.targetDte}D</strong><small>{spread.dteMin}–{spread.dteMax}D eligible</small></td>
                   <td>{spread.expiryLabel ?? "—"}<small>{spread.actualDte !== undefined ? `${spread.actualDte.toFixed(1)}D actual` : "awaiting contracts"}</small></td>
-                  <td><span className="mono">S {money(spread.soldStrike)} → {money(spread.soldContract?.strike)}</span><small className="mono">B {money(spread.boughtStrike)} → {money(spread.boughtContract?.strike)}</small></td>
+                  <td><span className="mono">S {money(spread.soldStrike)} → {money(spread.soldContract?.strike ?? spread.resolvedSoldStrike)}</span><small className="mono">B {money(spread.boughtStrike)} → {money(spread.boughtContract?.strike ?? spread.resolvedBoughtStrike)}</small><small>actual width {money(spread.actualWidth)}</small>{(spread.resolvedSoldInstrumentName || spread.resolvedBoughtInstrumentName) && <details className="evidence-details"><summary>Exact contract evidence</summary><p className="mono">Short: {spread.resolvedSoldInstrumentName}</p><p className="mono">Long: {spread.resolvedBoughtInstrumentName}</p><p>{spread.soldListingStatus} / {spread.boughtListingStatus}</p></details>}</td>
                   <td><span className={flagClass(spread.entryLiquidityQuality ?? "missing")}>{spread.dataStatus === "data-unavailable" ? "data-unavailable" : spread.entryLiquidityQuality ?? "unscored"}</span><small>S {spread.entryLiquidity?.shortTrades2h ?? 0} / L {spread.entryLiquidity?.longTrades2h ?? 0} prints · {(spread.entryLiquidity?.shortAmount2h ?? 0).toFixed(2)} / {(spread.entryLiquidity?.longAmount2h ?? 0).toFixed(2)} amount</small><small>sync {spread.entryLiquidity?.legTimeDiffMin?.toFixed(0) ?? "—"}m · index {spread.entryLiquidity?.indexDiffPct?.toFixed(2) ?? "—"}%</small><small>compatible prior 24h / 7d: {(spread.entryLiquidity?.previous24hShort.compatibleTradeCount ?? 0) + (spread.entryLiquidity?.previous24hLong.compatibleTradeCount ?? 0)} / {(spread.entryLiquidity?.previous7dShort.compatibleTradeCount ?? 0) + (spread.entryLiquidity?.previous7dLong.compatibleTradeCount ?? 0)}</small></td>
                   <td>{spread.dteDistance !== undefined ? `Δ ${spread.dteDistance.toFixed(1)}D` : "—"}<small>vs target ~{spread.targetDte}D</small></td>
-                  <td><span className={`candidate-status ${spread.candidateStatus ?? "rejected"}`}>{spread.candidateStatus ?? "unscored"}{spread.expiryRank ? ` · #${spread.expiryRank}` : ""}</span><small className="selection-reason">{spread.expirySelectionReason ?? spread.retrievalNote}</small></td>
+                  <td><span className={`candidate-status ${spread.candidateStatus ?? "rejected"}`}>{spread.entryLiquidity?.viable && spread.entryLiquidityQuality === "red" ? "RED — LOW-CONFIDENCE ESTIMATE" : spread.candidateStatus ?? "unscored"}{spread.expiryRank ? ` · #${spread.expiryRank}` : ""}</span><small className="selection-reason">{spread.expirySelectionReason ?? spread.retrievalNote}</small></td>
                 </tr>
               ))}
               {!retrievedSpreads.length && <tr><td colSpan={7} className="empty-cell">Load eligible contract histories to discover and rank every listed expiry in the selected horizon bands.</td></tr>}

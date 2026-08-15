@@ -14,6 +14,7 @@ import {
   type ValuationPoint,
 } from "../app/lib/backtester.ts";
 import { CHART_GEOMETRY, CHART_SERIES, hitExitGroups, nearestPoint, timestampAtX, timeX, visibleMatrixSpreads } from "../app/lib/valuation-chart.ts";
+import { estimateResearchSpread } from "../app/lib/research-valuation.ts";
 
 function close(actual: number | undefined, expected: number) {
   assert.ok(actual !== undefined && Math.abs(actual - expected) < 1e-10, `${actual} should be close to ${expected}`);
@@ -90,6 +91,45 @@ test("liquidity-aware ranking prefers Green evidence and retains one viable alte
   assert.equal(unavailable.expiryRank, undefined);
   assert.equal(unavailable.entryLiquidityQuality, undefined, "retrieval failure is not counted as Red liquidity");
   assert.equal(incomplete.find(candidate => candidate.dataStatus === "available")?.candidateStatus, "recommended");
+});
+
+test("all-Red bounded candidates remain Research-eligible and rank by evidence before DTE", () => {
+  const entry = Date.parse("2026-08-15T00:00:00Z");
+  const desired = { id:"bear", targetDte:14, targetWidth:3000, anchorStrike:127000, soldStrike:127000, boughtStrike:130000, optionType:"C" as const, spreadKind:"credit" as const, structure:"127000/130000 C", buffered:false };
+  const make = (suffix:string, expiry:number, soldGap:number, boughtGap:number) => {
+    const names = [`BTC-${suffix}-127000-C`, `BTC-${suffix}-130000-C`];
+    const rows = [
+      { timestamp:entry+soldGap*60_000, price:.04, iv:70, instrument_name:names[0], index_price:120000, direction:"sell", amount:1 },
+      { timestamp:entry+boughtGap*60_000, price:.02, iv:72, instrument_name:names[1], index_price:120100, direction:"buy", amount:1 },
+    ];
+    return { inventory:buildInventory(rows.map((row,index)=>({name:`${suffix}-${index}`,trades:parseContractText(JSON.stringify(row))}))), manifest:{requestId:desired.id,targetDte:14,minDte:10,maxDte:20,desiredSoldStrike:127000,desiredBoughtStrike:130000,expiryTimestamp:expiry,expiryLabel:suffix,actualDte:(expiry-entry)/86_400_000,soldInstrumentName:names[0],boughtInstrumentName:names[1],soldStrike:127000,boughtStrike:130000,strikeResolutionSensible:true,strikeResolutionNote:"exact"} };
+  };
+  const close = make("29AUG26", entry+14*86_400_000, 600, 376); // 224-minute synchronization gap
+  const farther = make("30AUG26", entry+15*86_400_000, 650, 400);
+  const candidates = buildExpiryCandidates([desired],[close.manifest,farther.manifest],entry,120000,[...close.inventory,...farther.inventory],"taker","liquidity-aware","research-estimate");
+  assert.equal(candidates.filter(candidate=>candidate.selectedForTest).length,2);
+  assert.equal(candidates[0].entryLiquidityQuality,"red");
+  assert.equal(candidates[0].entryLiquidity?.viable,true);
+  assert.equal(candidates[0].candidateStatus,"recommended");
+  assert.equal(candidates[0].expirySelectionReason,"Selected as a low-confidence bounded Research estimate.");
+  assert.deepEqual([candidates[0].soldContract?.strike,candidates[0].boughtContract?.strike],[127000,130000]);
+  assert.deepEqual([candidates[0].soldListingStatus,candidates[0].boughtListingStatus],["listing-plausible","listing-plausible"],"no pre-entry print is not non-listing");
+  const estimate=estimateResearchSpread({spread:candidates[0],targetTimestamp:entry,targetIndex:120000,amount:1,slippageBps:0});
+  assert.equal(estimate.status,"priced","the reproduced candidate enables Run full backtest valuation");
+  if(estimate.status==="priced") { assert.equal(estimate.estimateQuality,"red"); assert.equal(estimate.evidenceWindowMinutes,720); assert.equal(estimate.synchronizationGapMinutes,224); assert.ok(estimate.netOpeningCashFlowBtc>0); }
+  const conservative = buildExpiryCandidates([desired],[close.manifest],entry,120000,close.inventory,"taker","liquidity-aware","conservative-tape-check")[0];
+  assert.equal(conservative.entryLiquidity?.viable,false,"strict causal tape may fail without invalidating Research");
+});
+
+test("authoritative post-entry creation metadata proves non-listing even with bounded trades", () => {
+  const entry=100_000, expiry=entry+7*86_400_000;
+  const desired={id:"post",targetDte:7,targetWidth:1000,anchorStrike:50000,soldStrike:50000,boughtStrike:51000,optionType:"C" as const,spreadKind:"credit" as const,structure:"bear call",buffered:false};
+  const rows=[["BTC-X-50000-C",50000,"sell"],["BTC-X-51000-C",51000,"buy"]] as const;
+  const inventory=buildInventory(rows.map(([instrument_name,,direction],index)=>({name:String(index),trades:parseContractText(JSON.stringify({timestamp:entry+1000,price:.01,iv:60,instrument_name,index_price:50000,direction,amount:1}))})));
+  const manifest={requestId:desired.id,targetDte:7,minDte:5,maxDte:10,desiredSoldStrike:50000,desiredBoughtStrike:51000,expiryTimestamp:expiry,expiryLabel:"X",actualDte:7,soldInstrumentName:rows[0][0],boughtInstrumentName:rows[1][0],soldStrike:50000,boughtStrike:51000,soldCreationTimestamp:entry+1,boughtCreationTimestamp:entry+1,strikeResolutionSensible:true,strikeResolutionNote:"exact"};
+  const [candidate]=buildExpiryCandidates([desired],[manifest],entry,50000,inventory,"taker","liquidity-aware","research-estimate");
+  assert.equal(candidate.entryLiquidity?.viable,false);
+  assert.equal(candidate.soldListingStatus,"not-listed");
 });
 
 test("uses inverse BTC intrinsic settlement", () => {
