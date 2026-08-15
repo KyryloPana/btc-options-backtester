@@ -483,7 +483,7 @@ button, input, select, textarea { font: inherit; }
 .theme-toggle:hover { color: var(--text-primary); border-color: var(--baseline); }
 .live-dot, .idle-dot { width: 6px; height: 6px; background: var(--good); }
 
-.page-shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; }
+.page-shell { width: min(1580px, calc(100% - 32px)); margin: 0 auto; }
 .hero { min-height: 0; padding: 24px 0 18px; gap: 24px; border-bottom: 1px solid var(--border); }
 .hero h1 { margin: 4px 0; color: var(--text-primary); font-size: 22px; font-weight: 600; line-height: 1.25; letter-spacing: -.01em; }
 .hero-copy { color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
@@ -608,7 +608,58 @@ footer { color: var(--muted); font-size: 10px; }
 .info-tooltip-popover { padding: 10px 12px; color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,.25); font-size: 12px; transition: opacity 100ms, transform 100ms; }
 ::-webkit-scrollbar-track { background: var(--page); } ::-webkit-scrollbar-thumb { background: var(--baseline); border-color: var(--page); }
 
-@media (max-width: 900px) { .page-shell { width: min(100% - 24px, 1180px); } }
+@media (max-width: 900px) { .page-shell { width: min(100% - 24px, 1580px); } }
+
+/* The generated PnL matrix is a bounded layout, not a horizontally scrolling one. */
+.pnl-block, .pnl-block .table-card, .pnl-block .table-scroll,
+.pnl-block .ledger-detail-row > td, .pnl-block .ledger-pair,
+.pnl-block .opening-ledger, .pnl-block .expiry-payoff,
+.pnl-block .payoff-plot, .pnl-block .payoff-inspector {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.pnl-block .table-scroll { overflow-x: visible; }
+.pnl-results-table { width: 100%; max-width: 100%; table-layout: fixed; }
+.pnl-results-table th, .pnl-results-table td {
+  min-width: 0;
+  padding-inline: clamp(4px, .55vw, 9px);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.pnl-results-table th:nth-child(1) { width: 4%; }
+.pnl-results-table th:nth-child(2) { width: 10%; }
+.pnl-results-table th:nth-child(3) { width: 13%; }
+.pnl-results-table th:nth-child(4) { width: 10%; }
+.pnl-results-table th:nth-child(5) { width: 6%; }
+.pnl-results-table th:nth-child(6), .pnl-results-table th:nth-child(7) { width: 11%; }
+.pnl-results-table th:nth-child(8), .pnl-results-table th:nth-child(9) { width: 12%; }
+.pnl-results-table th:nth-child(10) { width: 11%; }
+.pnl-results-table .expand-button { max-width: 100%; }
+.pnl-block .ledger-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(8px, 1vw, 16px); }
+.pnl-block .opening-ledger dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.pnl-block .opening-ledger p, .pnl-block .opening-ledger dd,
+.pnl-block .expiry-payoff, .pnl-block .payoff-inspector strong { overflow-wrap: anywhere; }
+.pnl-block .payoff-plot svg { width: 100%; max-width: 100%; }
+.pnl-block .payoff-inspector { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.pnl-block .analysis-detail { grid-template-columns: minmax(0, 1fr) minmax(240px, 292px); }
+.pnl-block .analysis-detail, .pnl-block .analysis-detail > *,
+.pnl-block .path-metrics, .pnl-block .scenario-metrics,
+.pnl-block .exit-row, .pnl-block .exit-row > * { min-width: 0; max-width: 100%; }
+.pnl-block .exit-row { align-items: flex-start; flex-wrap: wrap; }
+.pnl-block .exit-row > span { flex: 1 1 130px; overflow-wrap: anywhere; }
+.pnl-block .exit-row > strong { flex: 0 1 auto; white-space: normal; overflow-wrap: anywhere; text-align: right; }
+
+@media (max-width: 900px) {
+  .pnl-block .analysis-detail { grid-template-columns: minmax(0, 1fr); }
+  .pnl-results-table th, .pnl-results-table td { padding-inline: 4px; }
+}
+@media (max-width: 720px) {
+  .pnl-block .ledger-pair, .pnl-block .opening-ledger dl { grid-template-columns: minmax(0, 1fr); }
+  .pnl-block .payoff-inspector { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 
 /* Compact controls used only in chart legends and the generated-matrix header. */
 .chart-toggle input[type="checkbox"],
