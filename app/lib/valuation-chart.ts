@@ -4,8 +4,8 @@ export type ChartMetric = "pnl" | "values";
 
 export function valuationChartTitle(metric: ChartMetric) {
   return metric === "pnl"
-    ? "4H valuation path · IV-normalized diagnostic PnL · USD"
-    : "4H valuation path · Contract values · BTC/contract";
+    ? "Estimated 4H valuation path · PnL · USD"
+    : "Estimated 4H valuation path · Contract values · BTC/contract";
 }
 export type ChartSeriesKey = "diagnosticRawUnrealizedPnlUsd" | "diagnosticIvUnrealizedPnlUsd" | "rawSoldLegPrice" | "rawBoughtLegPrice" | "rawSpreadValue" | "ivSoldLegPrice" | "ivBoughtLegPrice" | "ivSpreadValue";
 
