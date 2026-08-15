@@ -25,7 +25,7 @@ export interface ResearchEstimate {
 export interface UnavailableResearchEstimate { valuationMode: "research-estimate"; targetTimestamp: number; status: "unavailable"; estimateQuality: "unavailable"; reason: string; disclaimer: string }
 export type ResearchValuation = ResearchEstimate | UnavailableResearchEstimate;
 export interface EstimatedPathPoint { timestamp: number; status: "priced" | "missing"; rawEstimate?: ResearchEstimate; ivNormalizedEstimate?: ResearchEstimate; estimatedNetPnlBtc?: number; estimateQuality: EstimateQuality }
-export interface EstimatedOutcome { label: string; trigger: string; decisionTimestamp?: number; valuationTimestamp?: number; estimate?: ResearchEstimate; rawEstimate?: number; ivNormalizedEstimate?: number; feesBtc?: number; estimatedNetPnl?: number; estimateQuality: EstimateQuality; status: "estimated" | "not-hit" | "unavailable" }
+export interface EstimatedOutcome { label: string; trigger: string; decisionTimestamp?: number; valuationTimestamp?: number; evidenceSource?: string; evidenceReason?: string; estimate?: ResearchEstimate; rawEstimate?: number; ivNormalizedEstimate?: number; feesBtc?: number; estimatedNetPnl?: number; estimateQuality: EstimateQuality; status: "estimated" | "not-hit" | "unavailable" }
 
 function weighted(rows: ContractTrade[], pick: (row: ContractTrade) => number) {
   const amount = rows.reduce((sum, row) => sum + row.amount, 0);
@@ -77,6 +77,46 @@ export function estimateResearchSpread(input:{spread:RetrievedSpread;targetTimes
 
 export function buildEstimatedPath(input:{spread:RetrievedSpread;timestamps:number[];indexAt:(timestamp:number)=>number|undefined;entry:ResearchEstimate;slippageBps:number;executionRoute?:ExecutionRoute}):EstimatedPathPoint[]{
  return input.timestamps.map(timestamp=>{const index=input.indexAt(timestamp);if(index===undefined)return{timestamp,status:"missing",estimateQuality:"unavailable"};const mark=estimateResearchSpread({spread:input.spread,targetTimestamp:timestamp,targetIndex:index,amount:input.entry.amount,slippageBps:input.slippageBps,executionRoute:input.executionRoute});if(mark.status==="unavailable")return{timestamp,status:"missing",estimateQuality:"unavailable"};const closingGross=(mark.bought.priceBtcPerContract-mark.sold.priceBtcPerContract)*mark.amount;const pnl=input.entry.netOpeningCashFlowBtc+closingGross-mark.openingFeesBtc;return{timestamp,status:"priced",rawEstimate:mark.priceSource==="direct-vwap"?mark:undefined,ivNormalizedEstimate:mark.priceSource==="iv-normalized"?mark:undefined,estimatedNetPnlBtc:pnl,estimateQuality:mark.estimateQuality};});
+}
+
+export function researchOutcomeAt(label:string,trigger:string,timestamp:number|undefined,path:EstimatedPathPoint[]):EstimatedOutcome {
+ if(timestamp===undefined)return{label,trigger,status:"unavailable",estimateQuality:"unavailable",evidenceSource:"unavailable",evidenceReason:"The bounded trigger timestamp is missing."};
+ const point=[...path].filter(candidate=>candidate.timestamp>=timestamp).sort((a,b)=>a.timestamp-b.timestamp)[0];
+ if(!point||point.status!=="priced"||point.estimatedNetPnlBtc===undefined)return{label,trigger,decisionTimestamp:timestamp,valuationTimestamp:point?.timestamp,status:"unavailable",estimateQuality:"unavailable",evidenceSource:"unavailable",evidenceReason:"No bounded two-leg evidence is available at or after this outcome timestamp."};
+ const estimate=point.rawEstimate??point.ivNormalizedEstimate;
+ return{label,trigger,decisionTimestamp:timestamp,valuationTimestamp:point.timestamp,status:"estimated",estimateQuality:point.estimateQuality,evidenceSource:estimate?.priceSource,evidenceReason:estimate?.qualityReason,estimate,feesBtc:estimate?.openingFeesBtc,estimatedNetPnl:point.estimatedNetPnlBtc};
+}
+
+export function buildResearchOutcomes(input:{event:BacktestEvent;spread:RetrievedSpread;entry:ResearchEstimate;path:EstimatedPathPoint[];candles:Candle[]}):EstimatedOutcome[]{
+ const {event,spread,entry,path,candles}=input, start=entry.targetTimestamp;
+ const priced=path.filter((point):point is EstimatedPathPoint&{estimatedNetPnlBtc:number}=>point.status==="priced"&&point.estimatedNetPnlBtc!==undefined);
+ const capture=(threshold:number)=>priced.find(point=>{const estimate=point.rawEstimate??point.ivNormalizedEstimate;if(!estimate||entry.grossSpreadBtc<=0)return false;const closeCost=(estimate.bought.priceBtcPerContract-estimate.sold.priceBtcPerContract)*entry.amount;return (entry.grossSpreadBtc+closeCost)/entry.grossSpreadBtc>=threshold;});
+ const invalidation=event.invalidationPrice===undefined?undefined:completedCandleTrigger(candles,start,c=>event.direction==="long"?c.close<event.invalidationPrice!:c.close>event.invalidationPrice!);
+ const fixed=(days:number)=>researchOutcomeAt(`${days}D`,`${days} days after entry`,start+days*86_400_000,path);
+ const outcomes=[
+  researchOutcomeAt("VPOC","Bundled VPOC timestamp",event.vpocTimestamp,path),
+  researchOutcomeAt("50% credit","First bounded mark at 50% credit capture",capture(.5)?.timestamp,path),
+  researchOutcomeAt("70% credit","First bounded mark at 70% credit capture",capture(.7)?.timestamp,path),
+  fixed(3),fixed(5),fixed(7),
+  researchOutcomeAt("Invalidation","First completed 1H candle beyond invalidation",invalidation?.closeTime,path),
+ ];
+ const expiry=spread.expiryTimestamp;
+ if(expiry===undefined||spread.deliveryPrice===undefined)return[...outcomes,{label:"Settlement",trigger:"Deribit delivery price",decisionTimestamp:expiry,status:"unavailable",estimateQuality:"unavailable",evidenceSource:"unavailable",evidenceReason:"The resolved expiry or Deribit delivery price is missing."}];
+ const intrinsic=(series:ContractSeries)=>series.optionType==="C"?Math.max(spread.deliveryPrice!-series.strike,0)/spread.deliveryPrice!:Math.max(series.strike-spread.deliveryPrice!,0)/spread.deliveryPrice!;
+ if(!spread.soldContract||!spread.boughtContract)return[...outcomes,{label:"Settlement",trigger:"Deribit delivery price",decisionTimestamp:expiry,status:"unavailable",estimateQuality:"unavailable",evidenceSource:"unavailable",evidenceReason:"Both resolved contracts are required for settlement."}];
+ const closing=(intrinsic(spread.boughtContract)-intrinsic(spread.soldContract))*entry.amount;
+ return[...outcomes,{label:"Settlement",trigger:"Deribit delivery price",decisionTimestamp:expiry,valuationTimestamp:expiry,status:"estimated",estimateQuality:"green",evidenceSource:"deribit-delivery-price",evidenceReason:`Versioned intrinsic settlement at ${spread.deliveryPrice}.`,estimatedNetPnl:entry.netOpeningCashFlowBtc+closing}];
+}
+
+export function scaleResearchEstimate(entry:ResearchEstimate,amount:number,executionRoute?:ExecutionRoute):ResearchEstimate {
+ const fees=aggregateRoutedFees([{side:"sell",fee:calculateOptionFee(entry.sold.priceBtcPerContract,amount,"taker",STANDARD_INVERSE_BTC_OPTION_FEE)},{side:"buy",fee:calculateOptionFee(entry.bought.priceBtcPerContract,amount,"taker",STANDARD_INVERSE_BTC_OPTION_FEE)}],executionRoute??"synchronized-leg-proxy").finalFee;
+ const gross=entry.grossSpreadBtcPerContract*amount;
+ return{...entry,amount,grossSpreadBtc:gross,openingFeesBtc:fees,netOpeningCashFlowBtc:gross-fees,observedAmountToRequestedRatio:entry.observedAmount/amount,liquidityWarning:entry.observedAmount<amount?"Historical tape does not prove execution of this size.":undefined};
+}
+
+export function scaleResearchPath(path:EstimatedPathPoint[],entry:ResearchEstimate,amount:number,executionRoute?:ExecutionRoute):EstimatedPathPoint[]{
+ const scaledEntry=scaleResearchEstimate(entry,amount,executionRoute);
+ return path.map(point=>{const mark=point.rawEstimate??point.ivNormalizedEstimate;if(point.status!=="priced"||!mark)return{...point,estimatedNetPnlBtc:undefined};const scaledMark=scaleResearchEstimate(mark,amount,executionRoute);const closingGross=(scaledMark.bought.priceBtcPerContract-scaledMark.sold.priceBtcPerContract)*amount;return{...point,rawEstimate:point.rawEstimate?scaledMark:undefined,ivNormalizedEstimate:point.ivNormalizedEstimate?scaledMark:undefined,estimatedNetPnlBtc:scaledEntry.netOpeningCashFlowBtc+closingGross-scaledMark.openingFeesBtc};});
 }
 
 export function completedCandleTrigger(candles:Candle[],after:number,predicate:(candle:Candle)=>boolean){return [...candles].sort((a,b)=>a.closeTime-b.closeTime).find(c=>c.closeTime>after&&predicate(c));}
