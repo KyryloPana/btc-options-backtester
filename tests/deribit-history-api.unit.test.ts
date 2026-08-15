@@ -54,7 +54,7 @@ test("joint nearest-strike resolution preserves distinct bear-call and bull-put 
 
 test("trade pagination deduplicates, orders, and filters exact interval", async () => {
   const fetcher=async(input:string|URL|Request)=>{ const u=new URL(String(input)); if(u.pathname.endsWith("get_delivery_prices"))return json({data:[],records_total:0});if(u.pathname.endsWith("get_instruments")) return json([]); if(u.searchParams.has("start_timestamp")) return json({trades:[trade("X",u.searchParams.get("sorting")==="asc"?1:3,u.searchParams.get("sorting")==="asc"?entry:entry+2)]}); return json({trades:[trade("X",3,entry+2),trade("X",2,entry+1),trade("X",2,entry+1),trade("X",1,entry),trade("X",4,entry+100)]}); };
-  const {service,cleanup}=await fixture(fetcher as typeof fetch); try { const rows=await service.fetchTradeRange("X",entry,entry+2); assert.deepEqual(rows.map(x=>x.tradeId),["1","2","3"]); } finally { await cleanup(); }
+  const {service,cleanup}=await fixture(fetcher as typeof fetch); try { const rows=await service.fetchTradeRange("X",entry,entry+2); assert.deepEqual(rows.map(x=>x.tradeSeq),["1","2","3"]); } finally { await cleanup(); }
 });
 
 test("incomplete sequence coverage is detected", async()=>{

@@ -11,7 +11,7 @@ export interface InverseOptionPricingInput {
   strike: number;
   valuationTimestamp: number;
   expiryTimestamp: number;
-  ivDecimal: number;
+  ivDecimal?: number;
   forwardPrice?: number;
 }
 
@@ -26,14 +26,15 @@ export function normalCdf(value: number): number {
 
 export function priceInverseOption(input: InverseOptionPricingInput): InverseOptionPricingResult {
   const { indexPrice: index, strike, valuationTimestamp, expiryTimestamp, ivDecimal } = input;
-  if (!(index > 0) || !(strike > 0) || !(ivDecimal > 0) || ![index, strike, ivDecimal, valuationTimestamp, expiryTimestamp].every(Number.isFinite)) {
-    return { status: "unavailable", reason: "Index, strike, IV, and timestamps must be finite; prices and IV must be positive." };
+  if (!(index > 0) || !(strike > 0) || (input.optionType !== "call" && input.optionType !== "put") || ![index, strike, valuationTimestamp, expiryTimestamp].every(Number.isFinite)) {
+    return { status: "unavailable", reason: "Option type, index, strike, and timestamps must be valid; prices must be positive." };
   }
   const timeYears = Math.max((expiryTimestamp - valuationTimestamp) / MILLISECONDS_PER_YEAR, 0);
   if (timeYears === 0) {
     const priceBtc = input.optionType === "call" ? Math.max(index - strike, 0) / index : Math.max(strike - index, 0) / index;
     return Number.isFinite(priceBtc) ? { status: "priced", priceBtc, priceUsd: priceBtc * index, timeYears, forwardPrice: index, rate: 0 } : { status: "unavailable", reason: "Intrinsic value is non-finite." };
   }
+  if (ivDecimal === undefined || !(ivDecimal > 0) || !Number.isFinite(ivDecimal)) return { status: "unavailable", reason: "Pre-expiry IV must be finite and positive." };
   const suppliedForward = input.forwardPrice;
   const hasForward = suppliedForward !== undefined && Number.isFinite(suppliedForward) && suppliedForward > 0;
   const forwardPrice = hasForward ? suppliedForward : index;
