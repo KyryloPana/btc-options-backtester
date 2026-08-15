@@ -40,7 +40,19 @@ type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<
 
 function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function expiryLabel(timestamp: number) { return new Date(timestamp).toISOString().slice(0, 10); }
-function nearest(chain: DeribitInstrumentManifest[], strike: number) { return [...chain].sort((a, b) => Math.abs(a.strike - strike) - Math.abs(b.strike - strike) || a.strike - b.strike)[0]; }
+/** Resolve both legs together so nearest-strike fallback cannot collapse a spread. */
+export function resolveOrderedPair(chain: DeribitInstrumentManifest[], soldStrike: number, boughtStrike: number) {
+  const expected = Math.sign(soldStrike - boughtStrike);
+  if (expected === 0) return undefined;
+  return chain.flatMap(sold => chain.map(bought => ({ sold, bought })))
+    .filter(pair => pair.sold.instrumentName !== pair.bought.instrumentName && Math.sign(pair.sold.strike - pair.bought.strike) === expected)
+    .sort((a, b) =>
+      (Math.abs(a.sold.strike - soldStrike) + Math.abs(a.bought.strike - boughtStrike))
+      - (Math.abs(b.sold.strike - soldStrike) + Math.abs(b.bought.strike - boughtStrike))
+      || Math.abs(a.sold.strike - soldStrike) - Math.abs(b.sold.strike - soldStrike)
+      || a.sold.strike - b.sold.strike
+      || a.bought.strike - b.bought.strike)[0];
+}
 
 export class DeribitHistoryService {
   private baseUrl: string;
@@ -172,8 +184,9 @@ export class DeribitHistoryService {
       if (!expiries.length) unavailable.push(`${request.optionType} ~${request.targetDte}D: no expiry in ${request.minDte}–${request.maxDte}D band`);
       for (const expiry of expiries) {
         const chain = this.manifest!.filter(x => x.optionType === request.optionType && x.expiryTimestamp === expiry && (x.creationTimestamp === undefined || x.creationTimestamp <= entryTimestamp));
-        const sold = nearest(chain, request.soldStrike), bought = nearest(chain, request.boughtStrike); const expected = Math.sign(request.soldStrike-request.boughtStrike), actual = sold && bought ? Math.sign(sold.strike-bought.strike) : 0;
-        const sensible = Boolean(sold && bought && sold.instrumentName !== bought.instrumentName && expected === actual);
+        const pair = resolveOrderedPair(chain, request.soldStrike, request.boughtStrike);
+        const sold = pair?.sold, bought = pair?.bought;
+        const sensible = Boolean(pair);
         candidates.push({ ...request, desiredSoldStrike: request.soldStrike, desiredBoughtStrike: request.boughtStrike, expiryTimestamp: expiry, expiryLabel: expiryLabel(expiry), actualDte: (expiry-entryTimestamp)/DAY_MS, soldInstrumentName: sold?.instrumentName, boughtInstrumentName: bought?.instrumentName, soldStrike: sold?.strike, boughtStrike: bought?.strike, soldCreationTimestamp: sold?.creationTimestamp, boughtCreationTimestamp: bought?.creationTimestamp, priceIndex: sold?.priceIndex ?? bought?.priceIndex ?? "btc_usd", strikeResolutionSensible: sensible, strikeResolutionNote: sensible ? `Resolved ${request.soldStrike}/${request.boughtStrike} to ${sold!.strike}/${bought!.strike}.` : "No distinct, correctly ordered strike pair known to exist at entry." });
         if (sensible) { selected.set(sold!.instrumentName, sold!); selected.set(bought!.instrumentName, bought!); }
       }
