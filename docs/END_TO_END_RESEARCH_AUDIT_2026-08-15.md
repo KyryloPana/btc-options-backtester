@@ -2,7 +2,7 @@
 
 ## Executive decision
 
-**Revision audited:** `475adaddb94ee0fe023aeea2cf61e20820e81f99` (`fix: expose chart cursor and opening USD values (#27)`). The expected object existed and was exactly `HEAD`. The worktree was clean on branch `work`; the audit then created `audit/end-to-end-research-integrity`. **No production behavior was changed.**
+**Revision audited:** `475adaddb94ee0fe023aeea2cf61e20820e81f99` (`fix: expose chart cursor and opening USD values (#27)`). The expected object existed and was exactly `HEAD`. The worktree was clean on branch `work`; the audit then created `audit/end-to-end-research-integrity`. **The original audit commit changed no production behavior; the remediation evidence appended below governs the repaired branch.**
 
 | Gate | Decision | Controlling reason |
 |---|---|---|
@@ -239,3 +239,28 @@ The real `/__deribit/history/index` request reached the production service but m
 3. **Cross-event comparisons: NO-GO.** P0s plus missing reproducibility/coverage envelope and ROR denominator.
 4. **Certified live-data operation: NO-GO.** Required live matrix is NOT TESTED because Deribit synchronization failed.
 5. **Out of scope:** live execution/live-trading readiness and proof of strategy edge.
+
+## Remediation evidence — `fix/research-integrity-audit-gates`
+
+The audit counterexamples were retained and converted into correctness gates. The shared parser now preserves normalized `trade_id` and `trade_seq`; inventory deduplicates by instrument plus `trade_id`, falling back to instrument plus `trade_seq`. Exact duplicates are accepted once, while a conflicting reuse throws `DuplicateTradeIntegrityError` with the instrument, typed identity, and conflicting fields. Trades without either identifier remain usable and are counted as identity-unavailable. Parser and production-service diagnostics expose received/total, accepted, duplicate, malformed, identity-unavailable, and representative rejection information. Deduplication precedes every inventory consumer, and timestamp/identity ordering is deterministic.
+
+Research outcomes now persist BTC PnL, valuation timestamp, conversion index and timestamp, `btc-times-outcome-index`, and USD point mark. The formula is `estimatedNetPnlBtc × conversionIndex`; entry price is not a fallback. Missing point index leaves BTC PnL intact and assigns the typed reason `outcome-index-unavailable`. The UI label is **USD at outcome index**, and exports carry these persisted fields.
+
+Inverse pricing validates option type, spot, strike, and timestamps before expiry handling. At or after expiry it returns inverse intrinsic, `max(S-K,0)/S` for calls or `max(K-S,0)/S` for puts, without requiring IV. Positive finite IV is required only for pre-expiry theoretical pricing. Calls and puts are gated ITM, ATM, and OTM with zero and absent IV.
+
+The startup dataset discovery remains run-once, but its startup-only work is now inside the effect; lint completes with no hook dependency warning and no suppression.
+
+### Revised decisions
+
+| Gate | Decision after remediation | Evidence / remaining condition |
+|---|---|---|
+| Deterministic development tests | **GO** | Full deterministic unit suite, retained audit gates, typecheck, lint, build, artifact validation, rendered HTML, and diff checks pass. |
+| Event-level historical research | **GO (deterministic/fixture scope only)** | P0-01 and P0-02 plus expiry and malformed-row visibility gates are closed. This is not a live-data certification. |
+| Cross-event comparisons | **NO-GO** | P1-01 reproducible batch/run envelope and P1-03 return-on-risk remain unresolved and were intentionally out of scope. |
+| Certified live-data operation | **NO-GO / NOT TESTED** | The complete real Deribit acceptance matrix has not completed; fixture evidence is never promoted to live PASS. |
+
+### Remaining findings
+
+- **P1-01:** Research export remains selected-event shaped and lacks the complete batch reproducibility envelope (`schemaVersion`, `runId`, configuration hash, code commit, data provenance, and run-quality denominator state).
+- **P1-03:** Research return-on-risk and its reproducible denominator remain absent.
+- **P2 / manual:** Browser pixel/layout acceptance remains NOT TESTED where no browser acceptance matrix has run. No fixture or rendered-HTML result is represented as a live Deribit PASS.

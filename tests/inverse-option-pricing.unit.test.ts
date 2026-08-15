@@ -11,3 +11,13 @@ test("expiry uses inverse intrinsic including puts above one BTC",()=>{const cal
 test("short DTE remains finite and invalid inputs are unavailable",()=>{const short=priced("call",{expiryTimestamp:now+1});assert.equal(short.status,"priced");if(short.status==="priced")assert.ok(Number.isFinite(short.priceBtc));for(const value of [0,-1,NaN,Infinity])assert.equal(priced("call",{ivDecimal:value}).status,"unavailable");assert.equal(priced("call",{indexPrice:0}).status,"unavailable");assert.equal(priced("call",{valuationTimestamp:NaN}).status,"unavailable");});
 test("Deribit percentage IV normalizes exactly once at parsing boundary",()=>{const [trade]=parseContractText(JSON.stringify({timestamp:now,price:.1,amount:1,index_price:100,instrument_name:"BTC-1JAN27-100-C",direction:"buy",iv:60}));assert.equal(trade.ivApiPercent,60);assert.equal(trade.ivDecimal,.6);});
 test("nearest exact-contract IV anchor wins deterministic ties",()=>{const name="BTC-1JAN27-100-C";const trades=parseContractText(JSON.stringify([{timestamp:now+1000,price:.1,amount:1,index_price:100,instrument_name:name,direction:"buy",iv:60,trade_id:"later"},{timestamp:now-1000,price:.1,amount:1,index_price:100,instrument_name:name,direction:"buy",iv:50,trade_id:"earlier"},{timestamp:now,price:.1,amount:1,index_price:100,instrument_name:"BTC-1JAN27-110-C",direction:"buy",iv:99}]));const series:ContractSeries={instrumentName:name,strike:100,optionType:"C",expiryTimestamp:expiry,expiryLabel:"1JAN27",trades,firstTradeTimestamp:now-1000,lastTradeTimestamp:now+1000,sourceFiles:[]};assert.equal(selectIvAnchor(series,now)?.tradeId,"earlier");assert.equal(selectIvAnchor({...series,instrumentName:"BTC-1JAN27-120-C"},now),undefined);});
+
+test("expiry intrinsic does not require IV for calls and puts across moneyness",()=>{
+  for (const [optionType,indexPrice,strike,expected] of [
+    ["call",120,100,20/120],["call",100,100,0],["call",80,100,0],
+    ["put",80,100,20/80],["put",100,100,0],["put",120,100,0],
+  ] as const) for (const ivDecimal of [0,undefined]) {
+    const result=priceInverseOption({optionType,indexPrice,strike,valuationTimestamp:expiry,expiryTimestamp:expiry,ivDecimal});
+    assert.equal(result.status,"priced"); if(result.status==="priced") assert.equal(result.priceBtc,expected);
+  }
+});

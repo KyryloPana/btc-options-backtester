@@ -125,6 +125,24 @@ export interface ContractTrade {
   direction: TradeSide;
   amount: number;
   tradeId?: string;
+  tradeSeq?: string;
+}
+
+export type TradeRejectionCode = "malformed-json" | "invalid-row" | "identity-unavailable";
+export interface TradeRejection { code: TradeRejectionCode; row?: number; reason: string }
+export interface TradeParserDiagnostics { totalRows: number; acceptedRows: number; duplicates: number; malformedRows: number; identityUnavailableRows: number; rejections: TradeRejection[] }
+export class DuplicateTradeIntegrityError extends Error {
+  readonly code = "conflicting-duplicate-trade" as const;
+  readonly instrument: string;
+  readonly identity: string;
+  readonly conflictingFields: string[];
+  constructor(instrument: string, identity: string, conflictingFields: string[]) {
+    super(`Conflicting duplicate trade ${instrument} ${identity}: ${conflictingFields.join(", ")}`);
+    this.name = "DuplicateTradeIntegrityError";
+    this.instrument = instrument;
+    this.identity = identity;
+    this.conflictingFields = conflictingFields;
+  }
 }
 
 export interface ContractSeries {
@@ -612,35 +630,76 @@ export function parseDeribitTrade(raw: unknown): ContractTrade | null {
     ivApiPercent,
     ivDecimal,
     tradeId: row.trade_id ? String(row.trade_id) : undefined,
+    tradeSeq: row.trade_seq !== undefined && row.trade_seq !== null && String(row.trade_seq) !== "" ? String(row.trade_seq) : undefined,
   };
 }
 
-export function parseContractText(text: string): ContractTrade[] {
+export function parseContractTextWithDiagnostics(text: string): { trades: ContractTrade[]; diagnostics: TradeParserDiagnostics } {
   const trimmed = text.trim();
-  if (!trimmed) return [];
+  const diagnostics: TradeParserDiagnostics = { totalRows: 0, acceptedRows: 0, duplicates: 0, malformedRows: 0, identityUnavailableRows: 0, rejections: [] };
+  if (!trimmed) return { trades: [], diagnostics };
   const rows: unknown[] = [];
-  if (trimmed.startsWith("[")) {
+  try {
     rows.push(...extractTradeObjects(JSON.parse(trimmed)));
-  } else {
-    try {
-      const parsed = JSON.parse(trimmed);
-      rows.push(...extractTradeObjects(parsed));
-    } catch {
-      for (const line of trimmed.split(/\r?\n/)) {
-        if (!line.trim()) continue;
-        try { rows.push(...extractTradeObjects(JSON.parse(line))); } catch { /* skip malformed rows */ }
-      }
+  } catch {
+    if (!trimmed.includes("\n")) {
+      diagnostics.totalRows = 1; diagnostics.malformedRows = 1;
+      diagnostics.rejections.push({ code: "malformed-json", row: 1, reason: "Input is not valid JSON." });
+      return { trades: [], diagnostics };
+    }
+    let lineNumber = 0;
+    for (const line of trimmed.split(/\r?\n/)) {
+      lineNumber++; if (!line.trim()) continue;
+      try { rows.push(...extractTradeObjects(JSON.parse(line))); }
+      catch { diagnostics.totalRows++; diagnostics.malformedRows++; if (diagnostics.rejections.length < 10) diagnostics.rejections.push({ code: "malformed-json", row: lineNumber, reason: "Line is not valid JSON." }); }
     }
   }
-  return rows.map(parseDeribitTrade).filter((trade): trade is ContractTrade => Boolean(trade));
+  diagnostics.totalRows += rows.length;
+  const trades: ContractTrade[] = [];
+  const identities = new Map<string, ContractTrade>();
+  rows.forEach((row, index) => {
+    const trade = parseDeribitTrade(row);
+    if (!trade) { diagnostics.malformedRows++; if (diagnostics.rejections.length < 10) diagnostics.rejections.push({ code: "invalid-row", row: index + 1, reason: "Required trade fields or direction are invalid." }); return; }
+    if (!trade.tradeId && !trade.tradeSeq) { diagnostics.identityUnavailableRows++; if (diagnostics.rejections.length < 10) diagnostics.rejections.push({ code: "identity-unavailable", row: index + 1, reason: "Neither trade_id nor trade_seq is present; deduplication cannot be guaranteed." }); }
+    const identity = trade.tradeId ? `trade_id:${trade.tradeId}` : trade.tradeSeq ? `trade_seq:${trade.tradeSeq}` : undefined;
+    if (identity) {
+      const key = `${trade.instrumentName}\0${identity}`, previous = identities.get(key);
+      if (previous) {
+        const fields: (keyof ContractTrade)[] = ["timestamp","price","markPrice","ivApiPercent","ivDecimal","indexPrice","direction","amount","tradeId","tradeSeq"];
+        const conflicts = fields.filter(field => previous[field] !== trade[field]);
+        if (conflicts.length) throw new DuplicateTradeIntegrityError(trade.instrumentName, identity, conflicts);
+        diagnostics.duplicates++; return;
+      }
+      identities.set(key, trade);
+    }
+    trades.push(trade);
+  });
+  diagnostics.acceptedRows = trades.length;
+  return { trades, diagnostics };
+}
+
+export function parseContractText(text: string): ContractTrade[] {
+  return parseContractTextWithDiagnostics(text).trades;
 }
 
 export function buildInventory(files: Array<{ name: string; trades: ContractTrade[] }>): ContractSeries[] {
   const map = new Map<string, ContractSeries>();
+  const identities = new Map<string, ContractTrade>();
   for (const file of files) {
     for (const trade of file.trades) {
       const parsed = parseInstrumentName(trade.instrumentName);
       if (!parsed) continue;
+      const identity = trade.tradeId ? `trade_id:${trade.tradeId}` : trade.tradeSeq ? `trade_seq:${trade.tradeSeq}` : undefined;
+      if (identity) {
+        const key = `${trade.instrumentName}\0${identity}`, previous = identities.get(key);
+        if (previous) {
+          const fields: (keyof ContractTrade)[] = ["timestamp","price","markPrice","ivApiPercent","ivDecimal","indexPrice","direction","amount","tradeId","tradeSeq"];
+          const conflicts = fields.filter(field => previous[field] !== trade[field]);
+          if (conflicts.length) throw new DuplicateTradeIntegrityError(trade.instrumentName, identity, conflicts);
+          continue;
+        }
+        identities.set(key, trade);
+      }
       const existing = map.get(trade.instrumentName);
       if (existing) {
         existing.trades.push(trade);
@@ -658,7 +717,7 @@ export function buildInventory(files: Array<{ name: string; trades: ContractTrad
     }
   }
   for (const series of map.values()) {
-    series.trades.sort((a, b) => a.timestamp - b.timestamp);
+    series.trades.sort((a, b) => a.timestamp - b.timestamp || (a.tradeId??"").localeCompare(b.tradeId??"") || (a.tradeSeq??"").localeCompare(b.tradeSeq??""));
     series.firstTradeTimestamp = series.trades[0].timestamp;
     series.lastTradeTimestamp = series.trades[series.trades.length - 1].timestamp;
   }

@@ -67,6 +67,7 @@ export class DeribitHistoryService {
   private requestCount = 0;
   private tradeCache = new Map<string, ContractTrade[]>();
   private deliveryPriceCache = new Map<string, number>();
+  private tradeDiagnostics = { receivedRows: 0, acceptedRows: 0, duplicateRows: 0, malformedRows: 0, identityUnavailableRows: 0, rejections: [] as Array<{ code: string; instrument: string; reason: string }> };
   constructor(baseUrl: string, cachePath: string, fetcher: FetchLike = fetch, concurrency = 4) {
     this.baseUrl = baseUrl;
     this.cachePath = cachePath;
@@ -147,15 +148,24 @@ export class DeribitHistoryService {
     for (let cursor = first.trade_seq; cursor <= last.trade_seq;) {
       const pageEnd = Math.min(cursor + MAX_COUNT - 1, last.trade_seq);
       const result = await this.api("get_last_trades_by_instrument", { instrument_name: name, start_seq: cursor, end_seq: pageEnd, count: MAX_COUNT, sorting: "asc" }) as { trades?: ApiTrade[] };
-      for (const trade of result.trades ?? []) if (trade.trade_seq >= first.trade_seq && trade.trade_seq <= last.trade_seq) bySeq.set(trade.trade_seq, trade);
+      for (const trade of result.trades ?? []) if (trade.trade_seq >= first.trade_seq && trade.trade_seq <= last.trade_seq) {
+        this.tradeDiagnostics.receivedRows++;
+        const previous = bySeq.get(trade.trade_seq);
+        if (previous) {
+          const conflicts = Object.keys({ ...previous, ...trade }).filter(field => (previous as unknown as Record<string, unknown>)[field] !== (trade as unknown as Record<string, unknown>)[field]);
+          if (conflicts.length) throw new Error(`Conflicting duplicate trade ${name} trade_seq:${trade.trade_seq}: ${conflicts.join(", ")}`);
+          this.tradeDiagnostics.duplicateRows++; continue;
+        }
+        bySeq.set(trade.trade_seq, trade);
+      }
       cursor = pageEnd + 1;
     }
     const missing: number[] = [];
     for (let seq = first.trade_seq; seq <= last.trade_seq; seq += 1) if (!bySeq.has(seq)) missing.push(seq);
     if (missing.length) throw new Error(`Incomplete trade sequence coverage for ${name}: ${missing.length} missing (${missing[0]}…${missing.at(-1)})`);
     const trades = [...bySeq.values()].filter(t => t.timestamp >= start && t.timestamp <= end).sort((a, b) => a.timestamp - b.timestamp || a.trade_seq - b.trade_seq)
-      .map(t => parseDeribitTrade({ ...t, instrument_name: t.instrument_name || name, trade_id: t.trade_id ?? String(t.trade_seq) }))
-      .filter((trade): trade is ContractTrade => trade !== null);
+      .map(t => parseDeribitTrade({ ...t, instrument_name: t.instrument_name || name }))
+      .filter((trade): trade is ContractTrade => { if (trade) { this.tradeDiagnostics.acceptedRows++; if (!trade.tradeId && !trade.tradeSeq) this.tradeDiagnostics.identityUnavailableRows++; return true; } this.tradeDiagnostics.malformedRows++; if (this.tradeDiagnostics.rejections.length < 10) this.tradeDiagnostics.rejections.push({ code: "invalid-row", instrument: name, reason: "Deribit returned a malformed trade row." }); return false; });
     this.tradeCache.set(key, trades); return trades;
   }
 
@@ -178,6 +188,7 @@ export class DeribitHistoryService {
   }
 
   async resolve(entryTimestamp: number, requests: DesiredRequest[]) {
+    this.tradeDiagnostics = { receivedRows: 0, acceptedRows: 0, duplicateRows: 0, malformedRows: 0, identityUnavailableRows: 0, rejections: [] };
     await this.loadCache(); await this.waitUntilReady();
     if (!Number.isFinite(entryTimestamp) || !Array.isArray(requests)) throw new Error("A valid entry timestamp and spread requests are required.");
     const requestStart = this.requestCount; const selected = new Map<string, DeribitInstrumentManifest>(); const candidates: DeribitCandidateManifest[] = []; const unavailable: string[] = [];
@@ -220,7 +231,7 @@ export class DeribitHistoryService {
       if (affected.length) { candidate.failedInstruments = affected.map(failure => failure.instrumentName); candidate.retrievalErrors = affected; }
     }
     const inventory = buildInventory(files).map(series => { const manifest = selected.get(series.instrumentName); const hasAmountRules = manifest?.minimumTradeAmount !== undefined && manifest.amountStep !== undefined && manifest.amountPrecision !== undefined; return { ...series, creationTimestamp: manifest?.creationTimestamp, amountMetadata: hasAmountRules ? { minimumTradeAmount: manifest.minimumTradeAmount!, amountStep: manifest.amountStep!, amountPrecision: manifest.amountPrecision!, source: "deribit-instrument-metadata" as const } : undefined }; });
-    return { complete: failures.length === 0, inventory, candidates, failures: failures.map(failure => ({ ...failure, requestIds: candidates.filter(candidate => candidate.failedInstruments?.includes(failure.instrumentName)).map(candidate => candidate.requestId), candidateIds: candidates.filter(candidate => candidate.failedInstruments?.includes(failure.instrumentName)).map(candidate => `${candidate.requestId}:${candidate.expiryTimestamp}`) })), deliveryFailures, diagnostics: { indexedContracts: this.manifest!.length, selectedContracts: selected.size, contractsLoaded: files.length, cacheHits, apiRequestCount: this.requestCount-requestStart, failedContracts: failures.map(failure => failure.instrumentName), unavailableRequests: unavailable, candidateExpiries: candidates.length, validTrades: inventory.reduce((n,x)=>n+x.trades.length,0) } };
+    return { complete: failures.length === 0, inventory, candidates, failures: failures.map(failure => ({ ...failure, requestIds: candidates.filter(candidate => candidate.failedInstruments?.includes(failure.instrumentName)).map(candidate => candidate.requestId), candidateIds: candidates.filter(candidate => candidate.failedInstruments?.includes(failure.instrumentName)).map(candidate => `${candidate.requestId}:${candidate.expiryTimestamp}`) })), deliveryFailures, diagnostics: { indexedContracts: this.manifest!.length, selectedContracts: selected.size, contractsLoaded: files.length, cacheHits, apiRequestCount: this.requestCount-requestStart, failedContracts: failures.map(failure => failure.instrumentName), unavailableRequests: unavailable, candidateExpiries: candidates.length, validTrades: inventory.reduce((n,x)=>n+x.trades.length,0), tradeRows: { ...this.tradeDiagnostics, acceptedRows: inventory.reduce((n,x)=>n+x.trades.length,0) } } };
   }
 }
 
