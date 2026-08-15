@@ -1,6 +1,61 @@
-import type { ExitResult, RetrievedSpread } from "./backtester";
+import type { DiagnosticValuationPoint, ExitResult, RetrievedSpread } from "./backtester";
+import type { EstimatedOutcome, EstimatedPathPoint } from "./research-valuation";
 
 export type ChartMetric = "pnl" | "values";
+export type ResearchChartMetric = "pnl-usd" | "pnl-btc" | "contract-values" | "btc-index";
+export type PresentationMetric = ChartMetric | ResearchChartMetric;
+
+export interface PresentationPoint {
+  timestamp: number;
+  values: Record<string, number | undefined>;
+  source: unknown;
+}
+
+export interface PresentationSeries { key:string; label:string; metric:PresentationMetric; color:string }
+
+/** Research USD inspection is intentionally strict: a priced point owns its conversion index. */
+export function researchPnlUsd(point: EstimatedPathPoint) {
+  if (point.status !== "priced" || point.estimatedNetPnlBtc === undefined) return undefined;
+  if (point.targetIndex === undefined || !Number.isFinite(point.targetIndex) || point.targetIndex <= 0) throw new Error("Priced Research point is missing a valid targetIndex.");
+  return point.estimatedNetPnlBtc * point.targetIndex;
+}
+
+/** Stored spread value is closing cash flow (long proceeds minus short cost); presentation shows positive economic closing cost. */
+export function researchNetClosingCostBtc(point: EstimatedPathPoint) {
+  if (point.shortModelPriceBtc !== undefined && point.longModelPriceBtc !== undefined) return point.shortModelPriceBtc - point.longModelPriceBtc;
+  return point.closingSpreadValueBtcPerContract === undefined ? undefined : -point.closingSpreadValueBtcPerContract;
+}
+
+export const RESEARCH_CHART_SERIES: PresentationSeries[] = [
+  {key:"researchPnlUsd",label:"Model-reconstructed estimate",metric:"pnl-usd",color:"#2a78d6"},
+  {key:"researchPnlBtc",label:"Model-reconstructed estimate",metric:"pnl-btc",color:"#2a78d6"},
+  {key:"netClosingCostBtc",label:"Net spread closing cost / contract",metric:"contract-values",color:"#3987e5"},
+  {key:"shortTheoreticalBtc",label:"Short theoretical option price",metric:"contract-values",color:"#c58a00"},
+  {key:"longTheoreticalBtc",label:"Long theoretical option price",metric:"contract-values",color:"#e66767"},
+  {key:"targetIndex",label:"BTC index",metric:"btc-index",color:"#26a269"},
+];
+
+export function adaptResearchPath(path: EstimatedPathPoint[]): PresentationPoint[] {
+  return path.map(point => ({timestamp:point.timestamp, source:point, values:{
+    researchPnlUsd:researchPnlUsd(point), researchPnlBtc:point.estimatedNetPnlBtc,
+    netClosingCostBtc:researchNetClosingCostBtc(point), shortTheoreticalBtc:point.shortModelPriceBtc,
+    longTheoreticalBtc:point.longModelPriceBtc, targetIndex:point.targetIndex,
+  }}));
+}
+
+export function adaptConservativePath(path: DiagnosticValuationPoint[]): PresentationPoint[] {
+  return path.map(point => ({timestamp:point.timestamp,source:point,values:Object.fromEntries(Object.keys(CHART_SERIES).map(key=>[key,point[key as ChartSeriesKey]]))}));
+}
+
+export function researchOutcomeGroups(outcomes:EstimatedOutcome[], expiry?:number, entryTimestamp?:number) {
+  const groups=new Map<number,string[]>();
+  const add=(timestamp:number,label:string)=>groups.set(timestamp,[...(groups.get(timestamp)??[]),label]);
+  if(entryTimestamp!==undefined&&(expiry===undefined||entryTimestamp<=expiry))add(entryTimestamp,"Entry");
+  outcomes.filter(o=>o.status==="estimated"&&o.valuationTimestamp!==undefined&&(expiry===undefined||o.valuationTimestamp<=expiry)).forEach(o=>add(o.valuationTimestamp!,o.label));
+  return [...groups].sort((a,b)=>a[0]-b[0]).map(([timestamp,labels])=>({timestamp,labels}));
+}
+
+export function rawResearchObservations(path:EstimatedPathPoint[]){return path.filter(point=>point.rawEstimate?.priceSource==="direct-vwap");}
 
 export function valuationChartTitle(metric: ChartMetric) {
   return metric === "pnl"

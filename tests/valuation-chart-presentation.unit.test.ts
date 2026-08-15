@@ -49,3 +49,50 @@ test("tab switching is presentation-only and chart controls retain their meaning
   assert.match(page, /const changeMetric = \(next: ChartMetric\) => \{ onMetricChange\(next\); setVisible/);
   assert.doesNotMatch(page, /changeMetric[\s\S]{0,250}(calculateContractSizeScenario|setScenario|outcomes)/);
 });
+
+import { adaptConservativePath, adaptResearchPath, rawResearchObservations, researchNetClosingCostBtc, researchOutcomeGroups, researchPnlUsd, RESEARCH_CHART_SERIES, timeX } from "../app/lib/valuation-chart.ts";
+import type { EstimatedPathPoint } from "../app/lib/research-valuation.ts";
+
+const researchPoint = (overrides:Partial<EstimatedPathPoint>={}):EstimatedPathPoint => ({timestamp:Date.UTC(2025,9,8),status:"priced",targetIndex:120_000,estimatedNetPnlBtc:.01,shortModelPriceBtc:.08,longModelPriceBtc:.03,closingSpreadValueBtcPerContract:-.05,estimateQuality:"red",soldIvSource:"constant-entry-IV",longIvSource:"local-observed-IV",...overrides});
+
+test("Research and Conservative use explicit, semantically separate presentation adapters", () => {
+  const research=adaptResearchPath([researchPoint()]);
+  assert.equal(research[0].values.researchPnlUsd,1200);
+  assert.equal(research[0].values.netClosingCostBtc,.05);
+  assert.equal("diagnosticIvUnrealizedPnlUsd" in research[0].values,false);
+  const conservative=adaptConservativePath([{timestamp:1,diagnosticIvUnrealizedPnlUsd:9} as never]);
+  assert.equal(conservative[0].values.diagnosticIvUnrealizedPnlUsd,9);
+  assert.equal("researchPnlUsd" in conservative[0].values,false);
+});
+
+test("Research USD conversion uses only each priced point target index", () => {
+  const point=researchPoint({targetIndex:125_000,estimatedNetPnlBtc:.012,modelEstimate:{sold:{supportingTrades:[{indexPrice:99_000}]}} as never});
+  assert.equal(researchPnlUsd(point),1500);
+  assert.throws(()=>researchPnlUsd(researchPoint({targetIndex:undefined})),/targetIndex/);
+});
+
+test("Research metrics expose truthful defaults, units, and economic closing-cost sign", () => {
+  assert.deepEqual([...new Set(RESEARCH_CHART_SERIES.map(series=>series.metric))],["pnl-usd","pnl-btc","contract-values","btc-index"]);
+  assert.deepEqual(RESEARCH_CHART_SERIES.filter(s=>s.metric==="contract-values").map(s=>s.label),["Net spread closing cost / contract","Short theoretical option price","Long theoretical option price"]);
+  assert.equal(researchNetClosingCostBtc(researchPoint()),.05);
+  assert.match(page,/setVisible\(\[next==="pnl-usd"\?"researchPnlUsd"[\s\S]*?"netClosingCostBtc"/);
+});
+
+test("raw Research evidence is discrete and outcomes are available, grouped, and bounded", () => {
+  const direct=researchPoint({rawEstimate:{priceSource:"direct-vwap"} as never});
+  assert.deepEqual(rawResearchObservations([researchPoint(),direct]),[direct]);
+  const expiry=30,groups=researchOutcomeGroups([{label:"VPOC",status:"estimated",valuationTimestamp:20},{label:"50% credit",status:"estimated",valuationTimestamp:20},{label:"7D",status:"unavailable",valuationTimestamp:40}] as never,expiry,10);
+  assert.deepEqual(groups,[{timestamp:10,labels:["Entry"]},{timestamp:20,labels:["VPOC","50% credit"]}]);
+  assert.doesNotMatch(page,/Raw historical estimate/);
+  assert.match(page,/raw-observation-marker/);
+});
+
+test("Research interaction, gaps, timestamps, expiry labels, and responsive containment remain explicit", () => {
+  assert.equal(timeX(20,10,40,0,300),100); // one third of the elapsed time range, independent of array position
+  assert.match(page,/ResearchValuationChart path=\{path\}/);
+  assert.match(page,/\["ArrowLeft","ArrowRight","Home","End"\]/);
+  assert.match(page,/splitPresentationSeries/);
+  assert.match(page,/point\.timestamp===expiry\?" · expiry \/ settlement"/);
+  assert.match(page,/Show outcome markers/);
+  assert.match(page,/shortIvDecimal[\s\S]*soldIvSource[\s\S]*longIvDecimal[\s\S]*longIvSource/);
+});
