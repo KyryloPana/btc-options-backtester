@@ -5,15 +5,19 @@ import { readFile } from "node:fs/promises";
 const app = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
-test("expanded evidence and payoff use one full-width vertical flow", () => {
-  assert.match(css, /\.ledger-pair\s*\{[^}]*width:\s*100%[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
-  assert.match(css, /\.opening-ledger, \.expiry-payoff, \.payoff-plot\s*\{\s*width:\s*100%/);
+test("expanded evidence and payoff remain side by side on desktop", () => {
+  assert.match(css, /\.ledger-pair\s*\{[^}]*width:\s*100%[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(0,\s*1fr\)/s);
+  assert.match(css, /@media \(max-width:\s*900px\)[\s\S]*?\.ledger-pair\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
   assert.match(css, /\.ledger-detail-row > td,[\s\S]*\.payoff-plot\s*\{\s*min-width:\s*0/);
+});
+
+test("the centered workspace uses the desktop viewport", () => {
+  assert.match(css, /\.page-shell\s*\{[^}]*width:\s*calc\(100%\s*-\s*32px\)[^}]*max-width:\s*1600px[^}]*margin:\s*0 auto/s);
 });
 
 test("payoff controls wrap and all statistics remain present", () => {
   assert.match(css, /\.payoff-currency-controls\s*\{[^}]*flex-wrap:\s*wrap/s);
-  assert.match(css, /repeat\(auto-fit,\s*minmax\(150px,\s*1fr\)\)/);
+  assert.match(css, /\.payoff-inspector\s*\{[^}]*grid-template-columns:\s*repeat\(5,\s*minmax\(0,\s*1fr\)\)/s);
   assert.match(css, /overflow-wrap:\s*anywhere/);
   assert.match(css, /font-variant-numeric:\s*tabular-nums/);
   for (const label of ["Selected point", "Maximum profit / loss", "Break-even", "Amount", "Gross / net entry credit"])

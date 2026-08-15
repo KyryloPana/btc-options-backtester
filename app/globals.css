@@ -95,7 +95,7 @@ button, label { -webkit-tap-highlight-color: transparent; }
 .live-dot, .idle-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--green); flex: 0 0 auto; }
 .idle-dot { background: var(--faint); }
 
-.page-shell { width: min(1580px, calc(100% - 36px)); margin: 0 auto; }
+.page-shell { width: calc(100% - 32px); max-width: 1600px; margin: 0 auto; }
 .hero {
   min-height: 142px;
   display: flex;
@@ -603,21 +603,23 @@ td small { color: var(--muted); font-size: 10px; }
 .evidence-details p, .evidence-details dl { color: var(--text-secondary); font-size: 10px; }
 footer { color: var(--muted); font-size: 10px; }
 
-/* Expanded structures are one full-width reading flow: evidence, chart, then statistics. */
+/* Keep the original desktop evidence/payoff split while allowing grid children to shrink. */
 .ledger-detail-row > td,
 .ledger-pair,
 .opening-ledger,
 .expiry-payoff,
 .payoff-plot { min-width: 0; }
-.ledger-pair { width: 100%; grid-template-columns: minmax(0, 1fr); gap: 0; }
-.opening-ledger, .expiry-payoff, .payoff-plot { width: 100%; }
+.ledger-pair { width: 100%; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .payoff-plot { overflow: hidden; }
 .payoff-plot svg { width: 100%; height: auto; }
 .payoff-currency-controls { display: flex; flex-wrap: wrap; max-width: 100%; }
 .payoff-currency-controls button { flex: 1 1 auto; white-space: normal; }
-.payoff-inspector { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
-.payoff-inspector span { padding: 14px 12px; overflow: hidden; }
+.payoff-inspector span { overflow: hidden; }
 .payoff-inspector strong { min-width: 0; white-space: normal; overflow-wrap: anywhere; word-break: normal; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 900px) {
+  .ledger-pair { grid-template-columns: minmax(0, 1fr); }
+}
 
 @media (max-width: 720px) {
   .expiry-payoff { padding: 14px 10px; }
