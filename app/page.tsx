@@ -12,7 +12,6 @@ import {
   type ExecutionMode,
   type ExpirySelectionMode,
   type ExitResult,
-  type EntryLedger,
   type EntryLedgers,
   type QualityFlag,
   type RetrievedSpread,
@@ -30,11 +29,12 @@ import { aggregateObservations, buildAndRunObservationRequests, buildObservation
 import { calculateContractSizeScenario, validateScenarioAmount, type ContractSizeScenario } from "./lib/contract-size-scenario";
 import { displayedProfit, entryEvidenceExplanation, spreadIdentity } from "./lib/observation-presentation";
 import { CHART_GEOMETRY, CHART_SERIES, hitExitGroups, nearestPoint, splitSeriesAtMissing, timestampAtX, timeX, valuationChartTitle, visibleMatrixSpreads, type ChartMetric, type ChartSeriesKey } from "./lib/valuation-chart";
-import { buildEstimatedPath, buildResearchExport, estimateResearchSpread, type EstimatedPathPoint, type PricingAssumption, type ResearchValuation } from "./lib/research-valuation";
+import { buildEstimatedPath, buildResearchExport, buildResearchOutcomes, estimateResearchSpread, scaleResearchEstimate, scaleResearchPath, type EstimatedOutcome, type EstimatedPathPoint, type PricingAssumption, type ResearchValuation } from "./lib/research-valuation";
 
 type Section = "events" | "construction" | "contracts" | "analysis";
 
 interface AnalysisResult {
+  eventPrice: number;
   observation: StrategyObservation;
   spread: RetrievedSpread;
   path: DiagnosticValuationPoint[];
@@ -45,6 +45,7 @@ interface AnalysisResult {
   scenarioInput: { event: BacktestEvent; candidates: RetrievedSpread[]; candles: Candle[]; config: StrategyVariantConfig };
   researchEntry: ResearchValuation;
   researchPath: EstimatedPathPoint[];
+  researchOutcomes: EstimatedOutcome[];
 }
 
 const DTE_OPTIONS = [7, 14, 30];
@@ -168,27 +169,22 @@ function ValuationChart({ path, exits, metric, onMetricChange }: { path: Diagnos
   </>;
 }
 
-function Ledger({ ledger }: { ledger: EntryLedger }) {
-  const flowLabel = ledger.spreadKind === "credit" ? "Gross net credit" : "Gross net debit";
-  return <section className="opening-ledger" aria-label={`${ledger.pricingMethod} opening ledger`}>
-    <div className="ledger-heading"><h4>{ledger.pricingMethod === "raw-vwap" ? "Raw VWAP" : "IV-normalized"}<InfoTooltip term={ledger.pricingMethod === "raw-vwap" ? "rawVwap" : "ivNormalized"} label={`Explain ${ledger.pricingMethod === "raw-vwap" ? "Raw VWAP" : "IV-normalized price"}`} /></h4><span className={flagClass(ledger.qualityFlag)}>{ledger.qualityFlag} evidence</span></div>
-    <p className="quality-reason"><strong>Pricing evidence:</strong> {ledger.qualityReason}</p>
-    <dl>
-      <div><dt>Sold instrument</dt><dd className="mono">{ledger.soldInstrumentName}</dd></div><div><dt>Bought instrument</dt><dd className="mono">{ledger.boughtInstrumentName}</dd></div>
-      <div><dt>Structure</dt><dd>{ledger.expiryLabel} · {ledger.optionType === "C" ? "Call" : "Put"} · sold ${ledger.soldStrikeUsd.toLocaleString()} / bought ${ledger.boughtStrikeUsd.toLocaleString()}</dd></div>
-      <div><dt>Selected contract amount</dt><dd>{ledger.contractAmount} contracts</dd></div>
-      <div><dt>Sold price received</dt><dd>{btc(ledger.soldPriceBtcPerContract)} / contract</dd></div><div><dt>Total sold proceeds</dt><dd>{btc(ledger.soldProceedsBtc)} · {money(ledger.soldProceedsUsd)}</dd></div>
-      <div><dt>Bought price paid</dt><dd>{btc(ledger.boughtPriceBtcPerContract)} / contract</dd></div><div><dt>Total bought cost</dt><dd>{btc(ledger.boughtCostBtc)} · {money(ledger.boughtCostUsd)}</dd></div>
-      <div><dt>Sold-leg fee<InfoTooltip term="feeTreatment" label="Explain separate-leg and combo fees" /></dt><dd>{btc(ledger.soldLegFeeBtc)}</dd></div><div><dt>{ledger.comboFeeBtc !== undefined ? "Combo fee" : "Bought-leg fee"}</dt><dd>{btc(ledger.comboFeeBtc ?? ledger.boughtLegFeeBtc)}</dd></div>
-      <div><dt>Total opening fees</dt><dd>{btc(ledger.totalOpeningFeesBtc)} · {money(ledger.totalOpeningFeesUsd)}</dd></div>
-      <div><dt>{flowLabel} / contract<InfoTooltip term="grossEntry" label="Explain gross entry credit or debit" /></dt><dd>{btc(ledger.grossEntryBtcPerContract)}</dd></div><div><dt>{flowLabel} total</dt><dd>{btc(ledger.grossEntryTotalBtc)} · {money(ledger.grossEntryTotalUsd)}</dd></div>
-      <div><dt>Net opening cash flow after fees<InfoTooltip term="netOpening" label="Explain net opening cash flow" /></dt><dd>{btc(ledger.netOpeningCashFlowBtc)} · {money(ledger.netOpeningCashFlowUsd)}</dd></div>
-      <div><dt>Entry BTC index</dt><dd>{money(ledger.entryIndexUsdPerBtc)} / BTC</dd></div>
-      <div><dt>Sold pricing timestamp</dt><dd>{formatUtc(ledger.soldPricingTimestamp)}</dd></div><div><dt>Bought pricing timestamp</dt><dd>{formatUtc(ledger.boughtPricingTimestamp)}</dd></div>
-      <div><dt>Normalization window</dt><dd>±{ledger.normalizationWindowMinutes} minutes</dd></div><div><dt>Execution mode</dt><dd>{ledger.executionMode}{ledger.comboFeeBtc !== undefined ? " · combo" : " · legs"}</dd></div>
-    </dl>
-  </section>;
+function ResearchDetail({result,amount,onAmountChange}: {result:AnalysisResult;amount:string;onAmountChange:(value:string)=>void}) {
+ const numeric=Number(amount), valid=Number.isFinite(numeric)&&numeric>0, base=result.researchEntry.status==="priced"?result.researchEntry:undefined;
+ if(!base)return <div className="analysis-detail"><div className="path-card card"><p className="empty-note">{result.researchEntry.status==="unavailable"?result.researchEntry.reason:"Research estimate unavailable."}</p></div></div>;
+ const entry=valid?scaleResearchEstimate(base,numeric,result.observation.strategyConfiguration.executionRoute):base;
+ const path=valid?scaleResearchPath(result.researchPath,base,numeric,result.observation.strategyConfiguration.executionRoute):result.researchPath;
+ const outcomes=result.researchOutcomes.map(outcome=>outcome.status==="estimated"&&outcome.estimatedNetPnl!==undefined?{...outcome,estimatedNetPnl:outcome.estimatedNetPnl/base.amount*entry.amount}:outcome);
+ const points=path.filter((point):point is EstimatedPathPoint&{estimatedNetPnlBtc:number}=>point.status==="priced"&&point.estimatedNetPnlBtc!==undefined);
+ const values=points.map(point=>point.estimatedNetPnlBtc*selectedIndex(point, result)); const best=values.length?Math.max(...values):undefined,worst=values.length?Math.min(...values):undefined;
+ const width=720,height=220,left=62,right=690,top=18,bottom=174,start=path[0]?.timestamp??0,end=path.at(-1)?.timestamp??start;
+ const min=Math.min(0,...values),max=Math.max(0,...values),range=max-min||1,x=(timestamp:number)=>left+(timestamp-start)/(end-start||1)*(right-left),y=(value:number)=>bottom-(value-min)/range*(bottom-top);
+ const ticks=Array.from({length:5},(_,i)=>start+(end-start)*i/4), maxLoss=Math.max(0,(result.spread.actualWidth??result.spread.targetWidth)/result.eventPrice*entry.amount-entry.netOpeningCashFlowBtc), openingBalance=entry.bought.priceBtcPerContract*entry.amount+entry.openingFeesBtc;
+ return <div className="analysis-detail"><div className="path-card card"><div className="card-title-row"><div><p className="eyebrow">Selected Research estimate</p><h3>Estimated 4H valuation path · PnL</h3></div><span className={flagClass(entry.estimateQuality)}>{entry.estimateQuality} estimate</span></div><div className="chart-legend"><label><i style={{background:"#2a78d6"}}/>Estimated net unrealized PnL · USD</label><label><i style={{background:"#fab219"}}/>Missing bounded evidence remains a gap</label></div><div className="mini-chart" aria-label="Estimated 4H valuation path chart"><svg viewBox={`0 0 ${width} ${height}`}><line x1={left} x2={right} y1={y(0)} y2={y(0)} className="zero-line"/>{ticks.map(timestamp=><g key={timestamp}><line x1={x(timestamp)} x2={x(timestamp)} y1={bottom} y2={bottom+5} className="axis-tick"/><text x={x(timestamp)} y={bottom+20} textAnchor="middle" className="axis-label">{new Date(timestamp).toLocaleDateString("en-GB",{timeZone:"UTC",month:"short",day:"2-digit"})}</text><text x={x(timestamp)} y={bottom+34} textAnchor="middle" className="axis-label">{new Date(timestamp).toLocaleTimeString("en-GB",{timeZone:"UTC",hour:"2-digit",minute:"2-digit",hour12:false})} UTC</text></g>)}{splitEstimated(points).map((segment,index)=><polyline key={index} points={segment.map(point=>`${x(point.timestamp)},${y(point.estimatedNetPnlBtc*selectedIndex(point,result))}`).join(" ")} className="chart-series" style={{stroke:"#2a78d6"}}/>)}</svg></div><div className="path-metrics"><span><small>Best estimated unrealized PnL</small><strong className="positive">{money(best)}</strong></span><span><small>Max estimated adverse PnL</small><strong className="negative">{money(worst)}</strong></span><span><small>Grid points</small><strong>{path.length}</strong></span></div><div className="table-scroll compact path-table"><table><thead><tr><th>Timestamp</th><th>Estimated net PnL</th><th>Evidence source</th><th>Quality and details</th></tr></thead><tbody>{path.slice(0,80).map(point=>{const mark=point.rawEstimate??point.ivNormalizedEstimate;return <tr key={point.timestamp}><td>{formatUtc(point.timestamp)}</td><td>{money(point.estimatedNetPnlBtc===undefined?undefined:point.estimatedNetPnlBtc*selectedIndex(point,result))}</td><td>{mark?.priceSource??"unavailable"}</td><td><details className="evidence-details"><summary><span className={flagClass(point.estimateQuality==="unavailable"?"red":point.estimateQuality)}>{point.estimateQuality}</span></summary><p>{mark?.qualityReason??"No bounded two-leg evidence at this grid point."}</p>{mark&&<p>±{mark.evidenceWindowMinutes}m · sold {mark.sold.instrumentName} @ {btc(mark.sold.priceBtcPerContract)} · bought {mark.bought.instrumentName} @ {btc(mark.bought.priceBtcPerContract)}</p>}</details></td></tr>})}</tbody></table></div></div><aside className="exit-card card"><p className="eyebrow">Research scenario</p><h3>Independent outcomes</h3><label className="scenario-input">Contract amount<input value={amount} onChange={event=>onAmountChange(event.target.value)} inputMode="decimal" /></label>{!valid&&<p className="quality-reason">Enter a finite, positive contract size.</p>}{entry.amountStepWarning&&<p className="quality-reason">{entry.amountStepWarning}</p>}{entry.liquidityWarning&&<p className="quality-reason">{entry.liquidityWarning}</p>}<div className="scenario-metrics"><label>Sold premium<strong>{btc(entry.sold.priceBtcPerContract*entry.amount)}</strong></label><label>Bought premium<strong>{btc(entry.bought.priceBtcPerContract*entry.amount)}</strong></label><label>Opening fees<strong>{btc(entry.openingFeesBtc)}</strong></label><label>Estimated gross entry<strong>{btc(entry.grossSpreadBtc)}</strong></label><label>Estimated net opening<strong>{btc(entry.netOpeningCashFlowBtc)}</strong></label><label>Theoretical maximum loss<strong>{btc(maxLoss)}</strong></label></div><div className="ledger-note"><strong>Estimated opening balance</strong><p>{btc(openingBalance)} · protective leg plus estimated opening fees</p></div><div className="exit-list">{outcomes.map(outcome=><div className={`exit-row ${outcome.status}`} key={outcome.label}><span>{outcome.label}<small>{outcome.valuationTimestamp?formatUtc(outcome.valuationTimestamp):outcome.status} · {outcome.evidenceSource??"unavailable"} · {outcome.estimateQuality}</small><small>{outcome.evidenceReason}</small></span><strong>{outcome.estimatedNetPnl===undefined?outcome.status:money(outcome.estimatedNetPnl*result.eventPrice)}</strong></div>)}</div><div className="ledger-note"><strong>Research entry evidence</strong><p>{entry.sold.instrumentName} / {entry.bought.instrumentName}</p><p>±{entry.evidenceWindowMinutes}m · sold VWAP {btc(entry.sold.unslippedPriceBtcPerContract)} · bought VWAP {btc(entry.bought.unslippedPriceBtcPerContract)} · {entry.slippageBps} bps slippage · fees {btc(entry.openingFeesBtc)}</p><p>{entry.qualityReason}</p></div></aside></div>;
 }
+
+function selectedIndex(point:EstimatedPathPoint,result:AnalysisResult){return (point.rawEstimate??point.ivNormalizedEstimate)?.sold.supportingTrades[0]?.indexPrice||result.eventPrice;}
+function splitEstimated(points:(EstimatedPathPoint&{estimatedNetPnlBtc:number})[]){const segments:typeof points[]=[];let current:typeof points=[];for(const point of points){if(current.length&&point.timestamp-current.at(-1)!.timestamp>5*3_600_000){segments.push(current);current=[];}current.push(point);}if(current.length)segments.push(current);return segments;}
 
 export default function Home() {
   const stats = useMemo(() => durationSummary(), []);
@@ -263,10 +259,10 @@ export default function Home() {
   });
   const aggregateGroups = useMemo(() => aggregateObservations(analysisResults.map(result => result.observation)), [analysisResults]);
 
-  const scenarioError = selectedAnalysis ? validateScenarioAmount(Number(scenarioAmount), selectedAnalysis.spread.soldContract?.amountMetadata, selectedAnalysis.spread.boughtContract?.amountMetadata) : undefined;
+  const scenarioError = selectedAnalysis ? pricingAssumption === "research-estimate" ? (!Number.isFinite(Number(scenarioAmount)) || Number(scenarioAmount) <= 0 ? "Enter a finite, positive contract size." : undefined) : validateScenarioAmount(Number(scenarioAmount), selectedAnalysis.spread.soldContract?.amountMetadata, selectedAnalysis.spread.boughtContract?.amountMetadata) : undefined;
 
   useEffect(() => {
-    if (!selectedAnalysis || !scenarioAmount) return;
+    if (!selectedAnalysis || !scenarioAmount || pricingAssumption === "research-estimate") return;
     const nextAmount = Number(scenarioAmount);
     if (scenarioError) return;
     let stale = false;
@@ -277,7 +273,7 @@ export default function Home() {
       if (!stale) { setScenario(result); setScenarioCalculating(false); }
     }, 180);
     return () => { stale = true; window.clearTimeout(timer); };
-  }, [scenarioAmount, scenarioError, selectedAnalysis]);
+  }, [scenarioAmount, scenarioError, selectedAnalysis, pricingAssumption]);
 
   function selectAnalysisResult(id: string) {
     const next = analysisResults.find(result => result.spread.id === id);
@@ -468,9 +464,10 @@ export default function Home() {
         const grid=candles.filter((_,index)=>index%4===3).map(c=>c.closeTime);
         const indexAt=(timestamp:number)=>[...candles].filter(c=>c.closeTime<=timestamp).sort((a,b)=>b.closeTime-a.closeTime)[0]?.close;
         const researchPath=researchEntry.status==="priced"?buildEstimatedPath({spread,timestamps:grid,indexAt,entry:researchEntry,slippageBps:observation.strategyConfiguration.slippageBps,executionRoute:observation.strategyConfiguration.executionRoute}):[];
+        const researchOutcomes=researchEntry.status==="priced"?buildResearchOutcomes({event:selectedEvent,spread,entry:researchEntry,path:researchPath,candles}):[];
         const eventQuality: QualityFlag = researchEntry.status === "priced" ? researchEntry.estimateQuality : "red";
         const config = observation.strategyConfiguration;
-        return { observation, spread, path, exits, selectedExit, eventQuality, researchEntry, researchPath, scenarioInput: { event: selectedEvent, candidates: retrievedSpreads, candles, config } };
+        return { eventPrice:selectedEvent.entryPrice, observation, spread, path, exits, selectedExit, eventQuality, researchEntry, researchPath, researchOutcomes, scenarioInput: { event: selectedEvent, candidates: retrievedSpreads, candles, config } };
       });
       setAnalysisResults(next);
       setSelectedResultId(next[0]?.spread.id);
@@ -486,7 +483,8 @@ export default function Home() {
 
   function exportResults() {
     const configuration = { expiryHorizons: dtes, dteTolerances, expirySelectionMode, widths, spreadKind, pricingAssumption, conservativeTapeScenario: "taker-tape-proxy", makerDisplaySelection: executionMode, comboRequested: comboExecution, amount, pricingModes };
-    const payload = pricingAssumption==="research-estimate"?{mode:"research-estimate",results:analysisResults.map(result=>buildResearchExport({event:selectedEvent,spread:result.spread,entry:result.researchEntry,path:result.researchPath}))}:buildObservationExport(analysisResults.map(result => result.observation), configuration, events);
+    const selected=analysisResults.find(result=>result.spread.id===selectedResultId)??analysisResults[0];
+    const payload = pricingAssumption==="research-estimate"?{mode:"research-estimate",configuration,results:selected?[buildResearchExport({event:selectedEvent,spread:selected.spread,entry:selected.researchEntry,path:selected.researchPath,outcomes:selected.researchOutcomes})]:[]}:buildObservationExport(analysisResults.map(result => result.observation), configuration, events);
     const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
@@ -642,18 +640,21 @@ export default function Home() {
         <section className="workspace-section" ref={node => { sectionRefs.current.analysis = node; }}>
           <div className="section-heading"><div><span className="step-number">04</span><p className="eyebrow">Path-aware output</p><h2>PnL, exits & trust filters</h2></div><button className="secondary-button" disabled={!analysisResults.length} onClick={exportResults}>Export JSON</button></div>
           <div className="filter-row"><div className="segmented">{([['all','All tests'],['trusted','Green / yellow'],['green','Green only']] as const).map(([value,label]) => <button className={resultsFilter === value ? "active" : ""} onClick={() => setResultsFilter(value)} key={value}>{label}</button>)}</div><span>{filteredResults.length} / {analysisResults.length} results visible</span></div>
-          {!!aggregateGroups.length && <div className="source-strip" aria-label="Unfiltered observation aggregates"><span><small>Original signals</small><strong>{analysisResults.length}</strong></span><span><small>Priced observations</small><strong>{analysisResults.filter(r=>r.researchEntry.status==="priced").length}</strong></span><span><small>Unavailable observations</small><strong>{analysisResults.filter(r=>r.researchEntry.status==="unavailable").length}</strong></span><span><small>Pricing coverage</small><strong>{pct(100*analysisResults.filter(r=>r.researchEntry.status==="priced").length/analysisResults.length)}</strong></span></div>}
+          {!!aggregateGroups.length && pricingAssumption === "research-estimate" && <div className="source-strip" aria-label="Unfiltered research estimate aggregates"><span><small>Original signals</small><strong>{analysisResults.length}</strong></span><span><small>Priced observations</small><strong>{analysisResults.filter(r=>r.researchEntry.status==="priced").length}</strong></span><span><small>Unavailable observations</small><strong>{analysisResults.filter(r=>r.researchEntry.status==="unavailable").length}</strong></span><span><small>Pricing coverage</small><strong>{pct(100*analysisResults.filter(r=>r.researchEntry.status==="priced").length/analysisResults.length)}</strong></span></div>}
+          {!!aggregateGroups.length && pricingAssumption === "conservative-tape-check" && <div className="source-strip" aria-label="Unfiltered conservative tape aggregates"><span><small>Original signals</small><strong>{analysisResults.length}</strong></span><span><small>Strict tape entries</small><strong>{analysisResults.filter(r=>r.observation.entryExecution?.status==="filled").length}</strong></span><span><small>No trade / unavailable</small><strong>{analysisResults.filter(r=>r.observation.entryExecution?.status!=="filled").length}</strong></span></div>}
           <div className="cashflow-explainer card"><strong>Cash-flow identities</strong><p>Credit: gross entry credit = sold premium received − bought premium paid; net opening cash flow = gross entry credit × amount − opening fees; mark-to-close PnL = opening cash flow − closing cost − exit fees. Debit spreads mirror the cash-flow direction: opening cash flow is negative and closing proceeds are positive.</p><p>Every path value is a diagnostic unrealized close mark anchored to the actual causal opening cash flow. Realized PnL is shown only for a causal close fill or versioned settlement.</p></div>
-          <div className="table-card card"><div className="table-scroll"><table><thead><tr><th><span className="sr-only">Expand</span></th><th>Estimate quality</th><th>Spread and both strikes</th><th>Expiry</th><th>Width</th><th>Estimated gross entry</th><th>Estimated net opening</th><th>Best estimated unrealized PnL</th><th>Max estimated adverse PnL</th><th>Estimated selected outcome</th></tr></thead><tbody>
+          {pricingAssumption === "conservative-tape-check" && <div className="table-card card"><div className="table-scroll"><table><thead><tr><th>Conservative tape result</th><th>Spread and both strikes</th><th>Expiry</th><th>Entry evidence</th></tr></thead><tbody>{filteredResults.map(result=><tr key={result.spread.id} className={selectedAnalysis?.spread.id===result.spread.id?"row-selected":""} onClick={()=>selectAnalysisResult(result.spread.id)}><td>{result.observation.eventOutcome}</td><td><strong>{result.spread.structure}</strong><small className="mono">{spreadIdentity(result.spread).soldStrike??"—"} / {spreadIdentity(result.spread).boughtStrike??"—"} {result.spread.optionType}</small></td><td>{result.spread.expiryLabel}</td><td>{entryEvidenceExplanation(result.observation)}</td></tr>)}</tbody></table></div></div>}
+          {pricingAssumption === "research-estimate" && <div className="table-card card"><div className="table-scroll"><table><thead><tr><th><span className="sr-only">Expand</span></th><th>Estimate quality</th><th>Spread and both strikes</th><th>Expiry</th><th>Width</th><th>Estimated gross entry</th><th>Estimated net opening</th><th>Best estimated unrealized PnL</th><th>Max estimated adverse PnL</th><th>Estimated selected outcome</th></tr></thead><tbody>
             {filteredResults.map(result => {
               const researchPnls=result.researchPath.map(point=>point.estimatedNetPnlBtc).filter((value):value is number=>value!==undefined).map(value=>value*selectedEvent.entryPrice); const researchBest=Math.max(...researchPnls),researchWorst=Math.min(...researchPnls); const estimate=result.researchEntry.status==="priced"?result.researchEntry:undefined;
               const expanded = expandedResultIds.includes(result.spread.id);
               return <Fragment key={result.spread.id}><tr className={selectedAnalysis?.spread.id === result.spread.id ? "row-selected" : ""} onClick={() => selectAnalysisResult(result.spread.id)}><td><button className="expand-button" aria-expanded={expanded} aria-controls={`ledger-${result.spread.id}`} aria-label={`${expanded ? "Collapse" : "Expand"} opening ledgers for ${result.spread.structure}`} onClick={event => { event.stopPropagation(); setExpandedResultIds(current => expanded ? current.filter(id => id !== result.spread.id) : [...current, result.spread.id]); }}><span className="expand-chevron" aria-hidden="true" /></button></td><td><span className={flagClass(estimate?.estimateQuality ?? "red")}>{estimate?.estimateQuality ?? "unavailable"}</span><small>Confidence label, not execution proof</small></td><td><strong>{result.spread.structure}</strong><small className="mono">{spreadIdentity(result.spread).soldStrike ?? "—"} / {spreadIdentity(result.spread).boughtStrike ?? "—"} {result.spread.optionType}</small></td><td>{result.spread.expiryLabel}</td><td>{money(result.spread.actualWidth)}</td><td>{btc(estimate?.grossSpreadBtc)}</td><td>{btc(estimate?.netOpeningCashFlowBtc)}</td><td className="positive">{researchBest===-Infinity?"—":money(researchBest)}</td><td className="negative">{researchWorst===Infinity?"—":money(researchWorst)}</td><td>{estimate?"Estimated valuation":"Unavailable"}</td></tr>{expanded && <tr className="ledger-detail-row"><td colSpan={10}><div id={`ledger-${result.spread.id}`} className="ledger-pair">{estimate?<section className="opening-ledger"><h4>Research estimate evidence</h4><p>{estimate.disclaimer}</p><dl><div><dt>Contracts</dt><dd className="mono">{estimate.sold.instrumentName} / {estimate.bought.instrumentName}</dd></div><div><dt>Evidence window</dt><dd>±{estimate.evidenceWindowMinutes} minutes</dd></div><div><dt>Leg prices</dt><dd>{btc(estimate.sold.priceBtcPerContract)} / {btc(estimate.bought.priceBtcPerContract)}</dd></div><div><dt>Synchronization</dt><dd>{estimate.synchronizationGapMinutes.toFixed(1)} min</dd></div><div><dt>Source / quality</dt><dd>{estimate.priceSource} · {estimate.estimateQuality}</dd></div><div><dt>Slippage</dt><dd>{estimate.slippageBps} bps adverse by economic side</dd></div><div><dt>Fees</dt><dd>{btc(estimate.openingFeesBtc)}</dd></div></dl>{estimate.liquidityWarning&&<p>{estimate.liquidityWarning}</p>}</section>:<p>{result.researchEntry.status === "unavailable" ? result.researchEntry.reason : "Research estimate unavailable."}</p>}</div></td></tr>}</Fragment>;
             })}
             {!filteredResults.length && <tr><td colSpan={10} className="empty-cell">Run the backtest after importing eligible contract histories. Red tests remain visible in “All tests.”</td></tr>}
-          </tbody></table></div></div>
+          </tbody></table></div></div>}
 
-          {selectedAnalysis && <div className="analysis-detail">
+          {selectedAnalysis && pricingAssumption === "research-estimate" && <ResearchDetail result={selectedAnalysis} amount={scenarioAmount} onAmountChange={setScenarioAmount}/>}
+          {selectedAnalysis && pricingAssumption === "conservative-tape-check" && <div className="analysis-detail">
             <div className="path-card card">
               <div className="card-title-row"><div><p className="eyebrow">Selected combination</p><h3 aria-live="polite">{valuationChartTitle(chartMetric)}</h3></div><span className={flagClass(selectedAnalysis.eventQuality)}>{selectedAnalysis.eventQuality} event</span></div>
               <ValuationChart path={selectedAnalysis.path} exits={selectedAnalysis.exits} metric={chartMetric} onMetricChange={setChartMetric}/>
