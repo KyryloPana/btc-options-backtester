@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildEstimatedPath, buildResearchExport, buildResearchOutcomes, estimateResearchSpread, expiryWeekday, isFridayExpiry, resolveUnderlyingIndex, scaleResearchEstimate, scaleResearchPath, validateResearchAmount } from "../app/lib/research-valuation.ts";
+import { buildEstimatedPath, buildResearchExport, buildResearchOutcomes, estimateResearchSpread, expiryWeekday, isFridayExpiry, resolveUnderlyingIndex, openingUsdEquivalent, scaleResearchEstimate, scaleResearchPath, validateResearchAmount } from "../app/lib/research-valuation.ts";
 import { buildInventory, executionClock, parseContractText, retrieveSpread, simulateTakerSpread, type ContractSeries, type ContractTrade, type RetrievedSpread } from "../app/lib/backtester.ts";
 import { parseOhlcCandles } from "../app/lib/candle-pipeline.ts";
 const T=Date.UTC(2024,0,1,12), expiry=T+7*864e5;
@@ -53,3 +53,20 @@ test("live-shaped October Deribit rows retain independent IV anchors through dir
 });
 
 test("invalid amount is rejected before constructing a research path",()=>{assert.match(validateResearchAmount(0)??"",/greater than zero/);});
+
+test("opening USD equivalents retain the canonical synchronized entry index",()=>{
+ const direct=estimateResearchSpread({spread:spread([trade("BTC-8JAN24-39000-P",0,.08,"sell",2)],[trade("BTC-8JAN24-38000-P",0,.03,"buy",2)]),targetTimestamp:T,targetIndex:41_234.5,amount:2,slippageBps:0});
+ assert.equal(direct.status,"priced"); if(direct.status!=="priced")return;
+ assert.equal(direct.entryTargetIndex,41_234.5);
+ assert.equal(openingUsdEquivalent(direct.grossSpreadBtc,direct.entryTargetIndex),direct.grossSpreadBtc*41_234.5);
+ assert.equal(openingUsdEquivalent(.001,undefined),undefined); assert.equal(openingUsdEquivalent(.001,0),undefined);
+ const exported=buildResearchExport({event:{id:"e",label:"e",direction:"long",entryDate:"2024-01-01",entryPrice:99_999},spread:spread([trade("BTC-8JAN24-39000-P",0,.08,"sell",2)],[trade("BTC-8JAN24-38000-P",0,.03,"buy",2)]),entry:direct});
+ assert.equal(exported.openingCurrencyConversion?.method,"btc-times-entry-target-index");
+ assert.equal(exported.openingCurrencyConversion?.index,41_234.5);
+ assert.equal(exported.openingUsdEquivalent?.soldPremium,direct.sold.priceBtcPerContract*direct.amount*41_234.5);
+ assert.equal(exported.openingUsdEquivalent?.boughtPremium,direct.bought.priceBtcPerContract*direct.amount*41_234.5);
+ assert.equal(exported.openingUsdEquivalent?.openingFees,direct.openingFeesBtc*41_234.5);
+ assert.equal(exported.openingUsdEquivalent?.grossEntry,direct.grossSpreadBtc*41_234.5);
+ assert.equal(exported.openingUsdEquivalent?.netOpening,direct.netOpeningCashFlowBtc*41_234.5);
+ assert.equal(exported.estimatedEntry.grossSpreadBtc,direct.grossSpreadBtc);
+});
