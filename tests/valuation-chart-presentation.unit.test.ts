@@ -96,3 +96,20 @@ test("Research interaction, gaps, timestamps, expiry labels, and responsive cont
   assert.match(page,/Show outcome markers/);
   assert.match(page,/shortIvDecimal[\s\S]*soldIvSource[\s\S]*longIvDecimal[\s\S]*longIvSource/);
 });
+
+test("Research inspector is external, keyboard-clearable, responsive, and opening currency is presentation-only",()=>{
+ const page=readFileSync(new URL("../app/page.tsx",import.meta.url),"utf8");
+ const css=readFileSync(new URL("../app/globals.css",import.meta.url),"utf8");
+ assert.match(page,/<\/svg>}<\/div>\s*\{point\?<section className="selected-point-inspector"/);
+ assert.match(page,/event\.key==="Escape".*setCursor\(undefined\)/);
+ assert.match(page,/className="selected-time-label"/);
+ assert.match(page,/active\.map\(series=>typeof selectedPresentation/);
+ assert.match(page,/Hover over the chart or use the arrow keys to inspect a point/);
+ assert.match(page,/useState<"btc"\|"usd-entry">\("btc"\)/);
+ assert.match(page,/USD @ entry/);
+ assert.match(page,/openingUsdEquivalent\(value,entry\.entryTargetIndex\)/);
+ assert.match(page,/Theoretical maximum loss · USD equivalent at entry index/);
+ assert.match(css,/\.selected-point-inspector \{ position: static/);
+ assert.doesNotMatch(css,/\.selected-point-inspector[^}]*position:\s*absolute/);
+ assert.match(css,/@media \(max-width: 560px\) \{ \.inspector-grid \{ grid-template-columns: minmax\(0,1fr\)/);
+});

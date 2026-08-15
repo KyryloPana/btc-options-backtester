@@ -654,3 +654,17 @@ footer { color: var(--muted); font-size: 10px; }
   .matrix-header-actions { gap: 7px; }
 }
 .dataset-toolbar{display:flex;align-items:end;gap:.75rem;flex-wrap:wrap;padding:1rem;margin-bottom:.5rem}.dataset-toolbar label{display:grid;gap:.3rem;min-width:15rem}.dataset-toolbar>span{color:var(--muted);font-size:.82rem;margin-right:auto}.dirty-state{color:#a66500;font-size:.8rem}.dataset-note{margin:.25rem 0 1rem}.dataset-import{padding:1rem;margin-bottom:1rem}.dataset-import h3{margin-top:0}.dataset-error{color:#b42318}
+
+/* The Research inspector follows the plot in document flow, so it cannot obscure data. */
+.selected-point-inspector { position: static; min-width: 0; max-width: 100%; padding: 10px 12px; border-bottom: 1px solid var(--line-soft); background: var(--surface-1); }
+.inspector-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 5px 14px; color: var(--text-secondary); font-size: 11px; overflow-wrap: anywhere; }
+.inspector-grid > strong, .inspector-grid > em { grid-column: 1 / -1; }
+.inspector-grid span { display: flex; justify-content: space-between; gap: 8px; min-width: 0; }
+.inspector-grid b { color: var(--text-primary); text-align: right; }
+.inspector-grid em { color: var(--text-secondary); font-style: normal; }
+.inspector-instruction { margin: 0; padding: 9px 12px; color: var(--text-secondary); border-bottom: 1px solid var(--line-soft); font-size: 11px; }
+.selected-time-label { fill: var(--text-primary); font: 2.35px var(--mono); paint-order: stroke; stroke: var(--surface-1); stroke-width: 1.4px; }
+.opening-currency-control { display:flex; align-items:center; justify-content:flex-end; gap:10px; margin: 8px 0; color:var(--text-secondary); font-size:11px; }
+.conversion-note { color:var(--text-secondary); font-size:11px; line-height:1.4; }
+@media (max-width: 900px) { .inspector-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 560px) { .inspector-grid { grid-template-columns: minmax(0,1fr); } .opening-currency-control { justify-content:flex-start; flex-wrap:wrap; } }
