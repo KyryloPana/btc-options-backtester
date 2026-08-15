@@ -720,3 +720,5 @@ footer { color: var(--muted); font-size: 10px; }
 .conversion-note { color:var(--text-secondary); font-size:11px; line-height:1.4; }
 @media (max-width: 900px) { .inspector-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 560px) { .inspector-grid { grid-template-columns: minmax(0,1fr); } .opening-currency-control { justify-content:flex-start; flex-wrap:wrap; } }
+
+.payoff-tooltip-object{pointer-events:none;overflow:visible}.payoff-tooltip{box-sizing:border-box;width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;gap:3px;padding:7px 9px;border:1px solid #64766f;border-radius:4px;background:rgba(18,24,22,.96);box-shadow:0 4px 14px rgba(0,0,0,.32);color:var(--text-primary);font:11px var(--mono);white-space:nowrap}.payoff-tooltip strong{font:inherit;font-weight:600}.payoff-tooltip small{color:#d1b968;font-size:9px;text-transform:uppercase;letter-spacing:.05em}
