@@ -586,7 +586,8 @@ function extractTradeObjects(parsed: unknown): unknown[] {
   return [parsed];
 }
 
-function normalizeTrade(raw: unknown): ContractTrade | null {
+/** Normalize one live Deribit row. IV percent is converted exactly once here. */
+export function parseDeribitTrade(raw: unknown): ContractTrade | null {
   if (!raw || typeof raw !== "object") return null;
   const row = raw as Record<string, unknown>;
   const timestamp = asNumber(row.timestamp);
@@ -595,7 +596,7 @@ function normalizeTrade(raw: unknown): ContractTrade | null {
   const indexPrice = asNumber(row.index_price ?? row.indexPrice);
   const instrumentName = String(row.instrument_name ?? row.instrumentName ?? "").toUpperCase();
   const direction = String(row.direction ?? "").toLowerCase();
-  if (!timestamp || price === undefined || amount === undefined || indexPrice === undefined || !parseInstrumentName(instrumentName)) return null;
+  if (!timestamp || price === undefined || amount === undefined || indexPrice === undefined || !instrumentName) return null;
   if (direction !== "buy" && direction !== "sell") return null;
   const ivApiPercent = asNumber(row.iv);
   const ivDecimal = ivApiPercent !== undefined && Number.isFinite(ivApiPercent) && ivApiPercent > 0 ? ivApiPercent / 100 : undefined;
@@ -631,7 +632,7 @@ export function parseContractText(text: string): ContractTrade[] {
       }
     }
   }
-  return rows.map(normalizeTrade).filter((trade): trade is ContractTrade => Boolean(trade));
+  return rows.map(parseDeribitTrade).filter((trade): trade is ContractTrade => Boolean(trade));
 }
 
 export function buildInventory(files: Array<{ name: string; trades: ContractTrade[] }>): ContractSeries[] {

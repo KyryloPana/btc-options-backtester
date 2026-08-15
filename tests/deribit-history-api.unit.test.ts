@@ -12,7 +12,7 @@ const instruments = [
   { instrument_name: "BTC-8JAN24-39000-P", expiration_timestamp: expiry, creation_timestamp: entry - 20_000, strike: 39000, option_type: "put", price_index: "btc_usd" },
 ];
 function json(result: unknown, status = 200, headers?: Record<string,string>) { return new Response(JSON.stringify({ result }), { status, headers }); }
-function trade(name: string, seq: number, timestamp = entry) { return { instrument_name:name, trade_seq:seq, timestamp, price:.01, index_price:42000, direction:seq%2?"buy":"sell", amount:1 }; }
+function trade(name: string, seq: number, timestamp = entry) { return { instrument_name:name, trade_seq:seq, timestamp, price:.01, iv:57.5, index_price:42000, direction:seq%2?"buy":"sell", amount:1 }; }
 
 async function fixture(fetcher: typeof fetch) {
   const dir = await mkdtemp(join(tmpdir(), "deribit-api-"));
@@ -39,6 +39,7 @@ test("combines and deduplicates expired/active manifests, retains creation time,
     assert.equal(result.candidates[0].soldCreationTimestamp,entry-10_000);
     assert.deepEqual(new Set(tradeNames),new Set(["BTC-8JAN24-40000-P","BTC-8JAN24-39000-P"]));
     assert.equal(result.diagnostics.validTrades,4);
+    assert.ok(result.inventory.every(series=>series.trades.every(row=>row.ivApiPercent===57.5&&row.ivDecimal===.575)));
   } finally { await cleanup(); }
 });
 

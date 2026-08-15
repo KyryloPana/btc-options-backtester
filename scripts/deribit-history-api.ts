@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
-import { buildInventory, type ContractTrade } from "../app/lib/backtester.ts";
+import { buildInventory, parseDeribitTrade, type ContractTrade } from "../app/lib/backtester.ts";
 
 const API_PREFIX = "/__deribit/history";
 const DAY_MS = 86_400_000;
@@ -153,7 +153,9 @@ export class DeribitHistoryService {
     const missing: number[] = [];
     for (let seq = first.trade_seq; seq <= last.trade_seq; seq += 1) if (!bySeq.has(seq)) missing.push(seq);
     if (missing.length) throw new Error(`Incomplete trade sequence coverage for ${name}: ${missing.length} missing (${missing[0]}…${missing.at(-1)})`);
-    const trades = [...bySeq.values()].filter(t => t.timestamp >= start && t.timestamp <= end).sort((a, b) => a.timestamp - b.timestamp || a.trade_seq - b.trade_seq).map(t => ({ timestamp: t.timestamp, price: t.price, markPrice: t.mark_price, iv: t.iv, instrumentName: t.instrument_name || name, indexPrice: t.index_price, direction: t.direction, amount: t.amount, tradeId: t.trade_id ?? String(t.trade_seq) }));
+    const trades = [...bySeq.values()].filter(t => t.timestamp >= start && t.timestamp <= end).sort((a, b) => a.timestamp - b.timestamp || a.trade_seq - b.trade_seq)
+      .map(t => parseDeribitTrade({ ...t, instrument_name: t.instrument_name || name, trade_id: t.trade_id ?? String(t.trade_seq) }))
+      .filter((trade): trade is ContractTrade => trade !== null);
     this.tradeCache.set(key, trades); return trades;
   }
 
