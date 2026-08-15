@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildEstimatedPath, buildResearchExport, buildResearchOutcomes, estimateResearchSpread, expiryWeekday, isFridayExpiry, resolveUnderlyingIndex, scaleResearchEstimate, scaleResearchPath } from "../app/lib/research-valuation.ts";
-import { executionClock, simulateTakerSpread, type ContractSeries, type ContractTrade, type RetrievedSpread } from "../app/lib/backtester.ts";
+import { buildEstimatedPath, buildResearchExport, buildResearchOutcomes, estimateResearchSpread, expiryWeekday, isFridayExpiry, resolveUnderlyingIndex, scaleResearchEstimate, scaleResearchPath, validateResearchAmount } from "../app/lib/research-valuation.ts";
+import { buildInventory, executionClock, parseContractText, retrieveSpread, simulateTakerSpread, type ContractSeries, type ContractTrade, type RetrievedSpread } from "../app/lib/backtester.ts";
+import { parseOhlcCandles } from "../app/lib/candle-pipeline.ts";
 const T=Date.UTC(2024,0,1,12), expiry=T+7*864e5;
 function trade(name:string,offsetMin:number,price:number,direction:"buy"|"sell",amount=1,iv=60):ContractTrade{return{instrumentName:name,timestamp:T+offsetMin*60000,price,indexPrice:40000,direction,amount,iv,ivApiPercent:iv,ivDecimal:iv/100};}
 function series(name:string,strike:number,trades:ContractTrade[]):ContractSeries{return{instrumentName:name,strike,optionType:"P",expiryTimestamp:expiry,expiryLabel:"08JAN24",trades,firstTradeTimestamp:trades[0]?.timestamp??T,lastTradeTimestamp:trades.at(-1)?.timestamp??T,sourceFiles:[]};}
@@ -29,3 +30,26 @@ test("Friday metadata is UTC-only and does not mutate candidate data",()=>{
  const friday=Date.UTC(2025,9,17,8),wednesday=Date.UTC(2025,9,15,8);assert.equal(expiryWeekday(friday),"Friday");assert.equal(isFridayExpiry(friday),true);assert.equal(isFridayExpiry(wednesday),false);
  const s={...spread([trade("BTC-8JAN24-39000-P",0,.08,"sell")],[trade("BTC-8JAN24-38000-P",0,.03,"buy")]),expiryTimestamp:friday};const before=s.id;const entry=estimateResearchSpread({spread:s,targetTimestamp:T,targetIndex:40000,slippageBps:0});const exported=buildResearchExport({event:{id:"e",label:"e",direction:"long",entryDate:"2024-01-01",entryPrice:40000},spread:s,entry});assert.equal(exported.expiryWeekday,"Friday");assert.equal(exported.isFridayExpiry,true);assert.equal(s.id,before);
 });
+
+test("live-shaped October Deribit rows retain independent IV anchors through direct entry and path pricing",()=>{
+ const entry=Date.parse("2025-10-08T08:00:00Z"),expiration=Date.parse("2025-10-17T08:00:00Z");
+ const raw=[
+  {timestamp:entry-5*60000,instrument_name:"BTC-17OCT25-127000-C",price:.031,iv:54.25,index_price:122490,amount:1,direction:"sell",trade_id:"short-live"},
+  {timestamp:entry-4*60000,instrument_name:"BTC-17OCT25-128000-C",price:.026,iv:58.75,index_price:122520,amount:1,direction:"buy",trade_id:"long-live"},
+ ];
+ const trades=parseContractText(JSON.stringify({result:{trades:raw}}));
+ assert.deepEqual(trades.map(t=>t.ivApiPercent),[54.25,58.75]);assert.deepEqual(trades.map(t=>t.ivDecimal),[.5425,.5875]);
+ const inventory=buildInventory([{name:"live.json",trades}]);
+ const resolved=retrieveSpread({id:"oct-green",targetDte:7,targetWidth:1000,anchorStrike:127000,soldStrike:127000,boughtStrike:128000,optionType:"C",spreadKind:"credit",structure:"127000/128000 C",buffered:false},entry,inventory);
+ assert.equal(resolved.soldContract?.instrumentName,"BTC-17OCT25-127000-C");assert.equal(resolved.boughtContract?.instrumentName,"BTC-17OCT25-128000-C");
+ const direct=estimateResearchSpread({spread:resolved,targetTimestamp:entry,targetIndex:122490,amount:1,slippageBps:0});assert.equal(direct.status,"priced");if(direct.status!=="priced")return;
+ assert.equal(direct.priceSource,"direct-vwap");assert.equal(direct.estimateQuality,"green");assert.equal(direct.sold.model?.anchorIvDecimal,.5425);assert.equal(direct.bought.model?.anchorIvDecimal,.5875);
+ const rows=Array.from({length:218},(_,i)=>({openTime:entry-3600000+i*3600000,closeTime:entry-1+i*3600000,open:122000+i*5,high:123000,low:121000,close:122100+i*7,volume:1}));
+ const candles=parseOhlcCandles({candles:rows},entry-3600000,expiration+3600000);
+ const path=buildEstimatedPath({spread:resolved,timestamps:[entry,entry+2*864e5],candles,entry:direct,slippageBps:0});
+ assert.equal(path[1].soldIvSource,"constant-entry-IV");assert.equal(path[1].longIvSource,"constant-entry-IV");assert.equal(path[1].shortIvDecimal,.5425);assert.equal(path[1].longIvDecimal,.5875);
+ assert.ok(path.every(p=>p.status==="priced"&&Number.isFinite(p.shortModelPriceBtc)&&Number.isFinite(p.longModelPriceBtc)&&Number.isFinite(p.closingSpreadValueBtcPerContract)&&Number.isFinite(p.estimatedNetPnlBtc)));
+ const one=scaleResearchPath(path,direct,1);assert.deepEqual(one.map(p=>p.estimatedNetPnlBtc),path.map(p=>p.estimatedNetPnlBtc));
+});
+
+test("invalid amount is rejected before constructing a research path",()=>{assert.match(validateResearchAmount(0)??"",/greater than zero/);});
