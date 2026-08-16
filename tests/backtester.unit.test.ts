@@ -274,7 +274,7 @@ test("matrix display filter hides only actual Red entry liquidity", () => {
 });
 
 test("matrix toggle defaults off and disclosure buttons retain accessible relationships", () => {
-  const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = readFileSync(new URL("../app/options-backtester.tsx", import.meta.url), "utf8");
   assert.match(page, /const \[hideRed, setHideRed\] = useState\(false\)/);
   assert.match(page, /className="matrix-filter"/);
   assert.match(page, /checked=\{hideRed\}/);

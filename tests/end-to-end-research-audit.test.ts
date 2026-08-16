@@ -62,7 +62,7 @@ test("Research outcome USD persists the valuation-point index rather than entry 
   assert.equal(outcome.conversionIndexTimestamp,outcomeTime);
   assert.equal(outcome.estimatedNetPnlUsd,outcome.estimatedNetPnlBtc!*80_000);
   assert.notEqual(outcome.estimatedNetPnlUsd,outcome.estimatedNetPnlBtc!*100_000);
-  const source=await readFile(new URL("../app/page.tsx",import.meta.url),"utf8");
+  const source=await readFile(new URL("../app/options-backtester.tsx",import.meta.url),"utf8");
   assert.doesNotMatch(source,/outcome\.estimatedNetPnl\*result\.eventPrice/);
   assert.match(source,/USD at outcome index/);
 });

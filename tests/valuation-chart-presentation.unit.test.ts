@@ -4,7 +4,7 @@ import test from "node:test";
 import { CHART_GEOMETRY, CHART_SERIES, valuationChartTitle } from "../app/lib/valuation-chart.ts";
 
 const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
-const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+const page = readFileSync(new URL("../app/options-backtester.tsx", import.meta.url), "utf8");
 
 test("selected-analysis title follows the active chart tab", () => {
   assert.equal(valuationChartTitle("pnl"), "Estimated 4H valuation path · PnL · USD");
@@ -98,7 +98,7 @@ test("Research interaction, gaps, timestamps, expiry labels, and responsive cont
 });
 
 test("Research inspector is external, keyboard-clearable, responsive, and opening currency is presentation-only",()=>{
- const page=readFileSync(new URL("../app/page.tsx",import.meta.url),"utf8");
+ const page=readFileSync(new URL("../app/options-backtester.tsx",import.meta.url),"utf8");
  const css=readFileSync(new URL("../app/globals.css",import.meta.url),"utf8");
  assert.match(page,/<\/svg>}<\/div>\s*\{point\?<section className="selected-point-inspector"/);
  assert.match(page,/event\.key==="Escape".*setCursor\(undefined\)/);
