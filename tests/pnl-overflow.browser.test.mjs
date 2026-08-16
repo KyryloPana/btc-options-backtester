@@ -22,12 +22,12 @@ test("generated PnL table and expanded payoff stay inside their block", async ()
             <th>Estimated gross entry</th><th>Estimated net opening</th><th>Best estimated unrealized PnL</th>
             <th>Max estimated adverse PnL</th><th>Estimated selected outcome</th>
           </tr></thead><tbody><tr>
-            <td><input type="checkbox" /></td><td><button class="expand-button">⌃</button></td><td><span class="flag flag-yellow">yellow</span><small>Confidence label, not execution proof</small></td>
+            <td><label class="research-select"><input type="checkbox" checked /><small>SAVED</small></label></td><td><button class="expand-button">⌃</button></td><td><span class="flag flag-yellow">yellow</span><small>Confidence label, not execution proof</small></td>
             <td><strong>BTC put credit spread with a deliberately long contract description</strong><small class="mono">BTC-29DEC28-100000-P / BTC-29DEC28-90000-P</small></td>
             <td>Friday, 29 Dec 2028</td><td>$10,000.00</td><td>BTC 0.12345678</td><td>BTC 0.09876543</td>
             <td class="positive">$123,456.78</td><td class="negative">−$98,765.43</td><td>Estimated valuation</td>
           </tr><tr class="collapsed-sibling">
-            <td><input type="checkbox" /></td><td><button class="expand-button">⌄</button></td><td><span class="flag flag-yellow">yellow</span></td>
+            <td><label class="research-select"><input type="checkbox" disabled /></label></td><td><button class="expand-button">⌄</button></td><td><span class="flag flag-yellow">yellow</span></td>
             <td><strong>Compact sibling structure</strong></td><td>Friday, 29 Dec 2028</td><td>$10,000.00</td><td>BTC 0.12345678</td><td>BTC 0.09876543</td>
             <td class="positive">$123,456.78</td><td class="negative">−$98,765.43</td><td>Estimated valuation</td>
           </tr><tr class="ledger-detail-row"><td colspan="11"><div class="ledger-pair">
@@ -53,6 +53,9 @@ test("generated PnL table and expanded payoff stay inside their block", async ()
           detailRowHeight: rows[2].getBoundingClientRect().height,
           scrollClientWidth: scroller.clientWidth,
           scrollWidth: scroller.scrollWidth,
+          checkboxSizes: [...block.querySelectorAll(".research-select input")].map(input => ({width: input.getBoundingClientRect().width, height: input.getBoundingClientRect().height})),
+          savedWritingMode: getComputedStyle(block.querySelector(".research-select small")).writingMode,
+          savedWidth: block.querySelector(".research-select small").getBoundingClientRect().width,
         };
       });
       assert.equal(result.pageScrollWidth, result.pageClientWidth, `${width}px page overflow`);
@@ -60,6 +63,9 @@ test("generated PnL table and expanded payoff stay inside their block", async ()
       assert.ok(result.firstRowHeight < 120, `${width}px oversized collapsed row: ${JSON.stringify(result)}`);
       assert.ok(result.siblingRowHeight < 120, `${width}px stretched sibling row: ${JSON.stringify(result)}`);
       assert.ok(result.detailRowHeight > result.siblingRowHeight, `${width}px detail did not add content height`);
+      assert.ok(result.checkboxSizes.every(size => size.width >= 14 && size.width <= 16 && size.height >= 14 && size.height <= 16), `${width}px research checkbox sizing`);
+      assert.equal(result.savedWritingMode, "horizontal-tb");
+      assert.ok(result.savedWidth > 30, `${width}px SAVED wrapped vertically`);
       if (width === 1024) assert.ok(result.scrollWidth > result.scrollClientWidth, "narrow matrix should scroll horizontally");
     }
 

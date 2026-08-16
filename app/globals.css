@@ -667,7 +667,7 @@ footer { color: var(--muted); font-size: 10px; }
   overflow-wrap: anywhere;
   word-break: normal;
 }
-.pnl-results-table th:nth-child(1) { width: 54px; }
+.pnl-results-table th:nth-child(1) { width: 76px; }
 .pnl-results-table th:nth-child(2) { width: 48px; }
 .pnl-results-table th:nth-child(3) { width: 120px; }
 .pnl-results-table th:nth-child(4) { width: 150px; }
@@ -761,7 +761,12 @@ footer { color: var(--muted); font-size: 10px; }
 
 .payoff-tooltip-object{pointer-events:none;overflow:visible}.payoff-tooltip{box-sizing:border-box;width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;gap:3px;padding:7px 9px;border:1px solid #64766f;border-radius:4px;background:rgba(18,24,22,.96);box-shadow:0 4px 14px rgba(0,0,0,.32);color:var(--text-primary);font:11px var(--mono);white-space:nowrap}.payoff-tooltip strong{font:inherit;font-weight:600}.payoff-tooltip small{color:#d1b968;font-size:9px;text-transform:uppercase;letter-spacing:.05em}
 
-.research-select { display: inline-flex; align-items: center; gap: .35rem; }
+.research-select { display: inline-flex; align-items: center; gap: .35rem; min-height: 28px; white-space: nowrap; cursor: pointer; }
+.research-select input[type="checkbox"] { appearance: auto; box-sizing: border-box; flex: 0 0 15px; width: 15px; min-width: 15px; height: 15px; margin: 0; padding: 0; accent-color: var(--accent); cursor: pointer; }
+.research-select input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.research-select input[type="checkbox"]:disabled { cursor: not-allowed; opacity: .55; }
+.research-select:has(input:disabled) { cursor: not-allowed; }
 .research-select small { color: var(--success, #39765a); font-size: .65rem; font-weight: 700; letter-spacing: .08em; }
 .research-save-bar { display: flex; align-items: center; gap: .8rem; padding: .8rem 1rem; border-top: 1px solid var(--border, #d8d5ce); }
 .research-save-bar .primary-button { margin-left: auto; }
+.research-export-status { box-sizing: border-box; width: min(100% - 24px, 760px); max-height: 7em; overflow: auto; margin: 8px 12px 12px; padding: 8px 10px; color: var(--critical); border: 1px solid currentColor; border-radius: 6px; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
