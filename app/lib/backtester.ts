@@ -235,6 +235,7 @@ export interface EntryLiquidityMetrics {
 }
 
 export interface RetrievedSpread extends DesiredSpread {
+  venue: "deribit";
   resolvedSoldInstrumentName?: string;
   resolvedBoughtInstrumentName?: string;
   resolvedSoldStrike?: number;
@@ -777,7 +778,7 @@ export function retrieveSpread(combo: DesiredSpread, entryTimestamp: number, inv
     .sort((a, b) => a - b);
   const expiryTimestamp = expiries[0];
   if (!expiryTimestamp) {
-    return { ...combo, soldExistedAtEntry: false, boughtExistedAtEntry: false, retrievalStatus: "missing", retrievalNote: `No listed expiry at or beyond ${combo.targetDte}D in loaded contracts.` };
+    return { ...combo, venue: "deribit", soldExistedAtEntry: false, boughtExistedAtEntry: false, retrievalStatus: "missing", retrievalNote: `No listed expiry at or beyond ${combo.targetDte}D in loaded contracts.` };
   }
   const chain = inventory.filter(item => item.optionType === combo.optionType && item.expiryTimestamp === expiryTimestamp);
   const soldContract = nearestStrike(chain, combo.soldStrike);
@@ -788,6 +789,7 @@ export function retrieveSpread(combo: DesiredSpread, entryTimestamp: number, inv
   const strictlyObserved = soldExistedAtEntry && boughtExistedAtEntry;
   return {
     ...combo,
+    venue: "deribit",
     expiryTimestamp,
     expiryLabel: soldContract?.expiryLabel ?? boughtContract?.expiryLabel,
     actualDte: (expiryTimestamp - entryTimestamp) / 86_400_000,
@@ -1062,6 +1064,7 @@ export function buildExpiryCandidates(
       const boughtExistedAtEntry = manifest.boughtCreationTimestamp !== undefined && manifest.boughtCreationTimestamp <= entryTimestamp;
       const base: RetrievedSpread = {
         ...combo,
+        venue: "deribit",
         id: `${combo.id}-${manifest.expiryTimestamp}`,
         expiryTimestamp: manifest.expiryTimestamp,
         expiryLabel: manifest.expiryLabel,
