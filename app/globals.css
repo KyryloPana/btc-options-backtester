@@ -349,6 +349,18 @@ tbody tr:hover { background: #15191a; }
 .positive { color: var(--green) !important; }
 .negative { color: var(--red) !important; }
 .analysis-detail { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 292px); gap: 12px; margin-top: 10px; }
+.resolution-report { display: grid; gap: 14px; }
+.resolution-banner { display: flex; justify-content: space-between; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.resolution-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.resolution-chart { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.resolution-chart svg { display: block; width: 100%; height: auto; margin-top: 10px; }
+.resolution-axis { stroke: var(--line); }
+.resolution-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; }
+.resolution-legend i { display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 50%; }
+.resolution-scatter { position: relative; height: 210px; margin-top: 12px; border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.resolution-scatter i { position: absolute; width: 9px; height: 9px; border-radius: 50%; background: #66a4d9; transform: translate(-50%,50%); }
+.resolution-scatter i.invalidation_first { background: #d97b73; }.resolution-scatter i.unresolved { border: 2px solid #b9a76a; background: transparent; }.resolution-scatter i.ambiguous { background: #9b7bc1; }
+.resolution-method p { margin: 7px 0; }
 .analysis-detail > * { min-width: 0; max-width: 100%; }
 .path-card { min-width: 0; max-width: 100%; overflow: hidden; border-bottom: 1px solid var(--line); }
 .chart-controls { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; min-width:0; padding:9px 12px 0; background:#0e1112; }
@@ -425,6 +437,8 @@ footer { display: flex; justify-content: space-between; padding: 18px 0 30px; co
   .hero-badges { justify-content: flex-start; }
   .workspace-section { padding: 28px 0; }
   .event-layout, .construction-layout, .normalization-grid, .analysis-detail { grid-template-columns: 1fr; }
+  .resolution-grid { grid-template-columns: 1fr; }
+  .resolution-banner { flex-direction: column; }
   .event-list, .event-editor, .normalization-grid > .table-card, .path-card { border-right: 0; }
   .event-scroll { max-height: 230px; }
   .form-grid.four { grid-template-columns: repeat(2, 1fr); }
