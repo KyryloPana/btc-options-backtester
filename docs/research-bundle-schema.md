@@ -1,6 +1,6 @@
 # Research bundle schema
 
-Schema **1.0.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and `events.jsonl`, `underlying_path.jsonl`, `candidates.jsonl`, `valuations.jsonl`, `outcomes.jsonl`, `availability.jsonl`, `margin_scenarios.jsonl`, `evidence_trades.jsonl`, `futures_comparisons.jsonl`, and `futures_path.jsonl`. Empty tables remain empty files and availability is stated in `run.json`.
+Schema **2.0.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and `events.jsonl`, `underlying_path.jsonl`, `candidates.jsonl`, `valuations.jsonl`, `outcomes.jsonl`, `availability.jsonl`, `margin_scenarios.jsonl`, `evidence_trades.jsonl`, `futures_comparisons.jsonl`, and `futures_path.jsonl`. Empty tables remain empty files and availability is stated in `run.json`.
 
 **`candidates.jsonl` = selected numerator; `availability.jsonl` = complete generated denominator.** Reports calculate coverage from availability and recompute extrema from valuations, never UI summaries.
 
@@ -11,7 +11,7 @@ Schema **1.0.0** is a versioned, venue-aware interchange format. Every ZIP conta
 | File | Primary key | Joins / purpose |
 |---|---|---|
 | `run.json` | `run_id` | Metadata, source runs, methodology, venue configuration, counts and availability. |
-| `events.jsonl` | `event_id` | Deduplicated selected events. |
+| `events.jsonl` | `event_id` | Every persisted research event, including zero-selection events. |
 | `underlying_path.jsonl` | `event_id + timestamp_utc` | Stored hourly path; never synthesized. |
 | `candidates.jsonl` | `candidate_id` | Saved numerator; joins event. |
 | `valuations.jsonl` | `valuation_id` | Candidate + timestamp + track; includes unavailable rows. |
@@ -23,3 +23,7 @@ Schema **1.0.0** is a versioned, venue-aware interchange format. Every ZIP conta
 | `futures_path.jsonl` | `event_id + instrument + timestamp_utc` | Verified futures series only. |
 
 Consumers validate the schema version, foreign keys, venues, statuses and finite numbers first, group incompatible methodology by `source_run_id`, use availability as denominator, and use valuation/outcome facts. Unknown versions are rejected. Schema changes require a new version and explicit migration. Historical margin and futures data are not verified, so they are explicitly unavailable rather than fabricated. Export reads only persisted snapshots and never refetches an exchange.
+
+## 2.0.0 migration
+
+Version 2 exports every persisted event, its complete generated availability denominator and stored hourly path even when no candidate is selected. It adds explicit observation/censoring end, causal trigger versus decision times, exact DTE hours/days, and keeps generic exit time separate from completed-candle invalidation. Version 1 imports are degraded: missing facts remain null and are surfaced by capability assessment.
