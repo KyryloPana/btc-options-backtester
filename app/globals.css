@@ -168,6 +168,19 @@ button, label { -webkit-tap-highlight-color: transparent; }
 .eyebrow { margin: 0; color: var(--accent); text-transform: uppercase; letter-spacing: .13em; font-size: 8px; font-weight: 600; }
 
 .workspace-section { scroll-margin-top: 58px; padding: 31px 0 34px; border-bottom: 1px solid var(--line); }
+.analytics-form-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; padding: 14px 0; }
+.analytics-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 1px; margin: 14px 0; background: var(--line); }
+.analytics-grid > .card, .workspace-section > .card { padding: 14px; background: var(--bg); border-top: 1px solid var(--line); }
+.blocked-panel, .analytics-empty { padding: 13px; color: var(--yellow); background: rgba(194,155,94,.06); border-left: 2px solid var(--yellow); line-height: 1.55; }
+.blocked-panel p { margin-bottom: 0; }
+.mini-chart { margin: 12px 0; }
+.mini-chart svg { display: block; width: 100%; height: 92px; background: #0e1112; border-bottom: 1px solid var(--line); }
+.mini-chart polyline { fill: none; stroke: var(--accent); stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+.mini-chart figcaption { margin-top: 5px; color: var(--faint); font-size: 8px; text-transform: uppercase; }
+.matrix { margin-top: 18px; }
+.matrix h4 { color: var(--accent-strong); }
+@media (max-width: 850px) { .analytics-form-grid, .analytics-grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 560px) { .analytics-form-grid, .analytics-grid { grid-template-columns: 1fr; } }
 .section-heading { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
 .section-heading > div:first-child { position: relative; padding-left: 35px; }
 .section-heading h2 { margin: 3px 0 0; color: var(--ink-strong); font-size: 19px; font-weight: 520; line-height: 1.2; letter-spacing: -.012em; }
