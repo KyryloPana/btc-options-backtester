@@ -5,7 +5,7 @@ import { tooltipOpenAfter } from "../app/components/info-tooltip-state.ts";
 import { INFO_TOOLTIP_DEFINITIONS } from "../app/info-tooltip-definitions.ts";
 
 const component = readFileSync(new URL("../app/components/info-tooltip.tsx", import.meta.url), "utf8");
-const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+const page = readFileSync(new URL("../app/options-backtester.tsx", import.meta.url), "utf8");
 const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
 
 test("keyboard focus opens the tooltip and Escape or blur dismisses it", () => {

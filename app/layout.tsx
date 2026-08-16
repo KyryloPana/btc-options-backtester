@@ -17,8 +17,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "BTC Options Backtester",
-  description: "A local historical Deribit options backtester for BTC mean-reversion events.",
+  title: "Options Lab",
+  description: "Options research and historical backtesting tools.",
   other: {
     "codex-preview": "development",
   },

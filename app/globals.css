@@ -1,5 +1,41 @@
 @import "tailwindcss";
 
+/* Integration shell: deliberately isolated from the backtester's existing theme. */
+.app-shell { min-height: 100vh; background: #0a0d12; color: #d9e0ea; }
+.workspace-tabs { position: sticky; top: 0; z-index: 100; height: 42px; border-bottom: 1px solid #252c37; background: rgba(10,13,18,.97); }
+.tabs-inner { width: min(1280px, calc(100% - 32px)); height: 100%; margin: 0 auto; display: flex; align-items: stretch; }
+.shell-home { width: 42px; margin-right: 8px; border: 0; border-left: 1px solid #252c37; border-right: 1px solid #252c37; background: transparent; color: #7f8b9d; font: 600 10px var(--mono); cursor: pointer; }
+.shell-home:hover, .new-tab:hover { color: #e8edf5; background: #121720; }
+.tab-list { min-width: 0; display: flex; align-items: stretch; overflow-x: auto; }
+.workspace-tab { position: relative; display: flex; min-width: 0; border-right: 1px solid #252c37; }
+.workspace-tab > button { border: 0; background: transparent; color: #8792a3; cursor: pointer; }
+.workspace-tab > button[role="tab"] { min-width: 132px; padding: 0 30px 0 14px; text-align: left; white-space: nowrap; }
+.workspace-tab.active > button[role="tab"] { color: #eef3fa; background: #10151d; }
+.workspace-tab.active::after { content: ""; position: absolute; right: 0; bottom: 0; left: 0; height: 2px; background: #4388e8; }
+.workspace-tab .tab-close { position: absolute; top: 0; right: 3px; width: 26px; height: 40px; padding: 0; font-size: 16px; }
+.workspace-tab .tab-close:hover { color: #fff; }
+.new-tab { flex: 0 0 42px; border: 0; border-right: 1px solid #252c37; background: transparent; color: #7f8b9d; font-size: 19px; cursor: pointer; }
+.shell-content { min-height: calc(100vh - 42px); }
+.shell-launcher { width: min(1120px, calc(100% - 40px)); margin: 0 auto; padding: clamp(56px, 9vw, 112px) 0; }
+.shell-heading { max-width: 600px; margin-bottom: 34px; }
+.shell-eyebrow { margin: 0 0 8px; color: #5799ef; font-size: 10px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }
+.shell-heading h1, .research-placeholder h1 { margin: 0 0 10px; color: #f1f5fb; font-size: clamp(28px, 4vw, 42px); font-weight: 520; letter-spacing: -.025em; }
+.shell-heading > p:last-child, .research-placeholder > p:last-child { color: #8792a3; font-size: 13px; line-height: 1.6; }
+.launcher-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.launcher-card { min-height: 126px; display: flex; align-items: center; gap: 18px; padding: 22px; border: 1px solid #29313d; background: #0e131a; color: inherit; text-align: left; cursor: pointer; transition: border-color 120ms, background 120ms, transform 120ms; }
+.launcher-card:hover { border-color: #405168; background: #111923; transform: translateY(-1px); }
+.launcher-card > span:not(.folder-icon) { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 8px; }
+.launcher-card strong { color: #e9eef6; font-size: 15px; font-weight: 540; }
+.launcher-card small { color: #7f8a9b; font-size: 11px; line-height: 1.5; }
+.launcher-card b { color: #5799ef; font-size: 18px; font-weight: 400; }
+.folder-icon { position: relative; width: 42px; height: 31px; border: 1px solid #4778b9; background: #101d2e; }
+.folder-icon::before { content: ""; position: absolute; top: -7px; left: -1px; width: 18px; height: 7px; border: 1px solid #4778b9; border-bottom: 0; background: #101d2e; }
+.shell-back { margin: 0 0 28px; padding: 0; border: 0; background: transparent; color: #8290a4; cursor: pointer; }
+.shell-back:hover { color: #cbd5e3; }
+.research-placeholder { width: min(1120px, calc(100% - 40px)); min-height: 420px; margin: 40px auto; padding: clamp(40px, 7vw, 80px); border: 1px solid #29313d; background: #0e131a; }
+.tool-view[hidden] { display: none !important; }
+@media (max-width: 640px) { .tabs-inner { width: 100%; } .shell-home { border-left: 0; } .launcher-grid { grid-template-columns: 1fr; } .shell-launcher { width: min(100% - 24px, 1120px); padding-top: 44px; } .workspace-tab > button[role="tab"] { min-width: 120px; } }
+
 :root {
   --ink: #d8dcda;
   --ink-strong: #f0f2ef;
