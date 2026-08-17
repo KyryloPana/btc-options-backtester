@@ -15,7 +15,7 @@ export function buildResearchReport(dataset:AnalysisDataset,configuration:Analys
  {id:"strike",title:"Short strike",state:structure.shortStrike.matchedPairCount?"available":"insufficient sample",detail:`${structure.shortStrike.matchedPairCount} matched pair(s)`},
  {id:"width",title:"Width",state:structure.width.matchedPairCount?"available":"insufficient sample",detail:`${structure.width.matchedPairCount} matched pair(s)`},
  {id:"exits",title:"Exit policies",state:structure.policies.some(x=>x.sampleSize)?"available":"unavailable",detail:`${structure.policies.reduce((n,x)=>n+x.sampleSize,0)} policy observations across locked tracks`},
- {id:"positions",title:"Per-position economics",state:structure.economics.length?"available":"insufficient sample",detail:`n=${structure.economics.length}`},
+ {id:"positions",title:"Per-position economics",state:structure.diagnostics.degraded?"degraded":structure.economics.length?"available":"insufficient sample",detail:`n=${structure.economics.length}; excluded ${structure.diagnostics.excludedCandidates}`},
  {id:"portfolio",title:"Portfolio economics",state:portfolio.configured?"available":"not configured",detail:`${portfolio.portfolio.positions.length} positions; ${portfolio.portfolio.noTradeOpportunities} no-trade zeros`},
  {id:"futures",title:"Options versus futures",state:portfolio.futures.status==="available"?"available":"unavailable",detail:portfolio.futures.explanation},
  {id:"interactions",title:"Interaction matrices",state:portfolio.matrices.some(x=>x.cells.some(c=>c.status==="ok"))?"available":"insufficient sample",detail:`${portfolio.matrices.reduce((n,x)=>n+x.cells.length,0)} cells; denominators remain opportunity based`},
