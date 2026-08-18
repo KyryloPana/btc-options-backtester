@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {kaplanMeier,kaplanMeierQuantile,quantiles,riskSummary} from "../app/lib/underlying-resolution/statistics.ts";
+import {fiveNumber,kaplanMeier,kaplanMeierQuantile,observedPercentiles,quantiles,riskSummary} from "../app/lib/underlying-resolution/statistics.ts";
 
 const at=(curve:ReturnType<typeof kaplanMeier>,t:number)=>curve.find(p=>p.timeDays===t);
 const close=(a:number|null|undefined,b:number,msg?:string)=>assert.ok(a!==null&&a!==undefined&&Math.abs(a-b)<1e-9,`${msg??""} expected ${b}, got ${a}`);
@@ -88,4 +88,21 @@ test("E: an invalid percentile request is not estimable",()=>{
  const curve=kaplanMeier([{timeDays:1,observed:true}]);
  assert.equal(kaplanMeierQuantile(curve,0),null);
  assert.equal(kaplanMeierQuantile(curve,1),null);
+});
+
+test("observed conditional percentiles interpolate and never coerce missing to zero",()=>{
+ // Known sample: linear interpolation between order statistics.
+ assert.deepEqual(observedPercentiles([1,2,3,4,5],[0.5]),[3]);
+ assert.deepEqual(observedPercentiles([10,20],[0.5]),[15]);
+ assert.deepEqual(observedPercentiles([],[0.2,0.5,0.9]),[null,null,null]);
+ // A single observation is that value, not zero and not a distribution.
+ assert.deepEqual(observedPercentiles([7],[0.2,0.9]),[7,7]);
+ assert.deepEqual(observedPercentiles([1,2],[0,1]),[null,null],"degenerate p is not estimable");
+});
+
+test("five-number summary supports small-sample box rendering",()=>{
+ assert.equal(fiveNumber([]),null);
+ const s=fiveNumber([4,1,3,2])!;
+ assert.deepEqual([s.min,s.median,s.max,s.n],[1,2.5,4,4]);
+ assert.ok(s.q1<s.median&&s.median<s.q3);
 });

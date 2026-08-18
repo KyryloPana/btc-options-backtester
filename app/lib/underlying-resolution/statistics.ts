@@ -98,3 +98,34 @@ export function riskSummary(observations:readonly SurvivalObservation[]):{effect
  const clean=observations.filter(o=>finite(o.timeDays)&&o.timeDays>=0);
  return {effectiveN:clean.length,observed:clean.filter(o=>o.observed).length,censored:clean.filter(o=>!o.observed).length};
 }
+
+/**
+ * Empirical percentiles of a fully observed sample, by linear interpolation
+ * between order statistics.
+ *
+ * Used for the conditional endpoint distributions (time to VPOC among
+ * VPOC-first events, time to invalidation among invalidation-first events).
+ * Those are NOT censored problems: every event in the conditioning set actually
+ * experienced the endpoint, so Kaplan-Meier is inappropriate -- treating the
+ * competing terminal outcome as censoring would misstate the distribution.
+ *
+ * Returns null for an empty sample rather than 0.
+ */
+export function observedPercentiles(values:readonly number[],ps:readonly number[]):readonly (number|null)[]{
+ const sorted=values.filter(v=>Number.isFinite(v)).sort((a,b)=>a-b);
+ if(!sorted.length)return ps.map(()=>null);
+ return ps.map(p=>{
+  if(!(p>0&&p<1))return null;
+  if(sorted.length===1)return sorted[0]!;
+  const index=(sorted.length-1)*p,lower=Math.floor(index),upper=Math.ceil(index);
+  return lower===upper?sorted[lower]!:sorted[lower]!+(sorted[upper]!-sorted[lower]!)*(index-lower);
+ });
+}
+
+/** Median and inter-quartile range for small-sample box/strip comparisons. */
+export function fiveNumber(values:readonly number[]):{min:number;q1:number;median:number;q3:number;max:number;n:number}|null{
+ const sorted=values.filter(v=>Number.isFinite(v)).sort((a,b)=>a-b);
+ if(!sorted.length)return null;
+ const [q1,median,q3]=observedPercentiles(sorted,[0.25,0.5,0.75]);
+ return {min:sorted[0]!,q1:q1!,median:median!,q3:q3!,max:sorted[sorted.length-1]!,n:sorted.length};
+}

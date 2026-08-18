@@ -1,154 +1,265 @@
 "use client";
 import {useState} from "react";
-import type {CohortRow,UnderlyingResolutionReport} from "../lib/underlying-resolution/report";
+import type {DirectionSample,EndpointBlock,ScatterPoint,UnderlyingResolutionReport} from "../lib/underlying-resolution/report";
 import type {NormalizedMrEvent} from "../lib/underlying-resolution/normalize";
 
 /**
- * Presentation only. Every number here comes from the prebuilt report view
- * model; this component performs no analysis, so the table page below cannot
- * influence any statistic above it.
+ * Presentation only. Every number comes from the prebuilt report view model, so
+ * the table page below cannot influence any statistic above it.
  */
 
 const PAGE_SIZE=10;
 const NOT_ESTIMABLE="Not estimable";
 const UNAVAILABLE="Unavailable";
 
-const days=(x:number|null)=>x===null?NOT_ESTIMABLE:`${x.toFixed(1)}`;
-const usd=(x:number|null)=>x===null?UNAVAILABLE:`${x<0?"-":""}$${Math.abs(x).toLocaleString(undefined,{maximumFractionDigits:0})}`;
+const d1=(x:number)=>x.toFixed(1);
+const days=(x:number|null)=>x===null?NOT_ESTIMABLE:d1(x);
+const usd=(x:number|null)=>x===null?UNAVAILABLE:`${x<0?"−":""}$${Math.abs(x).toLocaleString(undefined,{maximumFractionDigits:0})}`;
 const pct=(part:number,whole:number)=>whole>0?`${(part/whole*100).toFixed(1)}%`:"—";
-const rangeX=(x:number|null)=>x===null?UNAVAILABLE:`${x.toFixed(2)}x`;
+const OUTCOME_LABEL:Record<string,string>={vpoc_first:"VPOC first",invalidation_first:"Invalidation first",ambiguous:"Ambiguous",unresolved:"Unresolved"};
+const RESOLVED_BY:Record<string,string>={vpoc_first:"VPOC",invalidation_first:"Invalidation",ambiguous:"Simultaneous",unresolved:"—"};
 
-const OUTCOME_LABEL:Record<string,string>={vpoc_first:"Successful",invalidation_first:"Failed",ambiguous:"Ambiguous",unresolved:"Unresolved"};
+/* ---------- primary outcome cards ---------- */
 
-function Card({label,value,detail,tone}:{label:string;value:string;detail?:string;tone?:string}){
- return <div className="ur-card"><span className="ur-card-label">{label}</span><strong className={`ur-card-value${tone?` ${tone}`:""}`}>{value}</strong>{detail&&<small>{detail}</small>}</div>;
-}
-
-/** Step plot of the Kaplan-Meier event-free probability with its confidence band. */
-function SurvivalChart({report}:{report:UnderlyingResolutionReport}){
- const curve=report.survival;
- if(curve.length<2)return <div className="ur-empty">Insufficient sample to estimate an event-free probability curve.</div>;
- const maxTime=Math.max(...curve.map(p=>p.timeDays))||1;
- const x=(t:number)=>t/maxTime*100,y=(s:number)=>40-s*36;
- let path=`M 0 ${y(1)}`,band="";
- for(const point of curve)path+=` L ${x(point.timeDays)} ${y(curve[curve.indexOf(point)-1]?.survival??1)} L ${x(point.timeDays)} ${y(point.survival)}`;
- const withBand=curve.filter(p=>p.lower!==null&&p.upper!==null);
- if(withBand.length>1){
-  band="M "+withBand.map(p=>`${x(p.timeDays)} ${y(p.upper!)}`).join(" L ")
-   +" L "+[...withBand].reverse().map(p=>`${x(p.timeDays)} ${y(p.lower!)}`).join(" L ")+" Z";
- }
- return <figure className="ur-chart" aria-label="Kaplan-Meier event-free probability">
-  <svg viewBox="0 0 100 44" preserveAspectRatio="none" role="img">
-   {band&&<path className="ur-band" d={band}/>}
-   <path className="ur-curve" d={path}/>
-  </svg>
-  <figcaption>Event-free probability S(t): chance an MR event has <em>not</em> yet reached first resolution by t. Shaded band is the 95% log-log interval where estimable. Horizontal axis 0–{maxTime.toFixed(1)} days.</figcaption>
- </figure>;
-}
-
-/** Honest small-sample distribution: a count histogram of actual observed times. */
-function Histogram({series}:{series:readonly {label:string;days:readonly number[]}[]}){
- const all=series.flatMap(s=>s.days);
- if(!all.length)return <div className="ur-empty">No observed resolutions to distribute.</div>;
- const max=Math.max(...all)||1,bins=6;
- return <div className="ur-hist">{series.map(s=>{
-  if(!s.days.length)return <div key={s.label} className="ur-hist-row"><span>{s.label}</span><em className="ur-muted">Insufficient sample</em></div>;
-  const counts=Array.from({length:bins},(_,i)=>s.days.filter(d=>{const lo=i*max/bins,hi=(i+1)*max/bins;return i===bins-1?d>=lo&&d<=hi:d>=lo&&d<hi}).length);
-  const peak=Math.max(...counts)||1;
-  return <div key={s.label} className="ur-hist-row"><span>{s.label}</span>
-   <div className="ur-bars">{counts.map((c,i)=><i key={i} style={{height:`${c/peak*100}%`}} title={`${c} event(s)`}/>)}</div>
-   <em>n={s.days.length}</em></div>;
- })}<small className="ur-axis">0 – {max.toFixed(1)} days (time to first resolution)</small></div>;
-}
-
-function CohortTable({rows,caption}:{rows:readonly CohortRow[];caption:string}){
- return <div className="table-scroll"><table className="ur-table"><caption className="ur-caption">{caption}</caption>
-  <thead><tr><th>Cohort</th><th>Effective N</th><th>Observed</th><th>Censored</th><th>VPOC</th><th>Invalidation</th><th>Ambiguous</th><th>Median MFE</th><th>Median MAE</th></tr></thead>
-  <tbody>{rows.map(r=><tr key={r.label}>
-   <td>{r.label}</td><td>{r.effectiveN}</td><td>{r.observed}</td><td>{r.censored}</td>
-   <td>{r.counts.vpocFirst}</td><td>{r.counts.invalidationFirst}</td><td>{r.counts.ambiguous}</td>
-   <td className={r.medianMfeUsd===null?"ur-muted":"positive"}>{usd(r.medianMfeUsd)}</td>
-   <td className={r.medianMaeUsd===null?"ur-muted":"negative"}>{usd(r.medianMaeUsd)}</td>
-  </tr>)}</tbody></table>
-  {rows.some(r=>r.excursionUnavailable>0)&&<small className="ur-note">MFE/MAE unavailable for {rows.reduce((n,r)=>n+r.excursionUnavailable,0)} event(s) with no stored hourly path.</small>}
+function OutcomeCard({label,count,whole,tone}:{label:string;count:number;whole:number;tone?:string}){
+ return <div className={`ur-outcome-card${tone?` ${tone}`:""}`}>
+  <span className="ur-label">{label}</span>
+  <strong>{count}</strong>
+  <small>{pct(count,whole)}</small>
  </div>;
 }
 
+/* ---------- resolution-time blocks ---------- */
+
+function EndpointCard({block}:{block:EndpointBlock}){
+ return <div className="ur-endpoint">
+  <div className="ur-endpoint-head">
+   <span className="ur-label">{block.label}</span>
+   <small className="ur-muted">{block.method==="kaplan-meier"?"Kaplan-Meier":"observed"}</small>
+  </div>
+  {block.emptyReason
+   ?<p className="ur-empty-inline">{NOT_ESTIMABLE} — {block.emptyReason}</p>
+   :<><div className="ur-p-grid">{block.percentiles.map(p=>
+     <div key={p.p}><small>P{Math.round(p.p*100)}</small><strong className={p.days===null?"ur-muted":undefined}>{days(p.days)}</strong></div>)}
+    </div>
+    <small className="ur-muted">n={block.observed} observed{block.censored!==null&&` · ${block.censored} censored`}</small></>}
+ </div>;
+}
+
+/* ---------- centrepiece: Kaplan-Meier ---------- */
+
+const W=880,H=300,ML=54,MR=18,MT=16,MB=42;
+
+function SurvivalChart({report}:{report:UnderlyingResolutionReport}){
+ const curve=report.survival;
+ if(curve.length<2)return <div className="ur-empty">{NOT_ESTIMABLE} — no observed resolutions to estimate an event-free probability curve.</div>;
+ const maxT=Math.max(...curve.map(p=>p.timeDays))||1;
+ const px=(t:number)=>ML+t/maxT*(W-ML-MR);
+ const py=(s:number)=>MT+(1-s)*(H-MT-MB);
+
+ // Proper step function: hold the previous level to the next event time.
+ let path=`M ${px(0)} ${py(1)}`,prev=1;
+ for(const point of curve.slice(1)){path+=` L ${px(point.timeDays)} ${py(prev)} L ${px(point.timeDays)} ${py(point.survival)}`;prev=point.survival}
+ path+=` L ${px(maxT)} ${py(prev)}`;
+
+ const banded=curve.filter(p=>p.lower!==null&&p.upper!==null);
+ const band=banded.length>1
+  ?"M "+banded.map(p=>`${px(p.timeDays)} ${py(p.upper!)}`).join(" L ")+" L "+[...banded].reverse().map(p=>`${px(p.timeDays)} ${py(p.lower!)}`).join(" L ")+" Z"
+  :"";
+
+ const yTicks=[0,0.25,0.5,0.75,1],xTicks=Array.from({length:5},(_,i)=>maxT*i/4);
+ const resolution=report.endpoints.find(b=>b.endpoint==="resolution")!;
+ const p50=resolution.percentiles.find(p=>p.p===0.5)?.days??null,p80=resolution.percentiles.find(p=>p.p===0.8)?.days??null;
+
+ return <>
+  <figure className="ur-km">
+   <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Kaplan-Meier event-free probability">
+    {yTicks.map(t=><g key={t}>
+     <line className="ur-grid" x1={ML} x2={W-MR} y1={py(t)} y2={py(t)}/>
+     <text className="ur-tick" x={ML-9} y={py(t)+4} textAnchor="end">{(t*100).toFixed(0)}%</text>
+    </g>)}
+    {xTicks.map(t=><text key={t} className="ur-tick" x={px(t)} y={H-MB+20} textAnchor="middle">{d1(t)}</text>)}
+    {band&&<path className="ur-band" d={band}/>}
+    <path className="ur-curve" d={path}/>
+    {curve.slice(1).map(p=><circle key={p.timeDays} className="ur-step-dot" cx={px(p.timeDays)} cy={py(p.survival)} r={3}>
+     <title>{`t=${d1(p.timeDays)}d · S(t)=${(p.survival*100).toFixed(1)}% · ${p.events} event(s), ${p.atRisk} at risk`}</title>
+    </circle>)}
+    <line className="ur-axis" x1={ML} x2={ML} y1={MT} y2={H-MB}/>
+    <line className="ur-axis" x1={ML} x2={W-MR} y1={H-MB} y2={H-MB}/>
+    <text className="ur-axis-label" x={W/2} y={H-6} textAnchor="middle">Calendar days from event entry</text>
+   </svg>
+  </figure>
+  <div className="ur-interp">
+   <span>Median first resolution <strong className={p50===null?"ur-muted":undefined}>{p50===null?NOT_ESTIMABLE:`${d1(p50)}d`}</strong></span>
+   <span>P80 <strong className={p80===null?"ur-muted":undefined}>{p80===null?NOT_ESTIMABLE:`${d1(p80)}d`}</strong></span>
+   <span>{resolution.observed} observed · {resolution.censored} censored</span>
+  </div>
+ </>;
+}
+
+/* ---------- distance vs resolution time (descriptive) ---------- */
+
+const SW=420,SH=240,SL=46,SB=36,ST=12,SRt=12;
+
+function DistanceScatter({points,missing}:{points:readonly ScatterPoint[];missing:number}){
+ if(!points.length)return <div className="ur-empty">No events have both a canonical remaining distance and an observed resolution time.</div>;
+ const maxX=Math.max(...points.map(p=>p.distanceRange))||1,maxY=Math.max(...points.map(p=>p.resolutionDays))||1;
+ const px=(x:number)=>SL+x/(maxX*1.1)*(SW-SL-SRt),py=(y:number)=>SH-SB-y/(maxY*1.1)*(SH-SB-ST);
+ return <>
+  <figure className="ur-scatter">
+   <svg viewBox={`0 0 ${SW} ${SH}`} role="img" aria-label="Remaining distance to VPOC versus time to first resolution">
+    <line className="ur-axis" x1={SL} x2={SL} y1={ST} y2={SH-SB}/>
+    <line className="ur-axis" x1={SL} x2={SW-SRt} y1={SH-SB} y2={SH-SB}/>
+    {[0,0.5,1].map(f=><text key={f} className="ur-tick" x={SL-8} y={py(maxY*1.1*f)+4} textAnchor="end">{d1(maxY*1.1*f)}</text>)}
+    {[0,0.5,1].map(f=><text key={f} className="ur-tick" x={px(maxX*1.1*f)} y={SH-SB+16} textAnchor="middle">{(maxX*1.1*f).toFixed(2)}</text>)}
+    {points.map(p=><circle key={p.eventId} className={`ur-dot ${p.outcome}`} cx={px(p.distanceRange)} cy={py(p.resolutionDays)} r={4}>
+     <title>{`${p.eventId} · ${p.distanceRange.toFixed(2)}x range · ${d1(p.resolutionDays)}d · ${OUTCOME_LABEL[p.outcome]}`}</title>
+    </circle>)}
+    <text className="ur-axis-label" x={SW/2} y={SH-4} textAnchor="middle">Remaining distance to VPOC (× range)</text>
+   </svg>
+  </figure>
+  <div className="ur-legend">
+   <span className="vpoc_first">VPOC first</span><span className="invalidation_first">Invalidation first</span><span className="ambiguous">Ambiguous</span>
+  </div>
+  <small className="ur-note">Descriptive only — no relationship is fitted. Y axis is time to first resolution in days.{missing>0&&` ${missing} event(s) omitted here for missing canonical distance, but retained in all counts.`}</small>
+ </>;
+}
+
+/* ---------- direction comparison (small-sample friendly) ---------- */
+
+function DirectionStrip({samples}:{samples:readonly DirectionSample[]}){
+ const all=samples.flatMap(s=>s.days);
+ if(!all.length)return <div className="ur-empty">No observed resolutions to compare by direction.</div>;
+ const max=Math.max(...all)||1;
+ return <div className="ur-strips">
+  {samples.map(s=>{
+   if(!s.summary)return <div key={s.direction} className="ur-strip-row"><span>{s.label}</span><em className="ur-muted">No observed resolutions</em></div>;
+   const x=(v:number)=>v/(max*1.05)*100,box=s.summary.n>=4;
+   return <div key={s.direction} className="ur-strip-row">
+    <span>{s.label}</span>
+    <div className="ur-strip">
+     {box&&<i className="ur-iqr" style={{left:`${x(s.summary.q1)}%`,width:`${Math.max(x(s.summary.q3)-x(s.summary.q1),0.5)}%`}}/>}
+     {s.days.map((v,i)=><i key={i} className="ur-obs" style={{left:`${x(v)}%`}} title={`${d1(v)} days`}/>)}
+     <i className="ur-median" style={{left:`${x(s.summary.median)}%`}} title={`median ${d1(s.summary.median)} days`}/>
+    </div>
+    <em>n={s.summary.n}{!box&&<small className="ur-muted"> · points only</small>}</em>
+   </div>;
+  })}
+  <small className="ur-note">Individual observations with a median marker; the inter-quartile box appears only where n ≥ 4. Axis spans 0–{d1(max)} days.</small>
+ </div>;
+}
+
+/* ---------- event-level audit ---------- */
+
 function EventRow({event}:{event:NormalizedMrEvent}){
+ const x=event.excursion;
  return <tr>
   <td>{event.eventId}</td>
   <td>{event.entryDateUtc??UNAVAILABLE}</td>
   <td className={event.direction==="long"?"positive":event.direction==="short"?"negative":"ur-muted"}>{event.direction==="long"?"Bullish":event.direction==="short"?"Bearish":UNAVAILABLE}</td>
   <td>{event.entryPrice===null?UNAVAILABLE:event.entryPrice.toLocaleString()}</td>
   <td>{usd(event.rangeWidthUsd)}</td>
-  <td>{usd(event.remainingDistanceUsd)} {event.remainingDistanceRange!==null&&<small className="ur-muted">({rangeX(event.remainingDistanceRange)})</small>}</td>
-  <td>{event.timeToVpocDays===null?"—":days(event.timeToVpocDays)}</td>
-  <td>{event.timeToInvalidationDays===null?"—":days(event.timeToInvalidationDays)}</td>
-  <td>{event.timeToResolutionDays===null?"—":days(event.timeToResolutionDays)}</td>
-  <td className={event.excursion===null?"ur-muted":"positive"}>{event.excursion===null?UNAVAILABLE:usd(event.excursion.mfeUsd)}</td>
-  <td className={event.excursion===null?"ur-muted":"negative"}>{event.excursion===null?UNAVAILABLE:usd(event.excursion.maeUsd)}</td>
-  <td><em className={`ur-outcome ${event.outcome}`}>{OUTCOME_LABEL[event.outcome]}</em>{event.ineligibility&&<small className="ur-muted"> · {event.ineligibility.replaceAll("_"," ")}</small>}</td>
+  <td>{event.remainingDistanceRange===null?UNAVAILABLE:`${event.remainingDistanceRange.toFixed(2)}×`}</td>
+  <td>{event.timeToVpocDays===null?"—":d1(event.timeToVpocDays)}</td>
+  <td>{event.timeToInvalidationDays===null?"—":d1(event.timeToInvalidationDays)}</td>
+  <td>{event.timeToResolutionDays===null?"—":d1(event.timeToResolutionDays)}</td>
+  <td>{RESOLVED_BY[event.outcome]}</td>
+  <td className={x===null?"ur-muted":"positive"}>{x===null?UNAVAILABLE:usd(x.mfeUsd)}</td>
+  <td className={x===null?"ur-muted":"negative"}>{x===null?UNAVAILABLE:usd(x.maeUsd)}</td>
+  <td><em className={`ur-pill ${event.outcome}`}>{OUTCOME_LABEL[event.outcome]}</em></td>
  </tr>;
 }
+
+/* ---------- report ---------- */
 
 export function UnderlyingResolutionReportView({report}:{report:UnderlyingResolutionReport}){
  const [page,setPage]=useState(0);
  const pages=Math.max(1,Math.ceil(report.events.length/PAGE_SIZE));
  const current=Math.min(page,pages-1);
  const rows=report.events.slice(current*PAGE_SIZE,(current+1)*PAGE_SIZE);
- const n=report.effectiveN;
+ const n=report.effectiveN,c=report.counts;
+ const x=report.excursionOverall;
 
  return <section className="workspace-section ur-report" data-testid="underlying-resolution-report">
-  <div className="section-heading"><div>
-   <p className="eyebrow">0 · Underlying market analysis, before any options analysis</p>
-   <h2>Underlying Resolution Before Options</h2>
-   <p className="ur-sub">How long the underlying MR thesis takes to resolve through VPOC or invalidation.</p>
-  </div><div className="ur-meta"><small>All times in calendar days</small><small>Effective N {n} of {report.totalEvents} MR events</small></div></div>
+  <header className="ur-header">
+   <div>
+    <p className="eyebrow">Underlying market analysis · before any options analysis</p>
+    <h2>Underlying Resolution Before Options</h2>
+    <p className="ur-sub">How long does the underlying MR thesis take to resolve through VPOC or invalidation?</p>
+   </div>
+   <dl className="ur-meta">
+    <div><dt>Eligible events</dt><dd>{n}{report.totalEvents!==n&&<small className="ur-muted"> of {report.totalEvents}</small>}</dd></div>
+    <div><dt>Observed</dt><dd>{report.observedResolutions}</dd></div>
+    <div><dt>Right-censored</dt><dd>{report.censoredObservations}</dd></div>
+    <div><dt>Units</dt><dd>calendar days</dd></div>
+   </dl>
+  </header>
 
-  {report.excludedByReason.length>0&&<p className="resolution-banner">{report.excludedByReason.map(x=>`${x.count} event(s) ${x.reason.replaceAll("_"," ")}`).join("; ")} — held out of time-to-event analysis and never counted as failures.</p>}
+  {report.excludedByReason.length>0&&<p className="ur-notice">{report.excludedByReason.map(r=>`${r.count} event(s) ${r.reason.replaceAll("_"," ")}`).join("; ")} — held out of time-to-event analysis, never counted as failures.</p>}
 
-  <div className="ur-cards">
-   <Card label="Total Events" value={String(report.totalEvents)} detail={`${n} eligible`}/>
-   <Card label="VPOC Before Invalidation" value={String(report.counts.vpocFirst)} detail={pct(report.counts.vpocFirst,n)} tone="positive"/>
-   <Card label="Invalidation Before VPOC" value={String(report.counts.invalidationFirst)} detail={pct(report.counts.invalidationFirst,n)} tone="negative"/>
-   <Card label="Ambiguous (simultaneous)" value={String(report.counts.ambiguous)} detail={pct(report.counts.ambiguous,n)}/>
-   <Card label="Neither Reached (Unresolved)" value={String(report.counts.unresolved)} detail={pct(report.counts.unresolved,n)}/>
+  <div className="ur-outcomes">
+   <OutcomeCard label="VPOC first" count={c.vpocFirst} whole={n} tone="positive"/>
+   <OutcomeCard label="Invalidation first" count={c.invalidationFirst} whole={n} tone="negative"/>
+   <OutcomeCard label="Unresolved" count={c.unresolved} whole={n} tone="warn"/>
+   {c.ambiguous>0&&<OutcomeCard label="Ambiguous" count={c.ambiguous} whole={n} tone="warn"/>}
   </div>
 
-  <div className="ur-percentiles">{report.timeToEvent.map(block=><div key={block.endpoint} className="ur-card">
-   <span className="ur-card-label">{block.label} (days)</span>
-   <div className="ur-p-grid">{block.percentiles.map(p=><div key={p.p}><small>P{Math.round(p.p*100)}</small><strong className={p.days===null?"ur-muted":undefined}>{days(p.days)}</strong></div>)}</div>
-   <small>{block.observed} observed · {block.censored} censored</small>
-  </div>)}</div>
+  <div className="ur-endpoints">{report.endpoints.map(b=><EndpointCard key={b.endpoint} block={b}/>)}</div>
 
-  <div className="ur-grid-2">
-   <div className="card"><h3>Event-free probability (Kaplan-Meier)</h3><SurvivalChart report={report}/></div>
-   <div className="card"><h3>Successful vs Failed MR events</h3><Histogram series={report.resolutionTimesByOutcome}/></div>
-   <div className="card"><h3>By remaining distance to VPOC</h3><Histogram series={report.resolutionTimesByDistance}/><small className="ur-note">Canonical vpoc_distance expressed in range widths (× range). ATR is not part of the canonical bundle.</small></div>
-   <div className="card"><h3>By direction</h3><Histogram series={report.resolutionTimesByDirection}/></div>
+  <section className="ur-block">
+   <h3>Resolution through time</h3>
+   <SurvivalChart report={report}/>
+  </section>
+
+  <div className="ur-two-col">
+   <section className="ur-block"><h3>Remaining distance vs resolution time</h3><DistanceScatter points={report.distanceVsResolution} missing={report.distanceMissing}/></section>
+   <section className="ur-block"><h3>Resolution time by direction</h3><DirectionStrip samples={report.byDirection}/></section>
   </div>
 
-  <div className="table-scroll"><table className="ur-table"><caption className="ur-caption">Outcome breakdown by direction</caption>
-   <thead><tr><th>Direction</th><th>VPOC before invalidation</th><th>Invalidation before VPOC</th><th>Ambiguous</th><th>Unresolved</th><th>Effective N</th></tr></thead>
-   <tbody>{report.directional.map(row=><tr key={row.direction} className={row.direction==="total"?"ur-total":undefined}>
-    <td>{row.label}</td>
-    <td>{row.counts.vpocFirst} <small className="ur-muted">{pct(row.counts.vpocFirst,row.effectiveN)}</small></td>
-    <td>{row.counts.invalidationFirst} <small className="ur-muted">{pct(row.counts.invalidationFirst,row.effectiveN)}</small></td>
-    <td>{row.counts.ambiguous} <small className="ur-muted">{pct(row.counts.ambiguous,row.effectiveN)}</small></td>
-    <td>{row.counts.unresolved} <small className="ur-muted">{pct(row.counts.unresolved,row.effectiveN)}</small></td>
-    <td>{row.effectiveN}</td>
-   </tr>)}</tbody></table></div>
+  <section className="ur-block">
+   <h3>Outcome by direction</h3>
+   <div className="table-scroll"><table className="ur-table ur-compact">
+    <thead><tr><th>Direction</th><th>VPOC first</th><th>Invalidation first</th><th>Ambiguous</th><th>Unresolved</th><th>Effective N</th></tr></thead>
+    <tbody>{report.directional.map(row=><tr key={row.direction} className={row.direction==="total"?"ur-total":undefined}>
+     <td>{row.label}</td>
+     {[row.counts.vpocFirst,row.counts.invalidationFirst,row.counts.ambiguous,row.counts.unresolved].map((v,i)=>
+      <td key={i}>{v} <small className="ur-muted">{pct(v,row.effectiveN)}</small></td>)}
+     <td>{row.effectiveN}</td>
+    </tr>)}</tbody></table></div>
+  </section>
 
-  <CohortTable rows={report.distanceCohorts} caption="Remaining-distance cohorts (descriptive, not optimized thresholds)"/>
-  <CohortTable rows={report.speedCohorts} caption="Resolution-speed cohorts (descriptive, not optimized thresholds)"/>
+  <section className="ur-block">
+   <h3>Path before resolution</h3>
+   <p className="ur-sub">The underlying excursion the position had to survive while the thesis was open — entry to first resolution, or to censoring for unresolved events.</p>
+   <div className="ur-excursion">
+    <div className="ur-endpoint"><span className="ur-label">Median MFE</span><strong className={x.medianMfeUsd===null?"ur-muted":"positive"}>{usd(x.medianMfeUsd)}</strong></div>
+    <div className="ur-endpoint"><span className="ur-label">Median MAE</span><strong className={x.medianMaeUsd===null?"ur-muted":"negative"}>{usd(x.medianMaeUsd)}</strong></div>
+    <div className="ur-endpoint"><span className="ur-label">Path coverage</span><strong>{x.available} of {x.total}</strong><small className="ur-muted">events with a stored hourly path</small></div>
+   </div>
+   {x.available>0
+    ?<div className="table-scroll"><table className="ur-table ur-compact">
+      <thead><tr><th>Outcome</th><th>Median MFE</th><th>Median MAE</th><th>Available</th></tr></thead>
+      <tbody>{report.excursionByOutcome.map(row=><tr key={row.label}>
+       <td>{row.label}</td>
+       <td className={row.medianMfeUsd===null?"ur-muted":"positive"}>{usd(row.medianMfeUsd)}</td>
+       <td className={row.medianMaeUsd===null?"ur-muted":"negative"}>{usd(row.medianMaeUsd)}</td>
+       <td>{row.available} of {row.total}</td>
+      </tr>)}</tbody></table></div>
+    :<p className="ur-empty-inline">{UNAVAILABLE} — no eligible event has a stored hourly underlying path.</p>}
+  </section>
 
-  <div className="table-scroll"><table className="ur-table"><caption className="ur-caption">Event-level summary</caption>
-   <thead><tr><th>Event ID</th><th>Date</th><th>Direction</th><th>Entry</th><th>Range width</th><th>Remaining dist. to VPOC</th><th>T_VPOC</th><th>T_Inv</th><th>T_Resolution</th><th>MFE</th><th>MAE</th><th>Outcome</th></tr></thead>
-   <tbody>{rows.map(event=><EventRow key={event.eventId} event={event}/>)}</tbody></table></div>
-  <div className="ur-pager">
-   <small>Showing {report.events.length?current*PAGE_SIZE+1:0}–{Math.min((current+1)*PAGE_SIZE,report.events.length)} of {report.events.length} events. Paging never changes the statistics above.</small>
-   <div><button disabled={current<=0} onClick={()=>setPage(current-1)}>Previous</button><span>{current+1} / {pages}</span><button disabled={current>=pages-1} onClick={()=>setPage(current+1)}>Next</button></div>
-  </div>
+  <section className="ur-block">
+   <h3>Event-level observations</h3>
+   <p className="ur-sub">Inspect the individual MR events underlying this report.</p>
+   <div className="table-scroll"><table className="ur-table">
+    <thead><tr><th>Event ID</th><th>Date</th><th>Direction</th><th>Entry</th><th>Range width</th><th>Rem. dist.</th><th>T_VPOC</th><th>T_Inv</th><th>T_Res</th><th>Resolved by</th><th>MFE</th><th>MAE</th><th>Outcome</th></tr></thead>
+    <tbody>{rows.map(event=><EventRow key={event.eventId} event={event}/>)}</tbody>
+   </table></div>
+   <div className="ur-pager">
+    <small>Showing {report.events.length?current*PAGE_SIZE+1:0}–{Math.min((current+1)*PAGE_SIZE,report.events.length)} of {report.events.length}. Paging never changes the statistics above.</small>
+    <div><button disabled={current<=0} onClick={()=>setPage(current-1)}>Previous</button><span>{current+1} / {pages}</span><button disabled={current>=pages-1} onClick={()=>setPage(current+1)}>Next</button></div>
+   </div>
+  </section>
 
   <details className="ur-methodology"><summary>Methodology, censoring and missing data</summary>
    {report.methodology.map((line,i)=><p className="fine-print" key={i}>{line}</p>)}
