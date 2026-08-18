@@ -143,7 +143,8 @@ export function observedPercentiles(values:readonly number[],ps:readonly number[
 }
 
 /** Median and inter-quartile range for small-sample box/strip comparisons. */
-export function fiveNumber(values:readonly number[]):{min:number;q1:number;median:number;q3:number;max:number;n:number}|null{
+export interface FiveNumberSummary {readonly min:number;readonly q1:number;readonly median:number;readonly q3:number;readonly max:number;readonly n:number}
+export function fiveNumber(values:readonly number[]):FiveNumberSummary|null{
  const sorted=values.filter(v=>Number.isFinite(v)).sort((a,b)=>a-b);
  if(!sorted.length)return null;
  const [q1,median,q3]=observedPercentiles(sorted,[0.25,0.5,0.75]);

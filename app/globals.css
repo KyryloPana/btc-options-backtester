@@ -869,6 +869,86 @@ footer { color: var(--muted); font-size: 10px; }
 .ur-methodology summary { cursor: pointer; color: #eef3fa; padding: 9px 0; }
 @media (max-width: 900px) { .ur-two-col { grid-template-columns: 1fr; } .ur-strip-row { grid-template-columns: 78px 1fr 58px; } }
 
+/* ---- Duration & DTE report ------------------------------------------------
+ * Colours are hardcoded to the Options Lab shell palette, matching Underlying
+ * Resolution: the later :root in this file is a light theme, so var(--panel)
+ * and friends resolve light inside this dark shell.
+ * ------------------------------------------------------------------------ */
+.dd-report { display: grid; gap: 18px; }
+.dd-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.dd-header h2 { margin: 2px 0 0; }
+.dd-sub { margin: 4px 0 0; color: #8792a3; max-width: 62ch; }
+.dd-note { color: #8792a3; font-size: 11px; margin: 4px 0 0; }
+.dd-horizons { display: flex; flex-wrap: wrap; gap: 8px; }
+.dd-horizon-pill { padding: 5px 10px; border: 1px solid #29313d; border-radius: 999px; font-size: 11px; background: #111923; color: #eef3fa; }
+.dd-horizon-pill small { color: #8792a3; margin-left: 3px; }
+.dd-notice { margin: 0; padding: 11px 13px; border-left: 2px solid #c29b5e; background: rgba(194,155,94,.06); color: #8792a3; font-size: 12px; }
+.dd-label { font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: #8792a3; }
+.dd-muted { color: #8792a3; }
+
+.dd-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.dd-card { display: grid; gap: 4px; padding: 13px; border: 1px solid #29313d; border-radius: 8px; background: #111923; }
+.dd-card strong { font-size: 24px; }
+
+.dd-block { display: grid; gap: 12px; padding: 15px; border: 1px solid #29313d; border-radius: 10px; background: #111923; }
+.dd-block h3 { margin: 0; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: #8792a3; }
+.dd-subhead { margin: 6px 0 0; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: #8792a3; }
+.dd-two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+.dd-centerpiece { grid-column: 1 / -1; }
+
+.dd-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.dd-table th, .dd-table td { padding: 7px 9px; text-align: left; border-bottom: 1px solid #29313d; white-space: nowrap; }
+.dd-table th { font-weight: 500; color: #8792a3; }
+.dd-compact td, .dd-compact th { padding: 6px 9px; }
+
+.dd-funnel, .dd-quality, .dd-stacked, .dd-strips { display: grid; gap: 12px; }
+.dd-funnel-row, .dd-quality-row, .dd-stacked-row, .dd-strip-row { display: grid; grid-template-columns: 70px 1fr 100px; align-items: center; gap: 8px; font-size: 12px; }
+.dd-funnel-bars { display: grid; gap: 4px; }
+.dd-funnel-bar { display: grid; grid-template-columns: 78px 1fr 90px; align-items: center; gap: 6px; font-size: 11px; }
+.dd-funnel-track { height: 8px; background: #1a222c; border-radius: 4px; overflow: hidden; }
+.dd-funnel-track i { display: block; height: 100%; background: #5799ef; }
+.dd-quality-bar, .dd-stacked-bar { display: flex; height: 14px; border-radius: 4px; overflow: hidden; background: #1a222c; }
+.dd-q-green { background: #6eae8b; } .dd-q-yellow { background: #c29b5e; } .dd-q-red { background: #c87673; } .dd-q-unavailable { background: #405168; }
+.dd-o-vpoc_before_expiry { background: #6eae8b; } .dd-o-invalidation_before_expiry { background: #c87673; }
+.dd-o-ambiguous_before_expiry, .dd-o-no_resolution_before_expiry { background: #c29b5e; }
+.dd-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: #8792a3; margin-top: 4px; }
+.dd-legend span::before, .dd-band-swatch::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 5px; border-radius: 2px; background: #5799ef; opacity: .5; }
+.dd-legend-positive::before { background: #6eae8b !important; opacity: 1 !important; }
+.dd-legend-negative::before { background: #c87673 !important; opacity: 1 !important; }
+.dd-legend-warn::before { background: #c29b5e !important; opacity: 1 !important; }
+
+.dd-chart svg { display: block; width: 100%; height: auto; }
+.dd-curve { fill: none; stroke: #5799ef; stroke-width: 2; }
+.dd-band { fill: color-mix(in srgb, #5799ef 16%, transparent); stroke: none; }
+.dd-band-ref { fill: #5799ef; opacity: .06; }
+.dd-step-dot { fill: #5799ef; }
+.dd-axis { stroke: #29313d; stroke-width: 1; }
+.dd-grid { stroke: #29313d; stroke-width: 1; opacity: .45; }
+.dd-tick, .dd-axis-label { fill: #8792a3; font-size: 11px; }
+
+.dd-strip-zero { position: absolute; }
+.dd-strips { position: relative; }
+.dd-strip { position: relative; height: 26px; border-bottom: 1px solid #29313d; }
+.dd-strip i { position: absolute; }
+.dd-obs { top: 9px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; background: #5799ef; opacity: .75; }
+.dd-obs.negative-dot { background: #c87673; }
+
+.dd-tabs { display: flex; gap: 6px; }
+.dd-tabs button { padding: 5px 12px; border: 1px solid #29313d; border-radius: 6px; background: #0e131a; color: #8792a3; font-size: 12px; cursor: pointer; }
+.dd-tabs button.dd-tab-active { border-color: #5799ef; color: #eef3fa; }
+
+.dd-hist { display: grid; gap: 8px; }
+.dd-hist-bars { display: flex; align-items: flex-end; gap: 2px; height: 90px; }
+.dd-hist-bars i { flex: 1; min-height: 1px; background: #5799ef; opacity: .75; }
+
+.dd-empty, .dd-empty-inline { color: #8792a3; font-size: 12px; }
+.dd-empty { padding: 13px; border-left: 2px solid #c29b5e; background: rgba(194,155,94,.06); }
+.dd-empty-inline { margin: 0; }
+.dd-endpoints { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.dd-endpoint { display: grid; gap: 6px; padding: 13px; border: 1px solid #29313d; border-radius: 8px; background: #0e131a; }
+.dd-endpoint strong { font-size: 20px; }
+@media (max-width: 900px) { .dd-two-col { grid-template-columns: 1fr; } .dd-funnel-row, .dd-quality-row, .dd-stacked-row, .dd-strip-row { grid-template-columns: 60px 1fr 80px; } }
+
 /* ==== BACKDROP IMAGE — revertible block ====================================
  * Delete everything between this marker and END BACKDROP IMAGE (and
  * public/backdrop.webp) to restore the original plain --bg colour (#0c0e0f).
