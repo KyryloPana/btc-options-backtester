@@ -21,12 +21,15 @@ test("executive summary identity is deterministic and derived only from the cano
  assert.notEqual(a.identity.analysisRunId,buildResearchSummary(dataset,{...configuration,accountEquity:1}).identity.analysisRunId);
 });
 
-test("research analytics retains only validation, executive summary and analysis configuration",async()=>{
+test("research analytics exposes only the retained sections plus Underlying Resolution",async()=>{
  const component=await readTextFile(new URL("../app/components/shell/research-analytics.tsx",import.meta.url),"utf8");
- for(const gone of ["UnderlyingResolutionReportView","DurationDteReportView","StructurePolicyEconomicsReport","PortfolioStrategyReport","createResearchPdf","report-nav"])
+ // Duration & DTE and every downstream report stay deleted; Underlying
+ // Resolution was deliberately rebuilt on the canonical bundle.
+ for(const gone of ["DurationDteReportView","StructurePolicyEconomicsReport","PortfolioStrategyReport","createResearchPdf","report-nav"])
   assert.doesNotMatch(component,new RegExp(gone),`${gone} must not be referenced`);
  assert.match(component,/Executive Summary/);
  assert.match(component,/AnalysisConfigurationForm/);
+ assert.match(component,/UnderlyingResolutionReportView/);
 });
 
 test("research ZIP import is delegated to a module worker with immediate loading state",async()=>{
