@@ -785,3 +785,23 @@ footer { color: var(--muted); font-size: 10px; }
 .research-import{width:min(1120px,calc(100% - 40px));margin:40px auto;padding:36px;border:1px solid #29313d;background:#0e131a}.research-import h1{margin:4px 0;color:#f1f5fb;font-size:34px}.import-intro{color:#8792a3}.drop-zone{margin:28px 0 14px;padding:42px;display:flex;align-items:center;justify-content:space-between;border:1px dashed #405168;background:#0a0f15}.drop-zone button,.import-controls button{padding:8px 13px;border:1px solid #405168;background:#111923;cursor:pointer}.import-controls{display:flex;align-items:end;gap:12px}.import-controls label{flex:1}.preflight{margin-top:28px;border-top:2px solid #5799ef;padding-top:18px}.preflight.invalid{border-color:#c87673}.preflight.degraded{border-color:#c29b5e}.preflight h2{font-size:20px}.preflight dl{display:grid;grid-template-columns:160px 1fr;gap:8px}.preflight dt{color:#7f8a9b}.preflight dd{margin:0;font-family:var(--mono)}.preflight-warning{color:#c29b5e}.count-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:#29313d}.count-grid span{padding:13px;background:#0a0d12;color:#8792a3}.count-grid b{display:block;color:#eef3fa;font:20px var(--mono)}.capability-table>div{display:grid;grid-template-columns:240px 100px 1fr;padding:9px;border-bottom:1px solid #252c37}.capability-table em{text-transform:uppercase;font-style:normal}.capability-table .available,.capability-table .derivable{color:#6eae8b}.capability-table .degraded{color:#c29b5e}.capability-table .unavailable{color:#c87673}.capability-table small{color:#7f8a9b}
 .report-state.available{color:#6eae8b}.report-state.degraded{color:#c29b5e}.global-controls{padding:14px;border:1px solid #29313d;background:#111923}.global-controls h2{font-size:16px}.section-heading button{padding:10px 14px;background:#5799ef;color:#07101b;border:0}.section-heading button:disabled{opacity:.45;cursor:not-allowed}
 @media(max-width:700px){.research-import{width:calc(100% - 16px);margin:8px;padding:14px}.drop-zone{padding:20px;align-items:flex-start;gap:15px;flex-direction:column}.import-controls{align-items:stretch;flex-direction:column}.capability-table>div{grid-template-columns:1fr}.count-grid{grid-template-columns:repeat(2,1fr)}}
+
+/* ==== BACKDROP IMAGE — revertible block ====================================
+ * Delete everything between this marker and END BACKDROP IMAGE (and
+ * public/backdrop.webp) to restore the original plain --bg colour (#0c0e0f).
+ * The scrim opacity below is the single knob for image visibility: higher
+ * alpha = dimmer image and more legible text.
+ * ------------------------------------------------------------------------ */
+body, .app-shell {
+  background-image:
+    linear-gradient(rgba(10, 13, 18, 0.90), rgba(10, 13, 18, 0.90)),
+    url("/backdrop.webp");
+  background-size: cover;
+  background-position: center center;
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+}
+/* The shell paints its own opaque ground above <body>; clear it so the
+ * backdrop above is what shows through. */
+.app-shell { background-color: transparent; }
+/* ==== END BACKDROP IMAGE ================================================= */
