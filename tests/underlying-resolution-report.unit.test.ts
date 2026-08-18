@@ -35,10 +35,12 @@ const events=[
   entry_price:100,range_low:90,range_high:110,vpoc_distance:5},
 ];
 
-// Only e1 has an hourly path, so only e1 can produce MFE/MAE.
+// Only e1 has an hourly path, so only e1 can produce MFE/MAE. e1 resolves at
+// +2d, so the D(5) candle is deliberately after resolution and must be ignored.
 const underlying_path=[
  {event_id:"e1",timestamp_utc:D(1,1),high:104,low:99},
  {event_id:"e1",timestamp_utc:D(2,1),high:109,low:97},
+ {event_id:"e1",timestamp_utc:D(5,1),high:999,low:1},
 ];
 
 const dataset={filename:"f.zip",schemaVersion:"2.1.0",migratedFrom:null,run:{dataset_id:"ds",bundle_id:"b"},
@@ -97,14 +99,13 @@ test("F: directional rows reconcile individually and against the global total",(
  assert.deepEqual(total!.counts,report.counts,"total row matches the summary cards");
 });
 
-test("G: distance cohorts split on the canonical range-normalized boundary",()=>{
+test("G: remaining distance is range-normalized and feeds the continuous plot",()=>{
  assert.equal(byId("e1").remainingDistanceRange,0.4);
  assert.equal(byId("e2").remainingDistanceRange,0.75);
- const [near,far,missing]=report.distanceCohorts;
- assert.equal(near!.effectiveN,2,"e1 0.4x and e4 0.2x");
- assert.equal(far!.effectiveN,2,"e2 0.75x and e3 0.6x");
- assert.equal(missing!.effectiveN,0);
- assert.equal(near!.effectiveN+far!.effectiveN+missing!.effectiveN,report.effectiveN);
+ // Only events with BOTH a distance and an observed resolution can be plotted.
+ assert.deepEqual(report.distanceVsResolution.map(p=>p.eventId).sort(),["e1","e2","e4"]);
+ assert.equal(report.distanceVsResolution.find(p=>p.eventId==="e1")!.resolutionDays,2);
+ assert.equal(report.distanceMissing,0);
 });
 
 test("G: an unusable range width yields a null distance rather than zero",()=>{
@@ -113,23 +114,66 @@ test("G: an unusable range width yields a null distance rather than zero",()=>{
  assert.equal(normalizeMrEvents(flat)[0]!.remainingDistanceUsd,8,"USD distance survives");
 });
 
-test("H: resolution-speed cohorts are boundary-exact and exclude censored events",()=>{
- const [fast,mid,slow,notAssignable]=report.speedCohorts;
- assert.equal(fast!.effectiveN,0,"nothing strictly under 24h");
- assert.equal(mid!.effectiveN,2,"e2 at exactly 1d and e1 at 2d");
- assert.equal(slow!.effectiveN,1,"e4 at exactly 3d falls in >= 72h");
- assert.equal(notAssignable!.effectiveN,1,"e3 is censored and has no resolution time");
- assert.equal(fast!.effectiveN+mid!.effectiveN+slow!.effectiveN+notAssignable!.effectiveN,report.effectiveN);
+test("PERCENTILES: VPOC percentiles use only VPOC-first observed times",()=>{
+ const vpoc=report.endpoints.find(b=>b.endpoint==="vpoc")!;
+ assert.equal(vpoc.method,"observed conditional");
+ assert.equal(vpoc.observed,1,"only e1 is VPOC-first; e4 is ambiguous");
+ // A single observation returns that value at every percentile, never 0.
+ for(const p of vpoc.percentiles)assert.equal(p.days,2);
 });
 
-test("I: MFE/MAE derive from the hourly path and stay Unavailable when absent",()=>{
+test("PERCENTILES: invalidation percentiles use only invalidation-first observed times",()=>{
+ const inv=report.endpoints.find(b=>b.endpoint==="invalidation")!;
+ assert.equal(inv.method,"observed conditional");
+ assert.equal(inv.observed,1,"only e2");
+ for(const p of inv.percentiles)assert.equal(p.days,1);
+});
+
+test("PERCENTILES: ambiguous is never assigned to the success or failure endpoint",()=>{
+ const vpoc=report.endpoints.find(b=>b.endpoint==="vpoc")!,inv=report.endpoints.find(b=>b.endpoint==="invalidation")!;
+ assert.equal(vpoc.observed+inv.observed,2,"e4 contributes to neither");
+ assert.equal(report.counts.ambiguous,1,"but it is still counted");
+});
+
+test("PERCENTILES: an endpoint with no observations is Not estimable with a reason",()=>{
+ const noFailures={...dataset,tables:{events:[events[0]],underlying_path:[]}} as unknown as AnalysisDataset;
+ const inv=buildUnderlyingResolutionReport(noFailures).endpoints.find(b=>b.endpoint==="invalidation")!;
+ assert.equal(inv.observed,0);
+ for(const p of inv.percentiles)assert.equal(p.days,null,"never zero");
+ assert.match(inv.emptyReason!,/No invalidation-first events/);
+});
+
+test("KM: first resolution stays censor-aware and separate from the conditional endpoints",()=>{
+ const resolution=report.endpoints.find(b=>b.endpoint==="resolution")!;
+ assert.equal(resolution.method,"kaplan-meier");
+ assert.equal(resolution.observed,3,"e1, e2 and e4 resolved");
+ assert.equal(resolution.censored,1,"e3 is right-censored");
+ assert.equal(resolution.effectiveN,report.effectiveN);
+});
+
+test("I: MFE/MAE use entry -> first resolution and ignore post-resolution candles",()=>{
  const e1=byId("e1").excursion!;
- assert.equal(e1.mfeUsd,9,"long: max high 109 - entry 100");
- assert.equal(e1.maeUsd,-3,"long: min low 97 - entry 100");
+ // e1 resolves at +2d; the extreme D(5) candle (999/1) must not contribute.
+ assert.equal(e1.mfeUsd,9,"long: max high 109 - entry 100, pre-resolution only");
+ assert.equal(e1.maeUsd,-3,"long: min low 97 - entry 100, pre-resolution only");
+ assert.equal(byId("e1").resolutionTimestampMs,Date.parse(D(3)),"window ends at first resolution");
+});
+
+test("I: a censored event measures excursion to its censoring time",()=>{
+ const censored={...dataset,tables:{events:[events[2]],
+  underlying_path:[{event_id:"e3",timestamp_utc:D(3,1),high:106,low:94},
+                   {event_id:"e3",timestamp_utc:D(9,1),high:500,low:2}]}} as unknown as AnalysisDataset;
+ // e3 is censored at +5d, so the D(9) candle lies outside the window.
+ const x=normalizeMrEvents(censored)[0]!.excursion!;
+ assert.equal(x.mfeUsd,6,"max high 106 - entry 100");
+ assert.equal(x.maeUsd,-6,"min low 94 - entry 100");
+});
+
+test("I: a missing path stays Unavailable rather than zero",()=>{
  assert.equal(byId("e2").excursion,null,"no path -> Unavailable, never 0");
- assert.equal(byId("e3").excursion,null);
- const near=report.distanceCohorts[0]!;
- assert.equal(near.excursionUnavailable,1,"e4 has no path");
+ assert.equal(byId("e4").excursion,null);
+ assert.equal(report.excursionOverall.available,1,"only e1 has a path");
+ assert.equal(report.excursionOverall.total,report.effectiveN);
 });
 
 test("I: short-side excursion is measured in the direction of the thesis",()=>{
@@ -148,7 +192,7 @@ test("J: analytics are independent of any table page the UI chooses to show",()=
  const rebuilt=buildUnderlyingResolutionReport(dataset);
  assert.deepEqual(rebuilt.counts,report.counts);
  assert.deepEqual(rebuilt.directional,report.directional);
- assert.deepEqual(rebuilt.timeToEvent,report.timeToEvent);
+ assert.deepEqual(rebuilt.endpoints,report.endpoints);
  assert.equal(rebuilt.effectiveN,report.effectiveN);
 });
 
@@ -157,7 +201,7 @@ test("data sufficiency: an empty bundle produces zeroed counts and no estimates"
  const r=buildUnderlyingResolutionReport(empty);
  assert.equal(r.totalEvents,0);
  assert.equal(r.effectiveN,0);
- for(const block of r.timeToEvent)for(const p of block.percentiles)assert.equal(p.days,null,"no percentile is estimable");
+ for(const block of r.endpoints)for(const p of block.percentiles)assert.equal(p.days,null,"no percentile is estimable");
  assert.deepEqual(r.survival,[]);
 });
 
@@ -167,8 +211,12 @@ test("data sufficiency: an all-unresolved bundle reports no resolutions and no p
  assert.equal(r.effectiveN,1);
  assert.equal(r.counts.unresolved,1);
  assert.equal(r.counts.invalidationFirst,0,"censored is never a failure");
- const resolution=r.timeToEvent.find(b=>b.endpoint==="resolution")!;
+ const resolution=r.endpoints.find(b=>b.endpoint==="resolution")!;
  assert.equal(resolution.observed,0);
  assert.equal(resolution.censored,1);
  for(const p of resolution.percentiles)assert.equal(p.days,null);
+ // Valid follow-up with zero resolutions is a real, plottable flat curve --
+ // not statistically indistinguishable from having no eligible events at all.
+ assert.ok(r.survival.length>=2,"a flat S(t)=1 curve must exist, not be empty");
+ for(const point of r.survival)assert.equal(point.survival,1);
 });

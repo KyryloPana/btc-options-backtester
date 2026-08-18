@@ -33,7 +33,14 @@ const finite=(x:number)=>Number.isFinite(x);
  * for the event increment at t. A censored observation never contributes to the
  * numerator of an event increment — it only leaves the risk set afterwards.
  *
- * Returns points at each distinct event time, plus a leading S(0)=1 anchor.
+ * Returns points at each distinct event time, plus a leading S(0)=1 anchor,
+ * plus a trailing flat point at the last follow-up time (event or censoring)
+ * when that time is later than the last step. A sample with valid follow-up
+ * but zero observed events is therefore never indistinguishable from no data:
+ * it returns a flat S(t)=1 curve out to the longest observed censoring time,
+ * which is the honest KM answer -- "no resolution observed yet" -- rather
+ * than the curve appearing to not exist. Percentiles over such a curve
+ * correctly remain Not estimable; only the curve's existence changes.
  * Times with only censorings do not produce a step (S is unchanged there) but do
  * reduce the risk set for later times.
  */
@@ -62,6 +69,19 @@ export function kaplanMeier(observations:readonly SurvivalObservation[]):readonl
    upper=survival**(1/factor);
   }else if(survival===1){lower=1;upper=1}
   points.push({timeDays:t,atRisk,events,censored,survival,lower,upper});
+ }
+ const last=points[points.length-1]!,maxFollowUp=Math.max(...clean.map(o=>o.timeDays));
+ if(maxFollowUp>last.timeDays){
+  // No event occurred between the last step and this time, so survival and
+  // its band are unchanged; this point exists purely to make the follow-up
+  // horizon -- and an all-censored sample's flat curve -- visible.
+  points.push({
+   timeDays:maxFollowUp,
+   atRisk:clean.filter(o=>o.timeDays>=maxFollowUp).length,
+   events:0,
+   censored:clean.filter(o=>!o.observed&&o.timeDays===maxFollowUp).length,
+   survival:last.survival,lower:last.lower,upper:last.upper,
+  });
  }
  return points;
 }
@@ -97,4 +117,36 @@ export function quantiles(observations:readonly SurvivalObservation[],ps:readonl
 export function riskSummary(observations:readonly SurvivalObservation[]):{effectiveN:number;observed:number;censored:number}{
  const clean=observations.filter(o=>finite(o.timeDays)&&o.timeDays>=0);
  return {effectiveN:clean.length,observed:clean.filter(o=>o.observed).length,censored:clean.filter(o=>!o.observed).length};
+}
+
+/**
+ * Empirical percentiles of a fully observed sample, by linear interpolation
+ * between order statistics.
+ *
+ * Used for the conditional endpoint distributions (time to VPOC among
+ * VPOC-first events, time to invalidation among invalidation-first events).
+ * Those are NOT censored problems: every event in the conditioning set actually
+ * experienced the endpoint, so Kaplan-Meier is inappropriate -- treating the
+ * competing terminal outcome as censoring would misstate the distribution.
+ *
+ * Returns null for an empty sample rather than 0.
+ */
+export function observedPercentiles(values:readonly number[],ps:readonly number[]):readonly (number|null)[]{
+ const sorted=values.filter(v=>Number.isFinite(v)).sort((a,b)=>a-b);
+ if(!sorted.length)return ps.map(()=>null);
+ return ps.map(p=>{
+  if(!(p>0&&p<1))return null;
+  if(sorted.length===1)return sorted[0]!;
+  const index=(sorted.length-1)*p,lower=Math.floor(index),upper=Math.ceil(index);
+  return lower===upper?sorted[lower]!:sorted[lower]!+(sorted[upper]!-sorted[lower]!)*(index-lower);
+ });
+}
+
+/** Median and inter-quartile range for small-sample box/strip comparisons. */
+export interface FiveNumberSummary {readonly min:number;readonly q1:number;readonly median:number;readonly q3:number;readonly max:number;readonly n:number}
+export function fiveNumber(values:readonly number[]):FiveNumberSummary|null{
+ const sorted=values.filter(v=>Number.isFinite(v)).sort((a,b)=>a-b);
+ if(!sorted.length)return null;
+ const [q1,median,q3]=observedPercentiles(sorted,[0.25,0.5,0.75]);
+ return {min:sorted[0]!,q1:q1!,median:median!,q3:q3!,max:sorted[sorted.length-1]!,n:sorted.length};
 }

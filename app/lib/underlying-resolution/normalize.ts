@@ -40,9 +40,15 @@ export interface NormalizedMrEvent {
  readonly timeToInvalidationDays:number|null;
  /** min(valid T_VPOC, valid T_inv); null when censored -- never manufactured. */
  readonly timeToResolutionDays:number|null;
+ /** Timestamp of first resolution; null when censored. Bounds the excursion window. */
+ readonly resolutionTimestampMs:number|null;
  /** Time from entry to observation end; the censoring time for unresolved events. */
  readonly observationDays:number|null;
- /** MFE/MAE derived from hourly OHLC; null means Unavailable, never zero. */
+ /**
+  * MFE/MAE over [entry, first resolution] for resolved events and
+  * [entry, observation end] for censored ones -- the excursion the position
+  * actually had to survive. Null means Unavailable, never zero.
+  */
  readonly excursion:MfeMae|null;
  /** Null when the event can contribute to time-to-event analysis. */
  readonly ineligibility:IneligibilityReason|null;
@@ -59,7 +65,10 @@ const outcomeOf=(v:unknown):ResolutionOutcome=>{const s=str(v);return s&&OUTCOME
 
 /**
  * Maximum favourable / adverse excursion from the hourly path, measured from
- * entry price in the direction of the thesis, over [entry, observation end].
+ * entry price in the direction of the thesis, bounded by `toMs`.
+ *
+ * `toMs` is the first-resolution timestamp once the thesis has resolved, so
+ * price action after the MR question was already answered never contributes.
  * Returns null when no usable candle exists so the caller can show Unavailable.
  */
 function excursion(path:readonly Readonly<Record<string,unknown>>[],entryPrice:number|null,direction:"long"|"short"|null,fromMs:number|null,toMs:number|null):MfeMae|null{
@@ -109,6 +118,10 @@ export function normalizeMrEvents(dataset:AnalysisDataset):readonly NormalizedMr
    timeToInvalidationDays=outcome==="invalidation_first"||outcome==="ambiguous"?days(entry,invalidation):null;
   const resolutionCandidates=[timeToVpocDays,timeToInvalidationDays].filter((x):x is number=>x!==null);
   const timeToResolutionDays=outcome==="unresolved"||!resolutionCandidates.length?null:Math.min(...resolutionCandidates);
+  const resolutionTimestampMs=timeToResolutionDays===null||entry===null?null:entry+timeToResolutionDays*DAY;
+  // The excursion the position had to survive: it ends when the thesis is
+  // answered, not at the end of the stored observation window.
+  const excursionEnd=resolutionTimestampMs??observationEnd;
 
   return {
    eventId,direction,entryTimestampMs:entry,
@@ -116,8 +129,8 @@ export function normalizeMrEvents(dataset:AnalysisDataset):readonly NormalizedMr
    entryPrice,rangeWidthUsd,remainingDistanceUsd,
    remainingDistanceRange:remainingDistanceUsd!==null&&rangeWidthUsd?remainingDistanceUsd/rangeWidthUsd:null,
    outcome,censored:str(row.censoring_status)==="right_censored"||outcome==="unresolved",
-   timeToVpocDays,timeToInvalidationDays,timeToResolutionDays,observationDays,
-   excursion:excursion(byEvent.get(eventId)??[],entryPrice,direction,entry,observationEnd),
+   timeToVpocDays,timeToInvalidationDays,timeToResolutionDays,resolutionTimestampMs,observationDays,
+   excursion:excursion(byEvent.get(eventId)??[],entryPrice,direction,entry,excursionEnd),
    ineligibility,
   } satisfies NormalizedMrEvent;
  });
