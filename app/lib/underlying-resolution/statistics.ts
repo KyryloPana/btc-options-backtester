@@ -33,7 +33,14 @@ const finite=(x:number)=>Number.isFinite(x);
  * for the event increment at t. A censored observation never contributes to the
  * numerator of an event increment — it only leaves the risk set afterwards.
  *
- * Returns points at each distinct event time, plus a leading S(0)=1 anchor.
+ * Returns points at each distinct event time, plus a leading S(0)=1 anchor,
+ * plus a trailing flat point at the last follow-up time (event or censoring)
+ * when that time is later than the last step. A sample with valid follow-up
+ * but zero observed events is therefore never indistinguishable from no data:
+ * it returns a flat S(t)=1 curve out to the longest observed censoring time,
+ * which is the honest KM answer -- "no resolution observed yet" -- rather
+ * than the curve appearing to not exist. Percentiles over such a curve
+ * correctly remain Not estimable; only the curve's existence changes.
  * Times with only censorings do not produce a step (S is unchanged there) but do
  * reduce the risk set for later times.
  */
@@ -62,6 +69,19 @@ export function kaplanMeier(observations:readonly SurvivalObservation[]):readonl
    upper=survival**(1/factor);
   }else if(survival===1){lower=1;upper=1}
   points.push({timeDays:t,atRisk,events,censored,survival,lower,upper});
+ }
+ const last=points[points.length-1]!,maxFollowUp=Math.max(...clean.map(o=>o.timeDays));
+ if(maxFollowUp>last.timeDays){
+  // No event occurred between the last step and this time, so survival and
+  // its band are unchanged; this point exists purely to make the follow-up
+  // horizon -- and an all-censored sample's flat curve -- visible.
+  points.push({
+   timeDays:maxFollowUp,
+   atRisk:clean.filter(o=>o.timeDays>=maxFollowUp).length,
+   events:0,
+   censored:clean.filter(o=>!o.observed&&o.timeDays===maxFollowUp).length,
+   survival:last.survival,lower:last.lower,upper:last.upper,
+  });
  }
  return points;
 }

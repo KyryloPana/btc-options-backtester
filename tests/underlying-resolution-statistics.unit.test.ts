@@ -79,6 +79,25 @@ test("E: all-censored and empty samples yield Not estimable rather than zero",()
  assert.deepEqual(quantiles([],[0.5]),[null]);
 });
 
+test("D: an all-censored sample with valid follow-up is a flat S(t)=1 curve, not an empty one",()=>{
+ // Valid follow-up (nobody has resolved yet) must not render identically to
+ // zero eligible events. The curve should exist and stay at 100% out to the
+ // longest observed censoring time; only its percentiles are Not estimable.
+ const curve=kaplanMeier([{timeDays:3,observed:false},{timeDays:9,observed:false}]);
+ assert.ok(curve.length>=2,"a real follow-up window must produce a plottable curve");
+ for(const point of curve)close(point.survival,1,"no event ever occurred");
+ close(curve[curve.length-1]!.timeDays,9,"curve extends to the longest censoring time");
+ assert.equal(kaplanMeierQuantile(curve,0.5),null,"median remains Not estimable");
+});
+
+test("D: a fully resolved sample still shows a trailing point at the final censoring time",()=>{
+ // A late censoring after the last event extends the visible curve, without
+ // altering the survival value at any existing step.
+ const curve=kaplanMeier([{timeDays:2,observed:true},{timeDays:2,observed:false},{timeDays:10,observed:false}]);
+ close(curve[curve.length-1]!.survival,curve.find(p=>p.timeDays===2)!.survival,"trailing point does not change survival");
+ close(curve[curve.length-1]!.timeDays,10);
+});
+
 test("E: non-finite and negative times are excluded rather than coerced",()=>{
  const summary=riskSummary([{timeDays:Number.NaN,observed:true},{timeDays:-1,observed:true},{timeDays:2,observed:true},{timeDays:4,observed:false}]);
  assert.deepEqual(summary,{effectiveN:2,observed:1,censored:1});

@@ -52,7 +52,10 @@ const W=880,H=300,ML=54,MR=18,MT=16,MB=42;
 
 function SurvivalChart({report}:{report:UnderlyingResolutionReport}){
  const curve=report.survival;
- if(curve.length<2)return <div className="ur-empty">{NOT_ESTIMABLE} — no observed resolutions to estimate an event-free probability curve.</div>;
+ // With the statistics fix, any eligible event with valid follow-up produces
+ // at least an anchor plus a trailing follow-up point -- curve.length<2 means
+ // there is genuinely no eligible event to plot, not merely no resolutions.
+ if(curve.length<2)return <div className="ur-empty">{NOT_ESTIMABLE} — no eligible events with a usable observation window.</div>;
  const maxT=Math.max(...curve.map(p=>p.timeDays))||1;
  const px=(t:number)=>ML+t/maxT*(W-ML-MR);
  const py=(s:number)=>MT+(1-s)*(H-MT-MB);
@@ -94,6 +97,7 @@ function SurvivalChart({report}:{report:UnderlyingResolutionReport}){
    <span>P80 <strong className={p80===null?"ur-muted":undefined}>{p80===null?NOT_ESTIMABLE:`${d1(p80)}d`}</strong></span>
    <span>{resolution.observed} observed · {resolution.censored} censored</span>
   </div>
+  {resolution.observed===0&&<p className="ur-empty-inline">No resolutions observed within the follow-up window shown — the curve correctly remains at 100% and percentiles are {NOT_ESTIMABLE}.</p>}
  </>;
 }
 

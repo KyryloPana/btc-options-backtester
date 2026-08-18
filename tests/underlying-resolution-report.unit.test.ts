@@ -215,4 +215,8 @@ test("data sufficiency: an all-unresolved bundle reports no resolutions and no p
  assert.equal(resolution.observed,0);
  assert.equal(resolution.censored,1);
  for(const p of resolution.percentiles)assert.equal(p.days,null);
+ // Valid follow-up with zero resolutions is a real, plottable flat curve --
+ // not statistically indistinguishable from having no eligible events at all.
+ assert.ok(r.survival.length>=2,"a flat S(t)=1 curve must exist, not be empty");
+ for(const point of r.survival)assert.equal(point.survival,1);
 });
