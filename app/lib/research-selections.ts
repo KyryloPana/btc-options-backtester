@@ -36,12 +36,13 @@ export interface ReproducibilitySnapshot {
 export interface GenerationSnapshot { generatedAtUtc: string; configuration: ReproducibilitySnapshot; candidates: GenerationCandidateSnapshot[]; underlyingHourlyPath: Candle[] }
 export interface EvidenceTradeDto { evidenceId:string; venue:Venue; instrument:string|null; tradeId:string|null; timestamp:number|null; direction:string|null; price:number|null; amount:number|null; indexPrice:number|null; ivApiPercent:number|null; ivDecimal:number|null; blockTradeId:string|null; rfqId:string|null; }
 export interface EvidenceUsageDto { evidenceId:string; candidateId:string; role:string; valuationTimestamp:number|null; pricingTrack:string|null; leg:string|null; executionScenario:"maker"|"taker"|null; }
-export type ExecutionScenarioEvaluationStatus = "evaluated" | "not_evaluated";
+export type ExecutionScenarioEvaluationStatus = "evaluated" | "unavailable" | "not_evaluated";
 /**
  * One execution scenario's independently-evaluated entry/path/outcomes for a
- * structure. `status:"not_evaluated"` means historical evidence did not
- * support evaluating this scenario -- it is never coerced into a priced
- * estimate, and it is never displayed as 0.
+ * structure. `status:"unavailable"` means this scenario was attempted but
+ * rejected by scenario-specific evidence or economics; `status:"not_evaluated"`
+ * means it was intentionally not run. Neither state is coerced into a priced
+ * estimate, borrowed from the other scenario, or displayed as 0.
  */
 export interface ExecutionScenarioSnapshot {
   status: ExecutionScenarioEvaluationStatus;
@@ -101,6 +102,10 @@ export function validateResearchSelectionStore(value:unknown):{ok:true;store:Res
       if(!iso(s.selectedAtUtc))errors.push({path:`${q}.selectedAtUtc`,message:"A UTC ISO-8601 timestamp is required."});
       if(typeof s.quantity!=="number"||!Number.isFinite(s.quantity)||s.quantity<=0)errors.push({path:`${q}.quantity`,message:"Quantity must be finite and positive."});
       const key=`${s.venue}:${s.candidateId}`;if(keys.has(key))errors.push({path:q,message:"Duplicate event/candidate selection."});keys.add(key);
+      const generated=Array.isArray(event.generationSnapshot?.candidates)?event.generationSnapshot.candidates:[];
+      if(typeof s.candidateId==="string"&&!generated.some(c=>c&&typeof c==="object"&&(c as GenerationCandidateSnapshot).candidateId===s.candidateId))errors.push({path:`${q}.candidateId`,message:"Selected candidate is stale/unmatched in the current generation snapshot; remove/reselect or restore the producing snapshot before export."});
+      const scenarios=(s as Partial<SelectedStructure>).executionScenarios;
+      for(const mode of ["maker","taker"] as const){const scenario=scenarios?.[mode];if(scenario){if(!["evaluated","unavailable","not_evaluated"].includes(String(scenario.status)))errors.push({path:`${q}.executionScenarios.${mode}.status`,message:"Scenario status must be evaluated, unavailable, or not_evaluated."});if(scenario.status!=="evaluated"&&scenario.reason===null)errors.push({path:`${q}.executionScenarios.${mode}.reason`,message:"Unavailable and not_evaluated scenarios require an explicit reason."});}}
     }
   }
   inspectJson(value,"$",errors);
