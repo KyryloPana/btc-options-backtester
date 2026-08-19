@@ -1,7 +1,9 @@
 "use client";
-import {useState} from "react";
+import {useMemo,useState} from "react";
 import type {DirectionSample,EndpointBlock,ScatterPoint,UnderlyingResolutionReport} from "../lib/underlying-resolution/report";
 import type {NormalizedMrEvent} from "../lib/underlying-resolution/normalize";
+import {ChartAxisTag,ChartCrosshair,ChartMarker,ChartReadout,useChartCursor} from "./chart-cursor";
+import {formatValue,nearestInPlot,stepValueAt,type PlotGeometry} from "../lib/chart-interaction";
 
 /**
  * Presentation only. Every number comes from the prebuilt report view model, so
@@ -55,8 +57,9 @@ function SurvivalChart({report}:{report:UnderlyingResolutionReport}){
  // With the statistics fix, any eligible event with valid follow-up produces
  // at least an anchor plus a trailing follow-up point -- curve.length<2 means
  // there is genuinely no eligible event to plot, not merely no resolutions.
- if(curve.length<2)return <div className="ur-empty">{NOT_ESTIMABLE} — no eligible events with a usable observation window.</div>;
- const maxT=Math.max(...curve.map(p=>p.timeDays))||1;
+ // maxT is computed before the empty guard so the hooks below run on every
+ // render; an empty curve simply yields the fallback extent and is discarded.
+ const maxT=Math.max(0,...curve.map(p=>p.timeDays))||1;
  const px=(t:number)=>ML+t/maxT*(W-ML-MR);
  const py=(s:number)=>MT+(1-s)*(H-MT-MB);
 
@@ -72,11 +75,22 @@ function SurvivalChart({report}:{report:UnderlyingResolutionReport}){
 
  const yTicks=[0,0.25,0.5,0.75,1],xTicks=Array.from({length:5},(_,i)=>maxT*i/4);
  const resolution=report.endpoints.find(b=>b.endpoint==="resolution")!;
+
+ // Kaplan-Meier is a continuous estimator defined for every t, so reading it
+ // between event times is legitimate -- the cursor reports the step's own held
+ // value, never a value interpolated toward the next drop.
+ const geometry:PlotGeometry=useMemo(()=>({width:W,height:H,left:ML,right:MR,top:MT,bottom:MB,
+  xRange:{min:0,max:maxT},yRange:{min:0,max:1}}),[maxT]);
+ const cursor=useChartCursor(geometry);
+ const reading=cursor.position?stepValueAt(curve.map(p=>({...p,x:p.timeDays,y:p.survival})),cursor.position.x):null;
+ if(curve.length<2)return <div className="ur-empty">{NOT_ESTIMABLE} — no eligible events with a usable observation window.</div>;
  const p50=resolution.percentiles.find(p=>p.p===0.5)?.days??null,p80=resolution.percentiles.find(p=>p.p===0.8)?.days??null;
 
  return <>
   <figure className="ur-km">
-   <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Kaplan-Meier event-free probability">
+   <svg className="chart-interactive" viewBox={`0 0 ${W} ${H}`} role="img"
+    aria-label={`Kaplan-Meier event-free probability over ${d1(maxT)} days. Move the pointer across the plot to read the estimator at a given time.`}
+    {...cursor.handlers}>
     {yTicks.map(t=><g key={t}>
      <line className="ur-grid" x1={ML} x2={W-MR} y1={py(t)} y2={py(t)}/>
      <text className="ur-tick" x={ML-9} y={py(t)+4} textAnchor="end">{(t*100).toFixed(0)}%</text>
@@ -90,6 +104,19 @@ function SurvivalChart({report}:{report:UnderlyingResolutionReport}){
     <line className="ur-axis" x1={ML} x2={ML} y1={MT} y2={H-MB}/>
     <line className="ur-axis" x1={ML} x2={W-MR} y1={H-MB} y2={H-MB}/>
     <text className="ur-axis-label" x={W/2} y={H-6} textAnchor="middle">Calendar days from event entry</text>
+    {cursor.position&&reading&&<>
+     <ChartCrosshair geometry={geometry} px={cursor.position.px} py={py(reading.y)}/>
+     <ChartMarker px={px(reading.point.timeDays)} py={py(reading.y)}/>
+     <ChartAxisTag geometry={geometry} px={cursor.position.px} text={`${d1(cursor.position.x)}d`}/>
+     <ChartReadout geometry={geometry} px={cursor.position.px} py={py(reading.y)}
+      title={`t = ${d1(cursor.position.x)}d`}
+      lines={[
+       {label:"S(t) event-free",value:`${(reading.y*100).toFixed(1)}%`},
+       {label:"Resolved by t",value:`${((1-reading.y)*100).toFixed(1)}%`},
+       {label:"At risk",value:formatValue(reading.point.atRisk,undefined,0),tone:"muted"},
+       {label:"Events at step",value:`${reading.point.events} @ ${d1(reading.point.timeDays)}d`,tone:"muted"},
+      ]}/>
+    </>}
    </svg>
   </figure>
   <div className="ur-interp">
@@ -106,12 +133,22 @@ function SurvivalChart({report}:{report:UnderlyingResolutionReport}){
 const SW=420,SH=240,SL=46,SB=36,ST=12,SRt=12;
 
 function DistanceScatter({points,missing}:{points:readonly ScatterPoint[];missing:number}){
- if(!points.length)return <div className="ur-empty">No events have both a canonical remaining distance and an observed resolution time.</div>;
- const maxX=Math.max(...points.map(p=>p.distanceRange))||1,maxY=Math.max(...points.map(p=>p.resolutionDays))||1;
+ const maxX=Math.max(0,...points.map(p=>p.distanceRange))||1,maxY=Math.max(0,...points.map(p=>p.resolutionDays))||1;
  const px=(x:number)=>SL+x/(maxX*1.1)*(SW-SL-SRt),py=(y:number)=>SH-SB-y/(maxY*1.1)*(SH-SB-ST);
+ // Discrete observations: the cursor snaps to a real event, never to a point
+ // between two of them, because nothing was observed in between.
+ const geometry:PlotGeometry={width:SW,height:SH,left:SL,right:SRt,top:ST,bottom:SB,
+  xRange:{min:0,max:maxX*1.1},yRange:{min:0,max:maxY*1.1}};
+ const cursor=useChartCursor(geometry);
+ const hovered=cursor.position
+  ?nearestInPlot(points.map(p=>({...p,x:p.distanceRange,y:p.resolutionDays})),cursor.position.x,cursor.position.y,geometry.xRange,geometry.yRange)
+  :null;
+ if(!points.length)return <div className="ur-empty">No events have both a canonical remaining distance and an observed resolution time.</div>;
  return <>
   <figure className="ur-scatter">
-   <svg viewBox={`0 0 ${SW} ${SH}`} role="img" aria-label="Remaining distance to VPOC versus time to first resolution">
+   <svg className="chart-interactive" viewBox={`0 0 ${SW} ${SH}`} role="img"
+    aria-label={`Remaining distance to VPOC versus time to first resolution, ${points.length} events. Move the pointer to inspect the nearest event.`}
+    {...cursor.handlers}>
     <line className="ur-axis" x1={SL} x2={SL} y1={ST} y2={SH-SB}/>
     <line className="ur-axis" x1={SL} x2={SW-SRt} y1={SH-SB} y2={SH-SB}/>
     {[0,0.5,1].map(f=><text key={f} className="ur-tick" x={SL-8} y={py(maxY*1.1*f)+4} textAnchor="end">{d1(maxY*1.1*f)}</text>)}
@@ -120,6 +157,16 @@ function DistanceScatter({points,missing}:{points:readonly ScatterPoint[];missin
      <title>{`${p.eventId} · ${p.distanceRange.toFixed(2)}x range · ${d1(p.resolutionDays)}d · ${OUTCOME_LABEL[p.outcome]}`}</title>
     </circle>)}
     <text className="ur-axis-label" x={SW/2} y={SH-4} textAnchor="middle">Remaining distance to VPOC (× range)</text>
+    {hovered&&<>
+     <ChartMarker px={px(hovered.distanceRange)} py={py(hovered.resolutionDays)} r={6}/>
+     <ChartReadout geometry={geometry} px={px(hovered.distanceRange)} py={py(hovered.resolutionDays)}
+      title={hovered.eventId}
+      lines={[
+       {label:"Distance",value:`${hovered.distanceRange.toFixed(2)}× range`},
+       {label:"First resolution",value:`${d1(hovered.resolutionDays)}d`},
+       {label:"Outcome",value:OUTCOME_LABEL[hovered.outcome]??hovered.outcome,tone:"muted"},
+      ]}/>
+    </>}
    </svg>
   </figure>
   <div className="ur-legend">
