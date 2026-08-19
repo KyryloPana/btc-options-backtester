@@ -1,5 +1,7 @@
 "use client";
-import {useState} from "react";
+import {useMemo,useState} from "react";
+import {ChartAxisTag,ChartCrosshair,ChartMarker,ChartReadout,useChartCursor} from "./chart-cursor";
+import {binAt,stepValueAt,type PlotGeometry} from "../lib/chart-interaction";
 import type {
  CaptureThresholdRow,DteBufferRow,DurationDteReport,HoldingPeriodRow,OutcomeBeforeExpiryRow,OverviewRow,
  PnlByOutcomeRow,SynchronizationRow,
@@ -127,8 +129,7 @@ const W=880,H=300,ML=54,MR=18,MT=16,MB=42;
 
 function CoverageChart({report}:{report:DurationDteReport}){
  const curve=report.coverageCurve;
- if(curve.length<2)return <div className="dd-empty">{NOT_ESTIMABLE} — no eligible events with a usable observation window.</div>;
- const maxT=Math.max(...curve.map(p=>p.timeDays),...report.horizons.flatMap(h=>h.eligibleDteRange?[h.eligibleDteRange.max]:[]))||1;
+ const maxT=Math.max(0,...curve.map(p=>p.timeDays),...report.horizons.flatMap(h=>h.eligibleDteRange?[h.eligibleDteRange.max]:[]))||1;
  const px=(t:number)=>ML+t/maxT*(W-ML-MR),py=(c:number)=>MT+(1-c)*(H-MT-MB);
  let path=`M ${px(0)} ${py(0)}`,prev=0;
  for(const point of curve.slice(1)){path+=` L ${px(point.timeDays)} ${py(prev)} L ${px(point.timeDays)} ${py(point.coverage)}`;prev=point.coverage}
@@ -136,9 +137,19 @@ function CoverageChart({report}:{report:DurationDteReport}){
  const banded=curve.filter(p=>p.lower!==null&&p.upper!==null);
  const band=banded.length>1?"M "+banded.map(p=>`${px(p.timeDays)} ${py(p.upper!)}`).join(" L ")+" L "+[...banded].reverse().map(p=>`${px(p.timeDays)} ${py(p.lower!)}`).join(" L ")+" Z":"";
  const yTicks=[0,0.25,0.5,0.75,1],xTicks=Array.from({length:5},(_,i)=>maxT*i/4);
+ // Coverage is 1 - S(t) from the same Kaplan-Meier estimator, so it too is
+ // defined at every t; the cursor reads the step's held value, not a slope.
+ const geometry:PlotGeometry=useMemo(()=>({width:W,height:H,left:ML,right:MR,top:MT,bottom:MB,
+  xRange:{min:0,max:maxT},yRange:{min:0,max:1}}),[maxT]);
+ const cursor=useChartCursor(geometry);
+ const reading=cursor.position?stepValueAt(curve.map(p=>({...p,x:p.timeDays,y:p.coverage})),cursor.position.x):null;
+ if(curve.length<2)return <div className="dd-empty">{NOT_ESTIMABLE} — no eligible events with a usable observation window.</div>;
+ const bandAtCursor=cursor.position?report.horizons.find(h=>h.eligibleDteRange&&cursor.position!.x>=h.eligibleDteRange.min&&cursor.position!.x<=h.eligibleDteRange.max):undefined;
  return <>
   <figure className="dd-chart">
-   <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="MR first-resolution coverage versus actual DTE">
+   <svg className="chart-interactive" viewBox={`0 0 ${W} ${H}`} role="img"
+    aria-label={`MR first-resolution coverage versus actual DTE over ${d1(maxT)} days. Move the pointer across the plot to read coverage at a given DTE.`}
+    {...cursor.handlers}>
     {report.horizons.map(h=>h.eligibleDteRange&&<rect key={h.nominalDays} className="dd-band-ref" x={px(h.eligibleDteRange.min)} width={Math.max(px(h.eligibleDteRange.max)-px(h.eligibleDteRange.min),1)} y={MT} height={H-MT-MB}>
      <title>{`${h.label} eligible DTE ${h.eligibleDteRange.min}–${h.eligibleDteRange.max}d`}</title>
     </rect>)}
@@ -150,6 +161,18 @@ function CoverageChart({report}:{report:DurationDteReport}){
     <line className="dd-axis" x1={ML} x2={ML} y1={MT} y2={H-MB}/>
     <line className="dd-axis" x1={ML} x2={W-MR} y1={H-MB} y2={H-MB}/>
     <text className="dd-axis-label" x={W/2} y={H-6} textAnchor="middle">Actual DTE (days)</text>
+    {cursor.position&&reading&&<>
+     <ChartCrosshair geometry={geometry} px={cursor.position.px} py={py(reading.y)}/>
+     <ChartMarker px={px(reading.point.timeDays)} py={py(reading.y)}/>
+     <ChartAxisTag geometry={geometry} px={cursor.position.px} text={`${d1(cursor.position.x)}d`}/>
+     <ChartReadout geometry={geometry} px={cursor.position.px} py={py(reading.y)}
+      title={`Actual DTE ${d1(cursor.position.x)}d`}
+      lines={[
+       {label:"Resolved by then",value:`${(reading.y*100).toFixed(1)}%`},
+       {label:"Still unresolved",value:`${((1-reading.y)*100).toFixed(1)}%`},
+       {label:"Horizon band",value:bandAtCursor?bandAtCursor.label:"outside bands",tone:"muted"},
+      ]}/>
+    </>}
    </svg>
   </figure>
   <div className="dd-legend">{report.horizons.map(h=><span key={h.nominalDays} className="dd-band-swatch">{h.label}{h.eligibleDteRange&&` (${h.eligibleDteRange.min}–${h.eligibleDteRange.max}d)`}</span>)}</div>
@@ -368,12 +391,27 @@ function AdverseDiagnosticsSection({report}:{report:DurationDteReport}){
 /* ---------- 15. Actual DTE distribution ---------- */
 
 function DteHistogram({report}:{report:DurationDteReport}){
+ const [hovered,setHovered]=useState<number|null>(null);
  const values=report.actualDteAll;
- if(!values.length)return <div className="dd-empty">No selected structure has a known actual DTE.</div>;
- const max=Math.max(...values,...report.horizons.flatMap(h=>h.eligibleDteRange?[h.eligibleDteRange.max]:[]))||1,bins=24;
- const counts=Array.from({length:bins},(_,i)=>values.filter(v=>{const lo=i*max/bins,hi=(i+1)*max/bins;return i===bins-1?v>=lo&&v<=hi:v>=lo&&v<hi}).length);
+ const max=Math.max(...values,...report.horizons.flatMap(h=>h.eligibleDteRange?[h.eligibleDteRange.max]:[]))||1,binCount=24;
+ // Explicit bin edges so the pointer lookup and the drawn bars are the same
+ // partition, resolved through the shared binAt helper rather than a second
+ // ad-hoc range test.
+ const bins=Array.from({length:binCount},(_,i)=>({lo:i*max/binCount,hi:(i+1)*max/binCount}));
+ const counts=bins.map((bin,i)=>values.filter(v=>i===binCount-1?v>=bin.lo&&v<=bin.hi:v>=bin.lo&&v<bin.hi).length);
  const peak=Math.max(...counts)||1;
- return <div className="dd-hist"><div className="dd-hist-bars">{counts.map((c,i)=><i key={i} style={{height:`${c/peak*100}%`}} title={`${c} structure(s)`}/>)}</div>
+ if(!values.length)return <div className="dd-empty">No selected structure has a known actual DTE.</div>;
+ const active=hovered!==null?{bin:bins[hovered]!,count:counts[hovered]!}:null;
+ return <div className="dd-hist">
+  <div className="dd-hist-bars" role="img"
+   aria-label={`Actual DTE distribution across ${values.length} structures, ${binCount} bins from 0 to ${d1(max)} days.`}
+   onPointerMove={e=>{const r=e.currentTarget.getBoundingClientRect();if(r.width<=0)return;setHovered(binAt(bins,(e.clientX-r.left)/r.width*max))}}
+   onPointerLeave={()=>setHovered(null)}>
+   {counts.map((c,i)=><i key={i} className={i===hovered?"is-hovered":undefined} style={{height:`${c/peak*100}%`}}/>)}
+  </div>
+  <div className="dd-hist-readout" aria-live="polite">{active
+   ?<><b>{d1(active.bin.lo)}–{d1(active.bin.hi)}d</b><span>{active.count} structure{active.count===1?"":"s"}</span><span className="dd-muted">{pct(values.length?active.count/values.length:null)} of sample</span></>
+   :<span className="dd-muted">Move the pointer across the distribution to read a bin.</span>}</div>
   <small className="dd-note">0 – {d1(max)} days actual DTE across {values.length} structure(s). Actual DTE is execution-independent, so this distribution does not change with the selected scenario.</small>
  </div>;
 }

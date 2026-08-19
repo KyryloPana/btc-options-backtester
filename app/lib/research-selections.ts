@@ -157,3 +157,81 @@ export function migrateResearchSelectionStore(value:unknown):ResearchSelectionSt
   return{...(rest as unknown as SelectedStructure),executionScenarios,marginSnapshot:compactMarginResult(legacy.marginSnapshot),evidenceTradeSnapshots:[],evidenceUsages:usages};
  });return{...event,selectedStructures,evidenceCatalog:[...catalog.values()].sort((a,b)=>a.evidenceId.localeCompare(b.evidenceId))};});return{...store,schemaVersion:RESEARCH_SELECTION_SCHEMA_VERSION,events};}
 export function researchEventPayloadDiagnostics(event:ResearchSelectionEvent){const encoder=new TextEncoder(),bytes=(v:unknown)=>encoder.encode(JSON.stringify(v)).byteLength;return{sourceEventBytes:bytes(event.sourceRun),selectedCandidateBytes:event.selectedStructures.map(s=>({candidateId:s.candidateId,totalBytes:bytes(s),candidateSnapshotBytes:bytes(s.candidateSnapshot),makerEntrySnapshotBytes:bytes(s.executionScenarios.maker.entrySnapshot),makerValuationPathBytes:bytes(s.executionScenarios.maker.valuationPathSnapshot),makerOutcomesBytes:bytes(s.executionScenarios.maker.outcomeSnapshots),takerEntrySnapshotBytes:bytes(s.executionScenarios.taker.entrySnapshot),takerValuationPathBytes:bytes(s.executionScenarios.taker.valuationPathSnapshot),takerOutcomesBytes:bytes(s.executionScenarios.taker.outcomeSnapshots),marginBytes:bytes(s.marginSnapshot),evidenceBytes:bytes(s.evidenceTradeSnapshots??[]),evidenceUsageBytes:bytes(s.evidenceUsages??[])})),candidateSnapshotBytes:bytes(event.generationSnapshot.candidates),eventEvidenceCatalogBytes:bytes(event.evidenceCatalog??[]),totalBytes:bytes(event)};}
+
+/**
+ * Removing an event from the research selection store.
+ *
+ * Every canonical bundle table -- availability, candidates, valuations,
+ * outcomes, margin scenarios, evidence trades and futures comparisons -- is
+ * derived from `store.events` when the bundle is built, so dropping the event
+ * here is what actually cascades: there are no separate rows to sweep and no
+ * need to filter the exported ZIP after the fact.
+ *
+ * Deliberately event-owned and therefore removed with it: the generation
+ * snapshot (including its stored hourly underlying path), the selected
+ * structures and their scenario snapshots, and this event's own evidence
+ * catalogue. Other events keep their own catalogues, and no shared raw market
+ * data is touched -- candles and contract tapes are fetched from the venue,
+ * never owned by an event.
+ */
+export function deleteResearchSelectionEvent(store:ResearchSelectionStore,eventId:string,now=new Date().toISOString()):ResearchSelectionStore{
+ const events=store.events.filter(event=>event.eventId!==eventId);
+ return events.length===store.events.length?store:{...store,updatedAtUtc:now,events};
+}
+
+/**
+ * Renaming an event's canonical id, propagating the change through every
+ * reference that embeds it.
+ *
+ * `stableCandidateId` bakes `venue~datasetId~eventId~...` into each candidate
+ * id, and `stableSelectionId` embeds the event id again, so a bare field write
+ * would leave every selected structure pointing at an identity that no longer
+ * exists. Candidate ids are remapped by replacing that literal leading
+ * `venue~datasetId~eventId~` prefix rather than by splitting on "~": `part()`
+ * is `encodeURIComponent`, which leaves "~" untouched, so an id containing one
+ * would break positional parsing while a whole-prefix match stays exact.
+ *
+ * Selection ids are recomputed from the canonical helper rather than patched,
+ * so they cannot drift from the function that generates them.
+ */
+export function renameResearchSelectionEvent(store:ResearchSelectionStore,oldEventId:string,newEventId:string,now=new Date().toISOString()):ResearchSelectionStore{
+ if(oldEventId===newEventId)return store;
+ const target=store.events.find(event=>event.eventId===oldEventId);
+ if(!target)return store;
+
+ const remap=new Map<string,string>();
+ const candidateIdFor=(candidateId:string,venue:Venue)=>{
+  const cached=remap.get(candidateId);if(cached)return cached;
+  const oldPrefix=[venue,store.datasetId,oldEventId].map(part).join("~")+"~";
+  const next=candidateId.startsWith(oldPrefix)
+   ?[venue,store.datasetId,newEventId].map(part).join("~")+"~"+candidateId.slice(oldPrefix.length)
+   :candidateId;
+  remap.set(candidateId,next);return next;
+ };
+
+ const events=store.events.map(event=>{
+  if(event.eventId!==oldEventId)return event;
+  const selectedStructures=event.selectedStructures.map(structure=>{
+   const candidateId=candidateIdFor(structure.candidateId,structure.venue);
+   return {
+    ...structure,eventId:newEventId,candidateId,
+    selectionId:stableSelectionId(newEventId,structure.venue,candidateId),
+    evidenceUsages:structure.evidenceUsages?.map(usage=>({...usage,candidateId:candidateIdFor(usage.candidateId,structure.venue)})),
+   } satisfies SelectedStructure;
+  });
+  const candidates=event.generationSnapshot.candidates.map(candidate=>({...candidate,candidateId:candidateIdFor(candidate.candidateId,candidate.venue)}));
+  // sourceRun carries the event reference the bundle reads its event_id from.
+  const sourceRun=renameEventReference(event.sourceRun,newEventId);
+  return {...event,eventId:newEventId,sourceRun,generationSnapshot:{...event.generationSnapshot,candidates},selectedStructures};
+ });
+ return {...store,updatedAtUtc:now,events};
+}
+
+/** Rewrites the `id` on a stored event reference, at the top level or nested under `event`. */
+function renameEventReference(sourceRun:JsonValue,newEventId:string):JsonValue{
+ if(!sourceRun||typeof sourceRun!=="object"||Array.isArray(sourceRun))return sourceRun;
+ const record=sourceRun as {[key:string]:JsonValue};
+ const nested=record.event;
+ if(nested&&typeof nested==="object"&&!Array.isArray(nested))return {...record,event:{...(nested as {[key:string]:JsonValue}),id:newEventId}};
+ return "id" in record?{...record,id:newEventId}:record;
+}

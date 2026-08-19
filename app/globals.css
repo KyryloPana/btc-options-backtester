@@ -1040,3 +1040,40 @@ footer { color: var(--muted); font-size: 12px; }
 .dd-endpoint { display: grid; gap: 6px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface-1); }
 .dd-endpoint strong { font-size: 20px; }
 @media (max-width: 900px) { .dd-two-col { grid-template-columns: 1fr; } .dd-funnel-row, .dd-quality-row, .dd-stacked-row, .dd-strip-row { grid-template-columns: 60px 1fr 80px; } }
+
+/* ---- shared chart cursor / readout ---------------------------------------
+   Used by every interactive Research Analytics chart via components/chart-cursor.
+   Token-only: no colour is declared here that is not part of the design system. */
+
+.chart-crosshair line { stroke: var(--muted); stroke-width: .6; opacity: .55; vector-effect: non-scaling-stroke; }
+.chart-cursor-dot { fill: var(--surface-1); stroke: var(--accent); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.chart-readout-object { overflow: visible; pointer-events: none; }
+.chart-readout {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-control);
+  background: var(--surface-1); color: var(--text-primary);
+  font: 11px/1.4 var(--sans); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.chart-readout strong { font-size: 11px; font-weight: 600; }
+.chart-readout span { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.chart-readout small { color: var(--muted); font-size: 11px; }
+.chart-readout b { font-weight: 600; font-size: 11px; }
+.chart-readout-positive b { color: var(--good); }
+.chart-readout-negative b { color: var(--critical); }
+.chart-readout-muted b { color: var(--muted); font-weight: 400; }
+.chart-axis-tag {
+  padding: 1px 5px; border: 1px solid var(--border); border-radius: 3px;
+  background: var(--surface-1); color: var(--text-primary);
+  font: 11px/1.4 var(--sans); font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap;
+}
+/* The plot reads as inspectable, and a drag across it must not select axis text. */
+.chart-interactive { cursor: crosshair; }
+.chart-interactive text { user-select: none; }
+.dd-hist-bars { cursor: crosshair; }
+.dd-hist-bars i.is-hovered { background: var(--accent); }
+.dd-hist-readout { display: flex; align-items: baseline; gap: 10px; min-height: 18px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.dd-hist-readout b { font-weight: 600; }
+.event-title-actions { display: inline-flex; align-items: center; gap: 8px; }
+/* Destructive action: neutral until intent is shown, then critical. */
+.danger-button { color: var(--muted); }
+.danger-button:hover { color: var(--critical); border-bottom-color: var(--critical); }

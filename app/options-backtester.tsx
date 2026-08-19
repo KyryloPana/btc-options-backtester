@@ -35,7 +35,7 @@ import { MODEL_TOOLTIP, buildEstimatedPath, buildResearchExport, buildResearchOu
 import { parseOhlcCandles } from "./lib/candle-pipeline";
 import { breakEven, expiryPayoff, payoffExtrema, type ExpiryPayoffInput, type PayoffCurrency } from "./lib/expiry-payoff";
 import { pricedStructures, structureCoverage } from "./lib/structure-pnl";
-import { candidateIdentity, canonicalJson, canSelectResearchCandidate, compactCandidateMetadata, compactEntryEconomics, compactMarginResult, compactOutcomeSnapshot, compactValuationPoint, eventReference, reconcileSelectionIds, stableCandidateId, stableSelectionId, validateResearchSelectionStore, type EvidenceTradeDto, type EvidenceUsageDto, type ExecutionScenarioSnapshot, type GenerationCandidateSnapshot, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure } from "./lib/research-selections";
+import { candidateIdentity, canonicalJson, renameResearchSelectionEvent, canSelectResearchCandidate, compactCandidateMetadata, compactEntryEconomics, compactMarginResult, compactOutcomeSnapshot, compactValuationPoint, eventReference, reconcileSelectionIds, stableCandidateId, stableSelectionId, validateResearchSelectionStore, type EvidenceTradeDto, type EvidenceUsageDto, type ExecutionScenarioSnapshot, type GenerationCandidateSnapshot, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure } from "./lib/research-selections";
 
 type Section = "events" | "construction" | "contracts" | "analysis";
 
@@ -459,6 +459,77 @@ export function OptionsBacktester() {
     setInventory([]);
   }
 
+  /**
+   * Renaming the canonical event id.
+   *
+   * `stableCandidateId` bakes the event id into every candidate id and
+   * `stableSelectionId` embeds it again, so a bare field write would leave the
+   * saved structures pointing at an identity that no longer exists. The rename
+   * is therefore propagated through the whole selection store and persisted in
+   * the same action; if that persistence fails the id change is rolled back
+   * rather than leaving the two stores disagreeing.
+   */
+  async function renameSelectedEvent(nextId: string) {
+    const previousId = selectedEvent.id, trimmed = nextId.trim();
+    if (!trimmed || trimmed === previousId) return;
+    if (events.some(event => event.id === trimmed)) { setDatasetStatus(`Event ID "${trimmed}" is already used by another event.`); return; }
+    const store = selectionStore, propagated = store ? renameResearchSelectionEvent(store, previousId, trimmed) : undefined;
+    setEvents(current => current.map(event => event.id === previousId ? { ...event, id: trimmed } : event));
+    setSelectedEventId(trimmed);
+    setDatasetDirty(true);
+    clearEventAnalysis();
+    if (!store || propagated === store || !selectionPersistenceAvailable || !dataset) { setDatasetStatus(""); return; }
+    try {
+      const response = await fetch(`/__local/research-selections/${encodeURIComponent(dataset.datasetId)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(propagated) });
+      const raw = await response.json();
+      if (!response.ok) throw new Error(raw.error ?? "Research selections could not be updated for the new event ID.");
+      const checked = validateResearchSelectionStore(raw);
+      if (!checked.ok) throw new Error("Server returned an invalid selection store.");
+      setSelectionStore(checked.store);
+      setDatasetStatus(`Event renamed to ${trimmed}; ${propagated!.events.find(e => e.eventId === trimmed)?.selectedStructures.length ?? 0} saved structures were repointed.`);
+    } catch (error) {
+      setEvents(current => current.map(event => event.id === trimmed ? { ...event, id: previousId } : event));
+      setSelectedEventId(previousId);
+      setDatasetStatus(`${error instanceof Error ? error.message : "Rename failed."} The event ID was reverted so saved structures keep matching.`);
+    }
+  }
+
+  /**
+   * Deleting an event outright.
+   *
+   * Real deletion, not a UI hide: the event leaves the dataset AND the research
+   * selection store. Every canonical bundle table (availability, candidates,
+   * valuations, outcomes, margin scenarios, evidence, futures) is derived from
+   * the selection store's events when the bundle is built, so removing it there
+   * is what cascades -- there is nothing left to filter out of the export.
+   * Shared raw market data is untouched: candles and contract tapes are fetched
+   * from the venue and are never owned by an event.
+   */
+  async function deleteSelectedEvent() {
+    const target = selectedEvent, savedStructures = selectionStore?.events.find(event => event.eventId === target.id)?.selectedStructures.length ?? 0;
+    const detail = savedStructures > 0
+      ? `Delete "${target.label}" and its ${savedStructures} saved research structure(s)? Their valuations, outcomes and maker/taker scenarios are removed from the research bundle as well. This cannot be undone.`
+      : `Delete "${target.label}"? This cannot be undone.`;
+    if (!window.confirm(detail)) return;
+    const remaining = events.filter(event => event.id !== target.id);
+    setEvents(remaining);
+    setSelectedEventId(remaining[0]?.id ?? "");
+    setDatasetDirty(true);
+    clearEventAnalysis();
+    if (!dataset || !selectionStore || !selectionPersistenceAvailable) { setDatasetStatus(`Removed ${target.id}. Save the dataset to persist the deletion.`); return; }
+    try {
+      const response = await fetch(`/__local/research-selections/${encodeURIComponent(dataset.datasetId)}/events/${encodeURIComponent(target.id)}`, { method: "DELETE", headers: { "If-Match": selectionStore.updatedAtUtc } });
+      const raw = await response.json();
+      if (!response.ok) throw new Error(raw.error ?? "Research selections could not be updated.");
+      const checked = validateResearchSelectionStore(raw.store ?? raw);
+      if (!checked.ok) throw new Error("Server returned an invalid selection store.");
+      setSelectionStore(checked.store);
+      setDatasetStatus(`Removed ${target.id} and ${savedStructures} saved structure(s). Save the dataset to persist the event deletion.`);
+    } catch (error) {
+      setDatasetStatus(`${error instanceof Error ? error.message : "Research selection cleanup failed."} Reload before exporting a research bundle.`);
+    }
+  }
+
   function changeHorizons(next: number[]) {
     setDtes(next);
     setCandidateManifests([]);
@@ -711,7 +782,7 @@ export function OptionsBacktester() {
             </aside>
 
             <div className="event-editor card">
-              <div className="card-title-row"><div><p className="eyebrow">Selected thesis</p><h3>{selectedEvent.label}</h3></div><span className={`direction-pill ${selectedEvent.direction}`}>{selectedEvent.direction} BTC</span></div>
+              <div className="card-title-row"><div><p className="eyebrow">Selected thesis</p><h3>{selectedEvent.label}</h3></div><div className="event-title-actions"><span className={`direction-pill ${selectedEvent.direction}`}>{selectedEvent.direction} BTC</span><button className="ghost-button danger-button" type="button" onClick={() => void deleteSelectedEvent()} aria-label={`Delete event ${selectedEvent.label}`}>Delete event</button></div></div>
               <div className="form-grid four">
                 <label>Label<input value={selectedEvent.label} onChange={event => patchEvent({ label: event.target.value })} /></label>
                 <label>Direction<select value={selectedEvent.direction} onChange={event => patchEvent({ direction: event.target.value as "long" | "short" })}><option value="long">Long / bullish MR</option><option value="short">Short / bearish MR</option></select></label>
@@ -725,6 +796,11 @@ export function OptionsBacktester() {
                 <label>Exit price<input type="number" value={selectedEvent.exitPrice ?? ""} onChange={event => patchEvent({ exitPrice: event.target.value === "" ? undefined : Number(event.target.value), exitTimestamp: undefined })} /></label>
                 <label>Range low<input type="number" value={selectedEvent.rangeLow ?? ""} onChange={event => patchEvent({ rangeLow: event.target.value === "" ? undefined : Number(event.target.value) })} /></label>
                 <label>Range high<input type="number" value={selectedEvent.rangeHigh ?? ""} onChange={event => patchEvent({ rangeHigh: event.target.value === "" ? undefined : Number(event.target.value) })} /></label>
+                <label>VPOC timestamp<input type="datetime-local" value={selectedEvent.vpocTimestamp ? new Date(selectedEvent.vpocTimestamp).toISOString().slice(0, 16) : ""} onChange={event => patchEvent({ vpocTimestamp: event.target.value ? Date.parse(`${event.target.value}Z`) : undefined })} /></label>
+                <label>Exit timestamp<input type="datetime-local" value={selectedEvent.exitTimestamp ? new Date(selectedEvent.exitTimestamp).toISOString().slice(0, 16) : ""} onChange={event => patchEvent({ exitTimestamp: event.target.value ? Date.parse(`${event.target.value}Z`) : undefined })} /></label>
+                <label>Entry time source<select value={selectedEvent.entryTimeSource ?? ""} onChange={event => patchEvent({ entryTimeSource: event.target.value === "" ? undefined : event.target.value as BacktestEvent["entryTimeSource"] })}><option value="">Unset</option><option value="resolved">Resolved</option><option value="manual">Manual</option><option value="provisional">Provisional</option></select></label>
+                {/* The canonical identity: renaming repoints every saved structure, so it commits on blur rather than per keystroke. */}
+                <label>Event ID<input key={selectedEvent.id} defaultValue={selectedEvent.id} onBlur={event => void renameSelectedEvent(event.target.value)} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); }} /></label>
                 <label className="event-notes">Notes<input value={selectedEvent.notes ?? ""} onChange={event => patchEvent({ notes: event.target.value || undefined })} /></label>
               </div>
               <div className="time-resolver">
