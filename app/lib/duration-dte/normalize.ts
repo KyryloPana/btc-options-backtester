@@ -1,5 +1,9 @@
 import type {AnalysisDataset} from "../research-analysis.ts";
 import {normalizeMrEvents,type ResolutionOutcome} from "../underlying-resolution/normalize.ts";
+// Adverse-path evidence is a shared canonical primitive: Short-Strike answers
+// the same question and must answer it identically, so both import one copy.
+import {adversePath,type AdversePathObservation} from "../adverse-path.ts";
+export {type AdversePathObservation,type PathEvidenceStatus} from "../adverse-path.ts";
 
 /**
  * Canonical research bundle 2.2.0 -> normalized Duration/DTE structures.
@@ -72,16 +76,6 @@ export type NoResolutionDetail=
  /** Neither terminal MR outcome was observed by canonical observation end. */
  |"still_unresolved";
 
-/** Why an adverse-path metric has no value. Never collapsed into a zero. */
-export type PathEvidenceStatus=
- /** Raw-VWAP marks exist in the post-entry window and produced a value. */
- |"available"
- /** This scenario was never evaluated, so it has no valuation track at all. */
- |"scenario_not_evaluated"
- /** Entry or the resolution/censoring boundary is unknown, so no window can be bounded. */
- |"no_observation_window"
- /** The window is well-defined but the canonical raw-VWAP track has no priced mark inside it. */
- |"no_raw_marks";
 
 export interface EligibleDteRange {readonly min:number;readonly max:number}
 export interface HorizonFamily {readonly nominalDays:number;readonly label:string;readonly eligibleDteRange:EligibleDteRange|null}
@@ -95,27 +89,6 @@ export interface CaptureObservation {
  readonly beforeInvalidation:boolean|null;
 }
 
-/**
- * Adverse-path evidence for ONE execution scenario, from that scenario's
- * raw-VWAP valuation track only.
- */
-export interface AdversePathObservation {
- /** Most adverse raw mark-to-market in the post-entry window. Null means Unavailable. */
- readonly worstAdverseUsd:number|null;
- /**
-  * Maximum adverse excursion up to and including the first profitable raw mark,
-  * for structures that DO become profitable. Null when the structure never
-  * reached a profitable raw mark (`profitObserved` false) or when no raw marks
-  * exist -- never fabricated for an unobserved path.
-  */
- readonly maeBeforeProfitUsd:number|null;
- /** Whether a profitable raw mark was ever observed in the window. */
- readonly profitObserved:boolean;
- readonly rawMarksInWindow:number;
- readonly status:PathEvidenceStatus;
- /** Human-readable, inspectable explanation when status is not "available". */
- readonly reason:string|null;
-}
 
 export interface DteCandidate {
  readonly eventId:string;
@@ -301,51 +274,6 @@ function variantKey(row:Readonly<Record<string,unknown>>,eventId:string):string{
  return [eventId,str(row.strike_method)??"unknown-method",width===null?"unknown-width":String(width),str(row.structure_type)??"unknown-structure",str(row.option_type)??"unknown-type"].join("|");
 }
 
-/**
- * Adverse-path evidence from THIS scenario's raw-VWAP valuation track between
- * structure entry and the resolution/censoring boundary.
- *
- * Filtering by execution_scenario as well as candidate_id matters once a
- * structure has two scenario rows: without it, a maker row could silently read
- * taker's marks. The raw track is required deliberately -- it is the
- * conservative executable-evidence track. A modelled (iv_normalized) mark is
- * NEVER substituted to fill the column; when the raw track has no priced mark
- * the result stays Unavailable with an inspectable reason.
- */
-function adversePath(
- valuations:readonly Readonly<Record<string,unknown>>[],
- candidateId:string,scenario:ExecutionScenario|null,scenarioStatus:ExecutionScenarioStatus|null,
- entryMs:number|null,boundaryMs:number|null,
-):AdversePathObservation{
- const empty={worstAdverseUsd:null,maeBeforeProfitUsd:null,profitObserved:false,rawMarksInWindow:0} as const;
- if(scenario===null||scenarioStatus!=="evaluated")return {...empty,status:"scenario_not_evaluated",
-  reason:"This execution scenario was never evaluated for this structure, so it has no valuation track of its own. Reading the other scenario's marks would misattribute them."};
- if(entryMs===null||boundaryMs===null)return {...empty,status:"no_observation_window",
-  reason:"Structure entry or the first-resolution/censoring boundary is unknown, so no post-entry observation window can be bounded."};
-
- const marks:{t:number;pnl:number}[]=[];
- let rawRowsForScenario=0;
- for(const row of valuations){
-  if(row.candidate_id!==candidateId||row.execution_scenario!==scenario||row.pricing_track!=="raw_vwap")continue;
-  rawRowsForScenario++;
-  if(row.valuation_status!=="priced")continue;
-  const t=ms(row.timestamp_utc);
-  if(t===null||t<entryMs||t>boundaryMs)continue;
-  const pnl=num(row.net_pnl_usd)??num(row.net_pnl_native);
-  if(pnl===null)continue;
-  marks.push({t,pnl});
- }
- if(!marks.length)return {...empty,status:"no_raw_marks",
-  reason:rawRowsForScenario===0
-   ?"The canonical bundle exports no raw-VWAP valuation row for this structure and scenario."
-   :`The canonical bundle exports ${rawRowsForScenario} raw-VWAP valuation row(s) for this scenario, but none is priced inside the post-entry observation window. The raw track carries a mark only where a direct-VWAP estimate was recorded for that point; modelled (iv_normalized) marks are deliberately not substituted.`};
-
- marks.sort((a,b)=>a.t-b.t);
- const worstAdverseUsd=Math.min(...marks.map(m=>m.pnl));
- const firstProfit=marks.find(m=>m.pnl>0);
- const maeBeforeProfitUsd=firstProfit?Math.min(...marks.filter(m=>m.t<=firstProfit.t).map(m=>m.pnl)):null;
- return {worstAdverseUsd,maeBeforeProfitUsd,profitObserved:firstProfit!==undefined,rawMarksInWindow:marks.length,status:"available",reason:null};
-}
 
 function captureObservation(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:string,scenario:ExecutionScenario|null,threshold:25|50|70,entryMs:number|null,timeToVpocDays:number|null,timeToInvalidationDays:number|null):CaptureObservation|null{
  if(scenario===null)return null;
@@ -481,7 +409,7 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
   // of expiry / canonical observation end comes first when it never resolved.
   const observationEndMs=eventEntry!==null&&event.observationDays!==null?eventEntry+event.observationDays*DAY:null;
   const boundaryMs=postEntryResolutionMs??(expiry!==null&&observationEndMs!==null?Math.min(expiry,observationEndMs):expiry??observationEndMs);
-  const path=adversePath(valuations,candidateId,scenario,scenarioStatus,entry,boundaryMs);
+  const path=adversePath(valuations,candidateId,scenario,scenarioStatus==="evaluated",entry,boundaryMs);
 
   return {
    ...structural,
