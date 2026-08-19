@@ -20,7 +20,7 @@ test("canonical persisted bundle semantics",()=>{const b=buildResearchBundle(str
  // with a fabricated 0 -- absence, not zero, is how "not evaluated" reads.
  assert.ok(c.filter(x=>x.execution_scenario==="maker").every((x:any)=>x.entry_legs.short.price_native===undefined&&x.entry_legs.long.price_native===undefined));
  assert.equal(new Set(o.map(x=>x.outcome_type)).size,REQUIRED_OUTCOMES.length);assert.deepEqual(new Set(v.map(x=>x.pricing_track)),new Set(["raw_vwap","iv_normalized"]));assert.ok(v.some(x=>x.valuation_status==="unavailable"&&x.net_pnl_native===null));assert.ok(v.every(x=>x.execution_scenario==="taker"),"only the evaluated scenario produces valuation rows");assert.equal(b.run.selected_structure_count,4);assert.equal(b.run.selected_structure_execution_row_count,8);assert.equal(b.run.generated_denominator_count,7);assert.equal(validateResearchBundle(b.files).ok,true);assert.match(b.files["margin_scenarios.jsonl"],/verified_historical_margin_model_unavailable/);assert.match(b.files["futures_comparisons.jsonl"],/verified_futures_series_unavailable/);assert.match(b.files["evidence_trades.jsonl"],/"trade_id":"t1"/)});
-test("validator rejects broken joins and versions",()=>{const b=buildResearchBundle(store,now);assert.equal(validateResearchBundle({...b.files,"candidates.jsonl":b.files["candidates.jsonl"].replace('"event_id":"e1"','"event_id":"gone"')}).ok,false);assert.equal(validateResearchBundle({...b.files,"run.json":b.files["run.json"].replace('"2.2.0"','"9.0.0"')}).ok,false)});
+test("validator rejects broken joins and versions",()=>{const b=buildResearchBundle(store,now);assert.equal(validateResearchBundle({...b.files,"candidates.jsonl":b.files["candidates.jsonl"].replace('"event_id":"e1"','"event_id":"gone"')}).ok,false);assert.equal(validateResearchBundle({...b.files,"run.json":b.files["run.json"].replace('"2.3.0"','"9.0.0"')}).ok,false)});
 test("validator adversarial rejection matrix",()=>{const base=buildResearchBundle(store,now).files,mutate=(file:string,fn:(rows:any[])=>void)=>{const copy={...base},rows=file==="run.json"?[JSON.parse(copy[file])]:copy[file].trim().split("\n").map(JSON.parse);fn(rows);copy[file]=file==="run.json"?JSON.stringify(rows[0])+"\n":rows.map(JSON.stringify).join("\n")+"\n";return validateResearchBundle(copy)};
  const cases:[string,ReturnType<typeof validateResearchBundle>][]=[
   ["duplicate primary ID",mutate("candidates.jsonl",r=>r.push(structuredClone(r[0])))],
@@ -164,4 +164,35 @@ test("evidence usage provenance is tagged with the execution scenario it support
  assert.ok(makerTrade);assert.ok(takerTrade);
  assert.ok(makerTrade.usage_references.some((u:any)=>u.execution_scenario==="maker"));
  assert.ok(takerTrade.usage_references.some((u:any)=>u.execution_scenario==="taker"));
+});
+
+
+test("availability keeps distinct generation attempts when requested widths collapse to one structure",()=>{
+ const fixture=structuredClone(store) as any;
+ const duplicate={...fixture.events[0].generationSnapshot.candidates[0],requestedStrikes:{short:100,long:80,width:20},actualStrikes:{short:100,long:90,width:10}};
+ fixture.events[0].generationSnapshot.candidates.push(duplicate);
+ const bundle=buildResearchBundle(fixture,now);assert.equal(validateResearchBundle(bundle.files).ok,true);
+ const rows=bundle.files["availability.jsonl"].trim().split("\n").map(JSON.parse).filter((r:any)=>r.candidate_id===duplicate.candidateId);
+ assert.equal(rows.length,2,"two requested generation attempts remain visible");
+ assert.equal(new Set(rows.map((r:any)=>r.availability_id)).size,2,"availability_id, not candidate_id, is the denominator row key");
+ assert.ok(rows.some((r:any)=>r.requested_strikes.width===20&&r.actual_strikes.width===10));
+});
+
+test("debit maker evidence becomes scenario-unavailable while taker remains exported",()=>{
+ const fixture=structuredClone(store) as any;const s=fixture.events[0].selectedStructures[0];
+ s.executionScenarios={
+  maker:{status:"evaluated",reason:null,entrySnapshot:{...s.entrySnapshot,sold:{priceBtcPerContract:.01},bought:{priceBtcPerContract:.02},grossSpreadBtc:-.01,openingFeesBtc:.001,netOpeningCashFlowBtc:-.011},valuationPathSnapshot:s.valuationPathSnapshot,outcomeSnapshots:s.outcomeSnapshots},
+  taker:{status:"evaluated",reason:null,entrySnapshot:{...s.entrySnapshot,sold:{priceBtcPerContract:.03},bought:{priceBtcPerContract:.01},grossSpreadBtc:.02,openingFeesBtc:.001,netOpeningCashFlowBtc:.019},valuationPathSnapshot:s.valuationPathSnapshot,outcomeSnapshots:s.outcomeSnapshots},
+ };delete s.entrySnapshot;delete s.valuationPathSnapshot;delete s.outcomeSnapshots;fixture.events=[{...fixture.events[0],selectedStructures:[s]}];fixture.schemaVersion="1.2.0";
+ const bundle=buildResearchBundle(fixture,now);assert.equal(validateResearchBundle(bundle.files).ok,true);
+ const rows=bundle.files["candidates.jsonl"].trim().split("\n").map(JSON.parse).filter((r:any)=>r.candidate_id===s.candidateId);
+ assert.equal(rows.find((r:any)=>r.execution_scenario==="maker").execution_scenario_status,"unavailable");
+ assert.match(rows.find((r:any)=>r.execution_scenario==="maker").execution_scenario_reason,/debit|credit/i);
+ assert.equal(rows.find((r:any)=>r.execution_scenario==="taker").execution_scenario_status,"evaluated");
+ assert.equal(bundle.files["valuations.jsonl"].trim().split("\n").filter(Boolean).map(JSON.parse).some((r:any)=>r.execution_scenario==="maker"),false);
+});
+
+test("stale selected candidates are rejected at store validation before bundle export",()=>{
+ const fixture=structuredClone(store) as any;fixture.schemaVersion="1.2.0";fixture.events[0].selectedStructures[0]={...fixture.events[0].selectedStructures[0],candidateId:"deribit~missing"};
+ assert.throws(()=>buildResearchBundle(fixture,now),/stale\/unmatched/);
 });
