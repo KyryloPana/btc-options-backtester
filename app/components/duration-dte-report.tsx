@@ -3,7 +3,7 @@ import {useState} from "react";
 import type {
  CaptureThresholdRow,DteBufferRow,DurationDteReport,OutcomeBeforeExpiryRow,OverviewRow,PnlByOutcomeRow,
 } from "../lib/duration-dte/report";
-import type {DteCandidate,OutcomeBeforeExpiry} from "../lib/duration-dte/normalize";
+import type {DteCandidate,ExecutionScenario,OutcomeBeforeExpiry} from "../lib/duration-dte/normalize";
 
 /**
  * Presentation only. Every number comes from the prebuilt Duration & DTE view
@@ -30,14 +30,16 @@ function HeadlineCard({label,value,detail}:{label:string;value:string;detail?:st
 
 function OverviewTable({rows}:{rows:readonly OverviewRow[]}){
  return <div className="table-scroll"><table className="dd-table">
-  <thead><tr><th>Horizon</th><th>Actual DTE (median / range)</th><th>N</th><th>Generated</th><th>Priced</th><th>Taker exec.</th><th>Res. coverage</th><th>No res. before expiry</th><th>Median buffer</th><th>Median T50%</th><th>Capital-day return</th></tr></thead>
+  <thead><tr><th>Horizon</th><th>Actual DTE (median / range)</th><th>N</th><th>Not evaluated</th><th>Generated</th><th>Priced</th><th>Taker exec.</th><th>Maker opp.</th><th>Res. coverage</th><th>No res. before expiry</th><th>Median buffer</th><th>Median T50%</th><th>Capital-day return</th></tr></thead>
   <tbody>{rows.map(r=><tr key={r.horizon.nominalDays}>
    <td>{r.horizon.label}{r.horizon.eligibleDteRange&&<small className="dd-muted"> ({r.horizon.eligibleDteRange.min}–{r.horizon.eligibleDteRange.max}d)</small>}</td>
    <td>{r.actualDte?`${d1(r.actualDte.median)}d (${d1(r.actualDte.min)}–${d1(r.actualDte.max)}d)`:NOT_ESTIMABLE}</td>
    <td>{r.selectedN}</td>
+   <td className={r.notEvaluatedN>0?"dd-muted":undefined}>{r.notEvaluatedN}</td>
    <td>{pct(r.candidatesGeneratedShare)}</td>
    <td>{pct(r.pricedShare)}</td>
    <td>{pct(r.takerExecutableShare)}</td>
+   <td>{pct(r.makerOpportunityShare)}</td>
    <td className={r.resolutionCoverageShare===null?"dd-muted":"positive"}>{pct(r.resolutionCoverageShare)}</td>
    <td className={r.noResolutionBeforeExpiryShare===null?"dd-muted":"negative"}>{pct(r.noResolutionBeforeExpiryShare)}</td>
    <td>{days(r.medianDteBufferDays)}</td>
@@ -195,6 +197,24 @@ function PnlSection({rows}:{rows:readonly PnlByOutcomeRow[]}){
  </table></div>;
 }
 
+/* ---------- 7b. Execution drag: maker vs taker ---------- */
+
+function ExecutionDragSection({report}:{report:DurationDteReport}){
+ const rows=report.executionDrag;
+ if(!rows.some(r=>r.matchedN>0))return <p className="dd-empty-inline">{UNAVAILABLE} — no structure in this bundle has both a maker-opportunity and a taker evaluation to compare.</p>;
+ return <><div className="table-scroll"><table className="dd-table">
+  <thead><tr><th>Horizon</th><th>Matched structures</th><th>Median PnL drag</th><th>Median capital-day return drag</th></tr></thead>
+  <tbody>{rows.map(r=><tr key={r.horizon.nominalDays}>
+   <td>{r.horizon.label}</td>
+   <td>{r.matchedN}</td>
+   <td className={r.medianPnlDragUsd===null?"dd-muted":r.medianPnlDragUsd<0?"negative":"positive"}>{usd(r.medianPnlDragUsd)}</td>
+   <td>{r.medianCapitalDayReturnDrag===null?UNAVAILABLE:r.medianCapitalDayReturnDrag.toFixed(4)}</td>
+  </tr>)}</tbody>
+ </table></div>
+ <small className="dd-note">Execution drag = maker-opportunity result − taker result, computed only for structures genuinely evaluated under both scenarios (same candidate_id). A negative PnL drag means the maker opportunity, if filled, would have underperformed the conservative taker proxy for that structure; it says nothing about whether the maker order would actually have filled.</small>
+ </>;
+}
+
 /* ---------- 9. Capital-time efficiency ---------- */
 
 function CapitalTimeSection({report}:{report:DurationDteReport}){
@@ -228,7 +248,7 @@ function EventRow({c}:{c:DteCandidate}){
   <td>{c.horizonNominalDays===null?"—":`~${c.horizonNominalDays}D`}</td>
   <td>{c.actualDteDays===null?UNAVAILABLE:d1(c.actualDteDays)}</td>
   <td>{c.entryQuality??UNAVAILABLE}</td>
-  <td>{c.executionMode??UNAVAILABLE}</td>
+  <td className={c.executionScenarioStatus==="evaluated"?undefined:"dd-muted"} title={c.executionScenarioReason??undefined}>{c.executionScenarioStatus==="evaluated"?"Evaluated":"Not evaluated"}</td>
   <td>{c.timeToResolutionDays===null?"—":d1(c.timeToResolutionDays)}</td>
   <td>{c.underlyingOutcome.replaceAll("_"," ")}</td>
   <td>{c.outcomeBeforeExpiry?OUTCOME_LABEL[c.outcomeBeforeExpiry]:"—"}</td>
@@ -242,7 +262,7 @@ function EventRow({c}:{c:DteCandidate}){
 
 /* ---------- report ---------- */
 
-export function DurationDteReportView({report}:{report:DurationDteReport}){
+export function DurationDteReportView({report,onScenarioChange}:{report:DurationDteReport;onScenarioChange?:(scenario:ExecutionScenario)=>void}){
  const [page,setPage]=useState(0);
  const pages=Math.max(1,Math.ceil(report.candidates.length/PAGE_SIZE));
  const current=Math.min(page,pages-1);
@@ -255,8 +275,12 @@ export function DurationDteReportView({report}:{report:DurationDteReport}){
     <p className="eyebrow">Options structure analysis · after underlying resolution</p>
     <h2>Duration &amp; DTE Analysis</h2>
     <p className="dd-sub">How much time does the option structure need for the underlying MR thesis to resolve?</p>
-    <p className="dd-note">All analysis uses actual selected contract DTE; horizon labels are grouping bands only.</p>
+    <p className="dd-note">All analysis uses actual selected contract DTE; horizon labels are grouping bands only. Scoped to the {report.scenario==="maker"?"maker opportunity":"taker"} scenario — {report.scenario==="maker"?"a passive-limit opportunity supported by historical tape, never a confirmed fill":"a conservative tape-based execution proxy, never the sole default strategy"}.</p>
    </div>
+   {onScenarioChange&&<label className="dd-scenario-select">Execution scenario<select value={report.scenario} onChange={e=>onScenarioChange(e.target.value as ExecutionScenario)}>
+    <option value="maker">Maker opportunity — not a guaranteed fill</option>
+    <option value="taker">Taker — conservative tape proxy</option>
+   </select></label>}
    <div className="dd-horizons">{report.horizons.map(hz=><span key={hz.nominalDays} className="dd-horizon-pill">{hz.label}{hz.eligibleDteRange&&<small> {hz.eligibleDteRange.min}–{hz.eligibleDteRange.max}d</small>}</span>)}</div>
   </header>
 
@@ -265,6 +289,7 @@ export function DurationDteReportView({report}:{report:DurationDteReport}){
   <div className="dd-cards">
    <HeadlineCard label="Effective MR events" value={String(h.effectiveEvents)} detail={h.totalEvents!==h.effectiveEvents?`of ${h.totalEvents}`:"100% of dataset"}/>
    <HeadlineCard label="Taker executable" value={pct(h.takerExecutableShare)}/>
+   <HeadlineCard label="Maker opportunity" value={pct(h.makerOpportunityShare)}/>
    <HeadlineCard label="Median actual DTE" value={h.medianActualDteDays===null?NOT_ESTIMABLE:`${d1(h.medianActualDteDays)}d`}/>
    <HeadlineCard label="No resolution before expiry" value={pct(h.noResolutionBeforeExpiryShare)}/>
    <HeadlineCard label="Median T resolution" value={days(h.medianFirstResolutionDays)}/>
@@ -290,6 +315,8 @@ export function DurationDteReportView({report}:{report:DurationDteReport}){
 
   <section className="dd-block"><h3>7 · PnL by MR outcome</h3><PnlSection rows={report.pnlByOutcome}/></section>
 
+  <section className="dd-block"><h3>7b · Execution drag: maker vs. taker</h3><ExecutionDragSection report={report}/></section>
+
   <div className="dd-two-col">
    <section className="dd-block"><h3>8 · Capital-time efficiency</h3><CapitalTimeSection report={report}/></section>
    <section className="dd-block"><h3>9 · Actual DTE distribution</h3><DteHistogram report={report}/></section>
@@ -299,7 +326,7 @@ export function DurationDteReportView({report}:{report:DurationDteReport}){
    <h3>Event-level observations</h3>
    <p className="dd-sub">Inspect the individual selected structures underlying this report.</p>
    <div className="table-scroll"><table className="dd-table">
-    <thead><tr><th>Event</th><th>Horizon</th><th>Actual DTE</th><th>Quality</th><th>Mode</th><th>T_Res</th><th>Underlying outcome</th><th>Resolved before expiry</th><th>DTE buffer</th><th>T50%</th><th>PnL@VPOC</th><th>PnL@Inv.</th><th>Worst adverse</th></tr></thead>
+    <thead><tr><th>Event</th><th>Horizon</th><th>Actual DTE</th><th>Quality</th><th>{report.scenario==="maker"?"Maker":"Taker"} status</th><th>T_Res</th><th>Underlying outcome</th><th>Resolved before expiry</th><th>DTE buffer</th><th>T50%</th><th>PnL@VPOC</th><th>PnL@Inv.</th><th>Worst adverse</th></tr></thead>
     <tbody>{rows.map(c=><EventRow key={c.candidateId} c={c}/>)}</tbody>
    </table></div>
    <div className="ur-pager">

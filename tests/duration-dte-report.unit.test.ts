@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type {AnalysisDataset} from "../app/lib/research-analysis.ts";
 import {buildHorizonAvailability,buildHorizonFamilies,normalizeDteCandidates} from "../app/lib/duration-dte/normalize.ts";
 import {buildDurationDteReport} from "../app/lib/duration-dte/report.ts";
+import {share} from "../app/lib/duration-dte/statistics.ts";
 
 const D=(day:number,hour=0)=>new Date(Date.UTC(2026,0,day,hour)).toISOString();
 const ENTRY=D(1);
@@ -36,19 +37,19 @@ const events=[
 
 const candidates=[
  {event_id:"e1",candidate_id:"c1a",target_horizon_days:7,eligible_dte_range:{min:5,max:10},structure_entry_timestamp_utc:ENTRY,expiry_timestamp_utc:D(6),
-  actual_dte_days:5,entry_quality:"green",execution_mode:"taker",spread_synchronization_minutes:0.4,structure_type:"bull_put_credit"},
+  actual_dte_days:5,entry_quality:"green",execution_scenario:"taker",execution_scenario_status:"evaluated",spread_synchronization_minutes:0.4,structure_type:"bull_put_credit"},
  {event_id:"e1",candidate_id:"c1b",target_horizon_days:14,eligible_dte_range:{min:11,max:18},structure_entry_timestamp_utc:ENTRY,expiry_timestamp_utc:D(3),
-  actual_dte_days:2,entry_quality:"yellow",execution_mode:"taker",spread_synchronization_minutes:1.1,structure_type:"bull_put_credit"},
+  actual_dte_days:2,entry_quality:"yellow",execution_scenario:"taker",execution_scenario_status:"evaluated",spread_synchronization_minutes:1.1,structure_type:"bull_put_credit"},
  {event_id:"e2",candidate_id:"c2a",target_horizon_days:7,eligible_dte_range:{min:5,max:10},structure_entry_timestamp_utc:ENTRY,expiry_timestamp_utc:D(11),
-  actual_dte_days:10,entry_quality:"yellow",execution_mode:"taker",spread_synchronization_minutes:0.6,structure_type:"bear_call_credit"},
+  actual_dte_days:10,entry_quality:"yellow",execution_scenario:"taker",execution_scenario_status:"evaluated",spread_synchronization_minutes:0.6,structure_type:"bear_call_credit"},
  {event_id:"e3",candidate_id:"c3a",target_horizon_days:30,eligible_dte_range:{min:24,max:38},structure_entry_timestamp_utc:ENTRY,expiry_timestamp_utc:D(21),
-  actual_dte_days:20,entry_quality:"red",execution_mode:"maker",spread_synchronization_minutes:2.5,structure_type:"bull_put_credit"},
+  actual_dte_days:20,entry_quality:"red",execution_scenario:"maker",execution_scenario_status:"evaluated",spread_synchronization_minutes:2.5,structure_type:"bull_put_credit"},
  {event_id:"e4",candidate_id:"c4a",target_horizon_days:7,eligible_dte_range:{min:5,max:10},structure_entry_timestamp_utc:ENTRY,expiry_timestamp_utc:D(9),
-  actual_dte_days:8,entry_quality:"green",execution_mode:"maker",spread_synchronization_minutes:0.3,structure_type:"bear_call_credit"},
+  actual_dte_days:8,entry_quality:"green",execution_scenario:"taker",execution_scenario_status:"evaluated",spread_synchronization_minutes:0.3,structure_type:"bear_call_credit"},
  {event_id:"e5",candidate_id:"c5a",target_horizon_days:14,eligible_dte_range:{min:11,max:18},structure_entry_timestamp_utc:ENTRY,expiry_timestamp_utc:null,
-  actual_dte_days:null,entry_quality:"green",execution_mode:"taker",spread_synchronization_minutes:0.8,structure_type:"bull_put_credit"},
+  actual_dte_days:null,entry_quality:"green",execution_scenario:"taker",execution_scenario_status:"evaluated",spread_synchronization_minutes:0.8,structure_type:"bull_put_credit"},
  {event_id:"e6",candidate_id:"c6a",target_horizon_days:7,eligible_dte_range:{min:5,max:10},structure_entry_timestamp_utc:null,expiry_timestamp_utc:D(8),
-  actual_dte_days:7,entry_quality:"green",execution_mode:"taker",spread_synchronization_minutes:0.2,structure_type:"bull_put_credit"},
+  actual_dte_days:7,entry_quality:"green",execution_scenario:"taker",execution_scenario_status:"evaluated",spread_synchronization_minutes:0.2,structure_type:"bull_put_credit"},
 ];
 
 const availability=[
@@ -63,21 +64,21 @@ const availability=[
 ];
 
 const outcomes=[
- {event_id:"e1",candidate_id:"c1a",outcome_type:"vpoc",status:"priced",trigger_timestamp_utc:D(4),net_pnl_usd:500},
- {event_id:"e1",candidate_id:"c1a",outcome_type:"credit_capture_50",status:"priced",trigger_timestamp_utc:D(2)},
- {event_id:"e1",candidate_id:"c1a",outcome_type:"credit_capture_70",status:"not_reached",trigger_timestamp_utc:null},
- {event_id:"e2",candidate_id:"c2a",outcome_type:"invalidation",status:"priced",trigger_timestamp_utc:D(2),net_pnl_usd:-300},
- {event_id:"e3",candidate_id:"c3a",outcome_type:"settlement",status:"priced",trigger_timestamp_utc:D(21),net_pnl_usd:50},
- {event_id:"e4",candidate_id:"c4a",outcome_type:"vpoc",status:"priced",trigger_timestamp_utc:D(3),net_pnl_usd:200},
- {event_id:"e4",candidate_id:"c4a",outcome_type:"invalidation",status:"priced",trigger_timestamp_utc:D(3),net_pnl_usd:-200},
- {event_id:"e5",candidate_id:"c5a",outcome_type:"vpoc",status:"priced",trigger_timestamp_utc:D(5),net_pnl_usd:100},
+ {event_id:"e1",candidate_id:"c1a",execution_scenario:"taker",outcome_type:"vpoc",status:"priced",trigger_timestamp_utc:D(4),net_pnl_usd:500},
+ {event_id:"e1",candidate_id:"c1a",execution_scenario:"taker",outcome_type:"credit_capture_50",status:"priced",trigger_timestamp_utc:D(2)},
+ {event_id:"e1",candidate_id:"c1a",execution_scenario:"taker",outcome_type:"credit_capture_70",status:"not_reached",trigger_timestamp_utc:null},
+ {event_id:"e2",candidate_id:"c2a",execution_scenario:"taker",outcome_type:"invalidation",status:"priced",trigger_timestamp_utc:D(2),net_pnl_usd:-300},
+ {event_id:"e3",candidate_id:"c3a",execution_scenario:"maker",outcome_type:"settlement",status:"priced",trigger_timestamp_utc:D(21),net_pnl_usd:50},
+ {event_id:"e4",candidate_id:"c4a",execution_scenario:"taker",outcome_type:"vpoc",status:"priced",trigger_timestamp_utc:D(3),net_pnl_usd:200},
+ {event_id:"e4",candidate_id:"c4a",execution_scenario:"taker",outcome_type:"invalidation",status:"priced",trigger_timestamp_utc:D(3),net_pnl_usd:-200},
+ {event_id:"e5",candidate_id:"c5a",execution_scenario:"taker",outcome_type:"vpoc",status:"priced",trigger_timestamp_utc:D(5),net_pnl_usd:100},
 ];
 
 const valuations=[
- {event_id:"e1",candidate_id:"c1a",timestamp_utc:D(2),pricing_track:"raw_vwap",valuation_status:"priced",net_pnl_usd:-150},
- {event_id:"e1",candidate_id:"c1a",timestamp_utc:D(1,12),pricing_track:"raw_vwap",valuation_status:"priced",net_pnl_usd:-50},
- {event_id:"e1",candidate_id:"c1a",timestamp_utc:D(4,12),pricing_track:"raw_vwap",valuation_status:"priced",net_pnl_usd:-999},
- {event_id:"e1",candidate_id:"c1a",timestamp_utc:D(1,6),pricing_track:"iv_normalized",valuation_status:"priced",net_pnl_usd:-9999},
+ {event_id:"e1",candidate_id:"c1a",execution_scenario:"taker",timestamp_utc:D(2),pricing_track:"raw_vwap",valuation_status:"priced",net_pnl_usd:-150},
+ {event_id:"e1",candidate_id:"c1a",execution_scenario:"taker",timestamp_utc:D(1,12),pricing_track:"raw_vwap",valuation_status:"priced",net_pnl_usd:-50},
+ {event_id:"e1",candidate_id:"c1a",execution_scenario:"taker",timestamp_utc:D(4,12),pricing_track:"raw_vwap",valuation_status:"priced",net_pnl_usd:-999},
+ {event_id:"e1",candidate_id:"c1a",execution_scenario:"taker",timestamp_utc:D(1,6),pricing_track:"iv_normalized",valuation_status:"priced",net_pnl_usd:-9999},
 ];
 
 const margin_scenarios=[
@@ -92,7 +93,15 @@ const dataset={filename:"f.zip",schemaVersion:"2.1.0",migratedFrom:null,run:{dat
 
 const all=normalizeDteCandidates(dataset);
 const byId=(id:string)=>all.find(c=>c.candidateId===id)!;
-const report=buildDurationDteReport(dataset);
+// This fixture's candidates are a mix of independently-evaluated taker and
+// maker structures (c3a is maker-only); the report below is explicitly
+// scoped to the taker scenario so the pre-existing assertions read a single,
+// scenario-consistent population -- never a silent mix of both.
+const report=buildDurationDteReport(dataset,"taker");
+// c3a is this fixture's only maker-evaluated structure; tests that exercise
+// it specifically build the maker-scoped report explicitly rather than
+// expecting it to appear in the taker-scoped `report` above.
+const makerReport=buildDurationDteReport(dataset,"maker");
 const overviewFor=(nominal:number)=>report.overview.find(r=>r.horizon.nominalDays===nominal)!;
 const outcomeRowFor=(nominal:number)=>report.outcomeBeforeExpiry.find(r=>r.horizon.nominalDays===nominal)!;
 
@@ -134,8 +143,8 @@ test("B: availability funnel counts distinct events, not candidate rows, and sep
  // even though its underlying event is missing an entry timestamp. That
  // eligibility gate applies to the resolution-coverage metrics, not this funnel.
  assert.equal(h7.selected,4,"c1a, c2a, c4a and c6a all have a candidates.jsonl row at horizon 7");
- assert.equal(h7.takerExecutable,3,"c1a, c2a and c6a selected taker");
- assert.equal(h7.makerOpportunity,1,"c4a selected maker");
+ assert.equal(h7.takerExecutable,4,"c1a, c2a, c4a and c6a all selected taker");
+ assert.equal(h7.makerOpportunity,0,"no candidate at horizon 7 was independently evaluated as maker (c3a is the only maker-evaluated structure, at horizon 30)");
  assert.equal(h7.entryQuality.green,2);
  assert.equal(h7.entryQuality.yellow,1);
 });
@@ -164,7 +173,7 @@ test("C: an unresolved (censored) candidate is a determinate no-resolution-befor
  assert.equal(c3.underlyingOutcome,"unresolved");
  assert.equal(c3.resolvedBeforeExpiry,false);
  assert.equal(c3.outcomeBeforeExpiry,"no_resolution_before_expiry");
- const h30=outcomeRowFor(30)!;
+ const h30=makerReport.outcomeBeforeExpiry.find(r=>r.horizon.nominalDays===30)!;
  assert.equal(h30.counts.no_resolution_before_expiry,1);
  assert.equal(h30.counts.vpoc_before_expiry+h30.counts.invalidation_before_expiry+h30.counts.ambiguous_before_expiry,0);
 });
@@ -249,14 +258,14 @@ test("G: the capital-time summary aggregates only candidates with a genuinely us
 
 test("G: capital-time is honestly Unavailable when no candidate anywhere has a usable return",()=>{
  const noMargin={...dataset,tables:{...dataset.tables,margin_scenarios:[]}} as unknown as AnalysisDataset;
- const r=buildDurationDteReport(noMargin);
+ const r=buildDurationDteReport(noMargin,"taker");
  assert.equal(r.capitalTime.available,false);
  assert.match(r.capitalTime.reason!,/margin/i);
  assert.equal(r.capitalTime.medianCapitalDayReturn,null);
 });
 
 test("J: rebuilding the report from the same dataset is deterministic regardless of any UI-only slicing",()=>{
- const rebuilt=buildDurationDteReport(dataset);
+ const rebuilt=buildDurationDteReport(dataset,"taker");
  assert.deepEqual(rebuilt.overview,report.overview);
  assert.deepEqual(rebuilt.outcomeBeforeExpiry,report.outcomeBeforeExpiry);
  assert.deepEqual(rebuilt.headline,report.headline);
@@ -272,7 +281,7 @@ test("data sufficiency: horizon families are read from canonical data, never inv
 
 test("data sufficiency: an empty bundle produces zero candidates and no fabricated stats",()=>{
  const empty={...dataset,tables:{events:[],candidates:[],availability:[],outcomes:[],valuations:[],margin_scenarios:[]}} as unknown as AnalysisDataset;
- const r=buildDurationDteReport(empty);
+ const r=buildDurationDteReport(empty,"taker");
  assert.equal(r.candidates.length,0);
  assert.equal(r.horizons.length,0);
  assert.equal(r.headline.medianActualDteDays,null);
@@ -282,4 +291,30 @@ test("data sufficiency: an empty bundle produces zero candidates and no fabricat
 test("normalize: buildHorizonAvailability is independent of buildDurationDteReport's own aggregation",()=>{
  const families=buildHorizonFamilies(dataset),availabilityDirect=buildHorizonAvailability(dataset,families);
  assert.deepEqual(availabilityDirect,report.availability);
+});
+
+test("SCENARIO: the report body is scoped to exactly one execution scenario, never a silent mix",()=>{
+ assert.equal(report.scenario,"taker");
+ assert.ok(report.candidates.every(c=>c.executionScenario==="taker"),"every row in a taker-scoped report is itself taker-evaluated");
+ const makerReport=buildDurationDteReport(dataset,"maker");
+ assert.equal(makerReport.scenario,"maker");
+ assert.ok(makerReport.candidates.every(c=>c.executionScenario==="maker"));
+ // c3a is the only maker-evaluated structure in this fixture; it must never
+ // be silently absorbed into the taker report or vice versa.
+ assert.ok(report.candidates.every(c=>c.candidateId!=="c3a"),"a maker-only structure must not appear in the taker-scoped report");
+ assert.ok(makerReport.candidates.some(c=>c.candidateId==="c3a"));
+});
+
+test("SCENARIO: headline maker/taker coverage is measured independently, never inferred from one label",()=>{
+ // c1a,c1b,c2a,c4a,c5a,c6a are taker-evaluated, spanning 5 distinct events (e1 contributes both c1a and c1b); c3a/e3 is the lone maker-evaluated structure.
+ assert.equal(report.headline.takerExecutableShare,share(5,7));
+ assert.equal(report.headline.makerOpportunityShare,share(1,7));
+});
+
+test("EXECUTION DRAG: never fabricated for structures that were not genuinely evaluated under both scenarios",()=>{
+ // No structure in this fixture has both a maker and a taker evaluation, so
+ // execution drag must report zero matched structures everywhere -- never a
+ // drag figure synthesized from an unmatched pair.
+ assert.ok(report.executionDrag.every(r=>r.matchedN===0));
+ assert.ok(report.executionDrag.every(r=>r.medianPnlDragUsd===null));
 });

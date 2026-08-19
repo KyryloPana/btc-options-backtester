@@ -396,6 +396,12 @@ tbody tr:hover { background: #15191a; }
 .scenario-metrics label { display:flex; flex-direction:column; gap:3px; padding:9px 12px; border-right:1px solid var(--line-soft); }
 .scenario-input input { width:100%; min-width:0; height:25px; padding:0 7px; border:1px solid var(--line); color:var(--ink-strong); background:var(--input); font:10px var(--mono); }
 .capital-metric em { color:var(--muted); font:normal 8px var(--mono); }
+.scenario-compare { margin-bottom: 14px; }
+.scenario-compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line-soft); }
+.scenario-compare-col { padding: 12px; background: var(--bg); min-width: 0; }
+.scenario-compare-col .scenario-metrics { grid-template-columns: 1fr 1fr; }
+.scenario-compare-col label { border-right: 1px solid var(--line-soft); }
+@media (max-width: 700px) { .scenario-compare-grid { grid-template-columns: 1fr; } }
 .scenario-status strong { font-size:8px; line-height:1.35; }
 .path-table { max-height: 410px; }
 .exit-card { padding: 13px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
@@ -879,6 +885,8 @@ footer { color: var(--muted); font-size: 10px; }
 .dd-header h2 { margin: 2px 0 0; }
 .dd-sub { margin: 4px 0 0; color: #8792a3; max-width: 62ch; }
 .dd-note { color: #8792a3; font-size: 11px; margin: 4px 0 0; }
+.dd-scenario-select { display: flex; flex-direction: column; gap: 4px; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: #8792a3; }
+.dd-scenario-select select { text-transform: none; letter-spacing: normal; font-size: 13px; padding: 6px 8px; border-radius: 6px; border: 1px solid #29313d; background: #111923; color: #eef3fa; }
 .dd-horizons { display: flex; flex-wrap: wrap; gap: 8px; }
 .dd-horizon-pill { padding: 5px 10px; border: 1px solid #29313d; border-radius: 999px; font-size: 11px; background: #111923; color: #eef3fa; }
 .dd-horizon-pill small { color: #8792a3; margin-left: 3px; }
@@ -948,4 +956,3 @@ footer { color: var(--muted); font-size: 10px; }
 .dd-endpoint { display: grid; gap: 6px; padding: 13px; border: 1px solid #29313d; border-radius: 8px; background: #0e131a; }
 .dd-endpoint strong { font-size: 20px; }
 @media (max-width: 900px) { .dd-two-col { grid-template-columns: 1fr; } .dd-funnel-row, .dd-quality-row, .dd-stacked-row, .dd-strip-row { grid-template-columns: 60px 1fr 80px; } }
-

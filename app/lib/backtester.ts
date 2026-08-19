@@ -1,4 +1,5 @@
 import { aggregateRoutedFees, calculateOptionFee, STANDARD_INVERSE_BTC_OPTION_FEE, type ExecutionRoute, type FeeCalculation } from "./accounting.ts";
+import { tapeDirectionFor } from "./execution-side.ts";
 
 export type Direction = "long" | "short";
 export type OptionType = "C" | "P";
@@ -874,16 +875,13 @@ export function inverseOptionPriceBtc(spot: number, strike: number, expiryTimest
     : (strike / spot) * normalCdf(-d2) - normalCdf(-d1);
 }
 
-function compatibleSchemaDirection(action: TradeSide, executionMode: ExecutionMode): TradeSide {
-  if (executionMode === "taker") return action;
-  return action === "buy" ? "sell" : "buy";
-}
+
 
 export function normalizeLeg(series: ContractSeries, timestamp: number, targetIndex: number, action: TradeSide, executionMode: ExecutionMode, windowMinutes: number, purpose: Exclude<ValuationPurpose, "settlement"> = "entry"): WindowMetrics {
   const windowStart = timestamp - windowMinutes * 60_000;
   const windowEnd = purpose === "close" ? timestamp : timestamp + windowMinutes * 60_000;
   const all = tradesInWindow(series, windowStart, windowEnd);
-  const schemaDirection = compatibleSchemaDirection(action, executionMode);
+  const schemaDirection = tapeDirectionFor(action, executionMode);
   const compatible = all.filter(trade => trade.direction === schemaDirection);
   const usedDirectionFallback = compatible.length === 0 && all.length > 0;
   let selected = compatible.length ? compatible : purpose === "entry" ? all : [];
@@ -1001,7 +999,7 @@ function historicalLiquidityWindow(
 ): HistoricalLiquidityWindow {
   if (!series) return { tradeCount: 0, compatibleTradeCount: 0, totalAmount: 0, compatibleAmount: 0 };
   const start = timestamp - lookbackMs;
-  const schemaDirection = compatibleSchemaDirection(action, executionMode);
+  const schemaDirection = tapeDirectionFor(action, executionMode);
   const rows = series.trades.filter(trade => trade.timestamp >= start && trade.timestamp <= timestamp);
   const compatible = rows.filter(trade => trade.direction === schemaDirection);
   return {
@@ -1382,7 +1380,7 @@ export function buildValuationPath(
         timestamp, ...indexEvidence, qualityFlag: "settlement" as const, valuationSource: "settlement-data-unavailable" as const,
         qualityReason: btcIndexAvailabilityReason, usedDirectionFallback: false, usedModelFallback: false,
         valuationPurpose: "settlement" as const, soldRequiredAction: "buy" as const, boughtRequiredAction: "sell" as const,
-        soldCompatibleDirection: compatibleSchemaDirection("buy", executionMode), boughtCompatibleDirection: compatibleSchemaDirection("sell", executionMode), executionMode,
+        soldCompatibleDirection: tapeDirectionFor("buy", executionMode), boughtCompatibleDirection: tapeDirectionFor("sell", executionMode), executionMode,
         evidenceWindowStart: timestamp, evidenceWindowEnd: timestamp,
       };
       const soldIntrinsic = intrinsicPriceBtc(spread.optionType, btcIndex, spread.soldContract!.strike);
@@ -1413,7 +1411,7 @@ export function buildValuationPath(
         qualityReason: "Expiry intrinsic settlement; both legs use their exact intrinsic value at the expiry BTC index.",
         usedDirectionFallback: false, usedModelFallback: false,
         valuationPurpose: "settlement" as const, soldRequiredAction: "buy" as const, boughtRequiredAction: "sell" as const,
-        soldCompatibleDirection: compatibleSchemaDirection("buy", executionMode), boughtCompatibleDirection: compatibleSchemaDirection("sell", executionMode), executionMode,
+        soldCompatibleDirection: tapeDirectionFor("buy", executionMode), boughtCompatibleDirection: tapeDirectionFor("sell", executionMode), executionMode,
         evidenceWindowStart: timestamp, evidenceWindowEnd: timestamp,
         maxAdversePnlSoFar: maxAdverse,
         maxFavorablePnlSoFar: maxFavorable,
@@ -1425,7 +1423,7 @@ export function buildValuationPath(
       usedDirectionFallback: Boolean(normalization?.sold.usedDirectionFallback || normalization?.bought.usedDirectionFallback),
       usedModelFallback: Boolean(normalization?.sold.usedModelFallback || normalization?.bought.usedModelFallback),
       valuationPurpose: "close" as const, soldRequiredAction: "buy" as const, boughtRequiredAction: "sell" as const,
-      soldCompatibleDirection: compatibleSchemaDirection("buy", executionMode), boughtCompatibleDirection: compatibleSchemaDirection("sell", executionMode), executionMode,
+      soldCompatibleDirection: tapeDirectionFor("buy", executionMode), boughtCompatibleDirection: tapeDirectionFor("sell", executionMode), executionMode,
       evidenceWindowStart: normalization?.windowStart ?? timestamp - 720 * 60_000, evidenceWindowEnd: normalization?.windowEnd ?? timestamp,
       newestSupportingPrintTimestamp: normalization?.latestEvidenceTimestamp,
     };

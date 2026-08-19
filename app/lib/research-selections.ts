@@ -1,6 +1,9 @@
 import type { BacktestEvent, Candle, QualityFlag, RetrievedSpread } from "./backtester";
 
-export const RESEARCH_SELECTION_SCHEMA_VERSION = "1.1.0" as const;
+export const RESEARCH_SELECTION_SCHEMA_VERSION = "1.2.0" as const;
+/** Every schema version this app can still read and migrate forward from. */
+export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS = ["1.0.0", "1.1.0"] as const;
+/** @deprecated kept for external callers; prefer LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS. */
 export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSION = "1.0.0" as const;
 export type Venue = "deribit" | "bybit" | "binance";
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -32,10 +35,31 @@ export interface ReproducibilitySnapshot {
 }
 export interface GenerationSnapshot { generatedAtUtc: string; configuration: ReproducibilitySnapshot; candidates: GenerationCandidateSnapshot[]; underlyingHourlyPath: Candle[] }
 export interface EvidenceTradeDto { evidenceId:string; venue:Venue; instrument:string|null; tradeId:string|null; timestamp:number|null; direction:string|null; price:number|null; amount:number|null; indexPrice:number|null; ivApiPercent:number|null; ivDecimal:number|null; blockTradeId:string|null; rfqId:string|null; }
-export interface EvidenceUsageDto { evidenceId:string; candidateId:string; role:string; valuationTimestamp:number|null; pricingTrack:string|null; leg:string|null; }
+export interface EvidenceUsageDto { evidenceId:string; candidateId:string; role:string; valuationTimestamp:number|null; pricingTrack:string|null; leg:string|null; executionScenario:"maker"|"taker"|null; }
+export type ExecutionScenarioEvaluationStatus = "evaluated" | "not_evaluated";
+/**
+ * One execution scenario's independently-evaluated entry/path/outcomes for a
+ * structure. `status:"not_evaluated"` means historical evidence did not
+ * support evaluating this scenario -- it is never coerced into a priced
+ * estimate, and it is never displayed as 0.
+ */
+export interface ExecutionScenarioSnapshot {
+  status: ExecutionScenarioEvaluationStatus;
+  /** Why this scenario is not_evaluated; null when evaluated. */
+  reason: string | null;
+  /**
+   * Set only on data migrated from schema < 1.2.0, before entry evidence was
+   * filtered by tape direction. The evidence is preserved as originally
+   * computed, but it was not scenario-differentiated when it was produced.
+   */
+  legacyUndifferentiated?: boolean;
+  entrySnapshot: JsonValue; valuationPathSnapshot: JsonValue[]; outcomeSnapshots: JsonValue[];
+}
 export interface SelectedStructure {
   selectionId: string; eventId: string; candidateId: string; venue: Venue; selectedAtUtc: string; quantity: number;
-  candidateSnapshot: JsonValue; entrySnapshot: JsonValue; valuationPathSnapshot: JsonValue[]; outcomeSnapshots: JsonValue[];
+  candidateSnapshot: JsonValue;
+  /** Maker opportunity and taker execution, evaluated independently against the same structure. Neither is derived from the other. */
+  executionScenarios: { maker: ExecutionScenarioSnapshot; taker: ExecutionScenarioSnapshot };
   marginSnapshot: JsonValue; evidenceTradeSnapshots?: JsonValue[]; evidenceUsages?: EvidenceUsageDto[];
 }
 export interface ResearchSelectionEvent { eventId: string; sourceRun: JsonValue; generationSnapshot: GenerationSnapshot; selectedStructures: SelectedStructure[]; evidenceCatalog?: EvidenceTradeDto[] }
@@ -56,7 +80,7 @@ export function validateResearchSelectionStore(value:unknown):{ok:true;store:Res
   const errors:SelectionValidationError[]=[];
   if(!value||typeof value!=="object")return{ok:false,errors:[{path:"$",message:"Selection store must be a JSON object."}]};
   const store=value as Partial<ResearchSelectionStore>;
-  if(store.schemaVersion!==RESEARCH_SELECTION_SCHEMA_VERSION&&store.schemaVersion!==LEGACY_RESEARCH_SELECTION_SCHEMA_VERSION)errors.push({path:"schemaVersion",message:`Expected ${RESEARCH_SELECTION_SCHEMA_VERSION}.`});
+  if(store.schemaVersion!==RESEARCH_SELECTION_SCHEMA_VERSION&&!(LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS as readonly string[]).includes(String(store.schemaVersion)))errors.push({path:"schemaVersion",message:`Expected ${RESEARCH_SELECTION_SCHEMA_VERSION} (or a migratable version: ${LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS.join(", ")}).`});
   if(typeof store.datasetId!=="string"||!SAFE_ID.test(store.datasetId))errors.push({path:"datasetId",message:"Use a safe lowercase dataset ID."});
   if(!iso(store.updatedAtUtc))errors.push({path:"updatedAtUtc",message:"A UTC ISO-8601 timestamp is required."});
   if(!Array.isArray(store.events))errors.push({path:"events",message:"Events must be an array."});
@@ -98,11 +122,38 @@ const finite=(v:unknown)=>typeof v==="number"&&Number.isFinite(v)?v:null;
 const text=(v:unknown)=>typeof v==="string"&&v?v:null;
 export function stableEvidenceId(venue:Venue,trade:Record<string,unknown>):string{const instrument=text(trade.instrumentName)??text(trade.instrument)??"unknown",tradeId=text(trade.tradeId)??text(trade.exchangeTradeId);if(tradeId)return `evidence~${part(venue)}~${part(instrument)}~${part(tradeId)}`;return `evidence~${part(venue)}~${part(instrument)}~${part(finite(trade.timestamp)??"no-time")}~${part(text(trade.direction)??"no-side")}~${part(finite(trade.price)??"no-price")}~${part(finite(trade.amount)??"no-amount")}`;}
 export function evidenceTradeDto(venue:Venue,trade:Record<string,unknown>):EvidenceTradeDto{return{evidenceId:stableEvidenceId(venue,trade),venue,instrument:text(trade.instrumentName)??text(trade.instrument),tradeId:text(trade.tradeId)??text(trade.exchangeTradeId),timestamp:finite(trade.timestamp),direction:text(trade.direction),price:finite(trade.price),amount:finite(trade.amount),indexPrice:finite(trade.indexPrice),ivApiPercent:finite(trade.ivApiPercent),ivDecimal:finite(trade.ivDecimal),blockTradeId:text(trade.blockTradeId),rfqId:text(trade.rfqId)};}
-function stripEvidence(value:unknown,venue:Venue,candidateId:string,role:string,usages:EvidenceUsageDto[],catalog:Map<string,EvidenceTradeDto>,timestamp:number|null=null,track:string|null=null,leg:string|null=null):JsonValue{if(value===undefined||typeof value==="number"&&!Number.isFinite(value))return null;if(value===null||typeof value==="string"||typeof value==="boolean"||typeof value==="number")return value;if(Array.isArray(value))return value.map(v=>stripEvidence(v,venue,candidateId,role,usages,catalog,timestamp,track,leg));if(typeof value==="object"){const input=value as Record<string,unknown>,out:Record<string,JsonValue>={};for(const [k,v] of Object.entries(input)){if(k==="supportingTrades"&&Array.isArray(v)){const ids=v.map(t=>{const dto=evidenceTradeDto(venue,asObj(t));catalog.set(dto.evidenceId,dto);usages.push({evidenceId:dto.evidenceId,candidateId,role,valuationTimestamp:timestamp,pricingTrack:track,leg});return dto.evidenceId});out.supportingEvidenceIds=ids;out.supportingTradeCount=ids.length;continue;}out[k]=stripEvidence(v,venue,candidateId,role,usages,catalog,timestamp,track,leg??(k==="sold"||k==="bought"?k:leg));}return out;}throw new Error("Research snapshots may contain only JSON data.");}
+function stripEvidence(value:unknown,venue:Venue,candidateId:string,role:string,usages:EvidenceUsageDto[],catalog:Map<string,EvidenceTradeDto>,timestamp:number|null=null,track:string|null=null,leg:string|null=null,executionScenario:"maker"|"taker"|null=null):JsonValue{if(value===undefined||typeof value==="number"&&!Number.isFinite(value))return null;if(value===null||typeof value==="string"||typeof value==="boolean"||typeof value==="number")return value;if(Array.isArray(value))return value.map(v=>stripEvidence(v,venue,candidateId,role,usages,catalog,timestamp,track,leg,executionScenario));if(typeof value==="object"){const input=value as Record<string,unknown>,out:Record<string,JsonValue>={};for(const [k,v] of Object.entries(input)){if(k==="supportingTrades"&&Array.isArray(v)){const ids=v.map(t=>{const dto=evidenceTradeDto(venue,asObj(t));catalog.set(dto.evidenceId,dto);usages.push({evidenceId:dto.evidenceId,candidateId,role,valuationTimestamp:timestamp,pricingTrack:track,leg,executionScenario});return dto.evidenceId});out.supportingEvidenceIds=ids;out.supportingTradeCount=ids.length;continue;}out[k]=stripEvidence(v,venue,candidateId,role,usages,catalog,timestamp,track,leg??(k==="sold"||k==="bought"?k:leg),executionScenario);}return out;}throw new Error("Research snapshots may contain only JSON data.");}
 export function compactCandidateMetadata(input:unknown):JsonValue{return canonicalJson(input)}
-export function compactEntryEconomics(venue:Venue,candidateId:string,input:unknown,usages:EvidenceUsageDto[],catalog:Map<string,EvidenceTradeDto>):JsonValue{return stripEvidence(input,venue,candidateId,"entry-pricing",usages,catalog,finite(asObj(input).targetTimestamp)??finite(asObj(input).valuationTimestamp),String(asObj(input).priceSource??"entry"),null)}
-export function compactValuationPoint(venue:Venue,candidateId:string,input:unknown,usages:EvidenceUsageDto[],catalog:Map<string,EvidenceTradeDto>):JsonValue{const p=asObj(input),ts=finite(p.timestamp);const out=stripEvidence(input,venue,candidateId,"valuation",usages,catalog,ts,null,null) as Record<string,JsonValue>;return out;}
-export function compactOutcomeSnapshot(venue:Venue,candidateId:string,input:unknown,usages:EvidenceUsageDto[],catalog:Map<string,EvidenceTradeDto>):JsonValue{return stripEvidence(input,venue,candidateId,"outcome",usages,catalog,finite(asObj(input).valuationTimestamp),null,null)}
+export function compactEntryEconomics(venue:Venue,candidateId:string,input:unknown,usages:EvidenceUsageDto[],catalog:Map<string,EvidenceTradeDto>,executionScenario:"maker"|"taker"|null=null):JsonValue{return stripEvidence(input,venue,candidateId,"entry-pricing",usages,catalog,finite(asObj(input).targetTimestamp)??finite(asObj(input).valuationTimestamp),String(asObj(input).priceSource??"entry"),null,executionScenario)}
+export function compactValuationPoint(venue:Venue,candidateId:string,input:unknown,usages:EvidenceUsageDto[],catalog:Map<string,EvidenceTradeDto>,executionScenario:"maker"|"taker"|null=null):JsonValue{const p=asObj(input),ts=finite(p.timestamp);const out=stripEvidence(input,venue,candidateId,"valuation",usages,catalog,ts,null,null,executionScenario) as Record<string,JsonValue>;return out;}
+export function compactOutcomeSnapshot(venue:Venue,candidateId:string,input:unknown,usages:EvidenceUsageDto[],catalog:Map<string,EvidenceTradeDto>,executionScenario:"maker"|"taker"|null=null):JsonValue{return stripEvidence(input,venue,candidateId,"outcome",usages,catalog,finite(asObj(input).valuationTimestamp),null,null,executionScenario)}
 export function compactMarginResult(input:unknown):JsonValue{return stripEvidence(input,"deribit","margin","margin",[],new Map())}
-export function migrateResearchSelectionStore(value:unknown):ResearchSelectionStore{const checked=validateResearchSelectionStore(value);if(!checked.ok)throw new Error(checked.errors.map(e=>`${e.path}: ${e.message}`).join(" | "));const store=checked.store;if(store.schemaVersion===RESEARCH_SELECTION_SCHEMA_VERSION)return store;const events=store.events.map(event=>{const catalog=new Map<string,EvidenceTradeDto>();const selectedStructures=event.selectedStructures.map(s=>{const usages:EvidenceUsageDto[]=[];for(const t of s.evidenceTradeSnapshots??[]){const dto=evidenceTradeDto(s.venue,asObj(t));catalog.set(dto.evidenceId,dto);usages.push({evidenceId:dto.evidenceId,candidateId:s.candidateId,role:"legacy-saved-source-trade",valuationTimestamp:finite(asObj(t).timestamp),pricingTrack:null,leg:null});}return{...s,entrySnapshot:compactEntryEconomics(s.venue,s.candidateId,s.entrySnapshot,usages,catalog),valuationPathSnapshot:s.valuationPathSnapshot.map(p=>compactValuationPoint(s.venue,s.candidateId,p,usages,catalog)),outcomeSnapshots:s.outcomeSnapshots.map(o=>compactOutcomeSnapshot(s.venue,s.candidateId,o,usages,catalog)),marginSnapshot:compactMarginResult(s.marginSnapshot),evidenceTradeSnapshots:[],evidenceUsages:usages};});return{...event,selectedStructures,evidenceCatalog:[...catalog.values()].sort((a,b)=>a.evidenceId.localeCompare(b.evidenceId))};});return{...store,schemaVersion:RESEARCH_SELECTION_SCHEMA_VERSION,events};}
-export function researchEventPayloadDiagnostics(event:ResearchSelectionEvent){const encoder=new TextEncoder(),bytes=(v:unknown)=>encoder.encode(JSON.stringify(v)).byteLength;return{sourceEventBytes:bytes(event.sourceRun),selectedCandidateBytes:event.selectedStructures.map(s=>({candidateId:s.candidateId,totalBytes:bytes(s),candidateSnapshotBytes:bytes(s.candidateSnapshot),entrySnapshotBytes:bytes(s.entrySnapshot),valuationPathBytes:bytes(s.valuationPathSnapshot),outcomesBytes:bytes(s.outcomeSnapshots),marginBytes:bytes(s.marginSnapshot),evidenceBytes:bytes(s.evidenceTradeSnapshots??[]),evidenceUsageBytes:bytes(s.evidenceUsages??[])})),candidateSnapshotBytes:bytes(event.generationSnapshot.candidates),eventEvidenceCatalogBytes:bytes(event.evidenceCatalog??[]),totalBytes:bytes(event)};}
+/**
+ * Migrates a store from any known legacy schema version to current.
+ *
+ * Pre-1.2.0 stores have one flat scenario (entrySnapshot/valuationPathSnapshot/
+ * outcomeSnapshots) rather than executionScenarios.maker/taker, because entry
+ * evidence was not yet filtered by tape direction -- there was no genuine
+ * maker/taker distinction to preserve. That single scenario is kept, under
+ * whichever execution mode label the generation run recorded, flagged
+ * legacyUndifferentiated so it is never mistaken for a direction-aware
+ * evaluation. The OTHER scenario is explicitly not_evaluated: never fabricated
+ * as 0, never silently dropped.
+ */
+export function migrateResearchSelectionStore(value:unknown):ResearchSelectionStore{const checked=validateResearchSelectionStore(value);if(!checked.ok)throw new Error(checked.errors.map(e=>`${e.path}: ${e.message}`).join(" | "));const store=checked.store;if(store.schemaVersion===RESEARCH_SELECTION_SCHEMA_VERSION)return store;const events=store.events.map(event=>{const catalog=new Map<string,EvidenceTradeDto>();const selectedStructures=event.selectedStructures.map(raw=>{const legacy=raw as unknown as Record<string,unknown>;const usages:EvidenceUsageDto[]=[];for(const t of (legacy.evidenceTradeSnapshots as unknown[]|undefined)??[]){const dto=evidenceTradeDto(raw.venue,asObj(t));catalog.set(dto.evidenceId,dto);usages.push({evidenceId:dto.evidenceId,candidateId:raw.candidateId,role:"legacy-saved-source-trade",valuationTimestamp:finite(asObj(t).timestamp),pricingTrack:null,leg:null,executionScenario:null});}
+  const existing=legacy.executionScenarios as {maker:ExecutionScenarioSnapshot;taker:ExecutionScenarioSnapshot}|undefined;
+  let executionScenarios:{maker:ExecutionScenarioSnapshot;taker:ExecutionScenarioSnapshot};
+  if(existing){executionScenarios=existing;}
+  else{
+    const legacyMode=String(asObj(event.generationSnapshot?.configuration).executionMode)==="maker"?"maker":"taker";
+    const evaluated:ExecutionScenarioSnapshot={status:"evaluated",reason:null,legacyUndifferentiated:true,
+      entrySnapshot:compactEntryEconomics(raw.venue,raw.candidateId,legacy.entrySnapshot,usages,catalog),
+      valuationPathSnapshot:((legacy.valuationPathSnapshot as unknown[]|undefined)??[]).map(p=>compactValuationPoint(raw.venue,raw.candidateId,p,usages,catalog)),
+      outcomeSnapshots:((legacy.outcomeSnapshots as unknown[]|undefined)??[]).map(o=>compactOutcomeSnapshot(raw.venue,raw.candidateId,o,usages,catalog))};
+    const notEvaluated:ExecutionScenarioSnapshot={status:"not_evaluated",reason:"Predates independent maker/taker evaluation; this store was migrated from an earlier schema version.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]};
+    executionScenarios=legacyMode==="maker"?{maker:evaluated,taker:notEvaluated}:{maker:notEvaluated,taker:evaluated};
+  }
+  const {entrySnapshot:_es,valuationPathSnapshot:_vp,outcomeSnapshots:_os,...rest}=legacy;void _es;void _vp;void _os;
+  return{...(rest as unknown as SelectedStructure),executionScenarios,marginSnapshot:compactMarginResult(legacy.marginSnapshot),evidenceTradeSnapshots:[],evidenceUsages:usages};
+ });return{...event,selectedStructures,evidenceCatalog:[...catalog.values()].sort((a,b)=>a.evidenceId.localeCompare(b.evidenceId))};});return{...store,schemaVersion:RESEARCH_SELECTION_SCHEMA_VERSION,events};}
+export function researchEventPayloadDiagnostics(event:ResearchSelectionEvent){const encoder=new TextEncoder(),bytes=(v:unknown)=>encoder.encode(JSON.stringify(v)).byteLength;return{sourceEventBytes:bytes(event.sourceRun),selectedCandidateBytes:event.selectedStructures.map(s=>({candidateId:s.candidateId,totalBytes:bytes(s),candidateSnapshotBytes:bytes(s.candidateSnapshot),makerEntrySnapshotBytes:bytes(s.executionScenarios.maker.entrySnapshot),makerValuationPathBytes:bytes(s.executionScenarios.maker.valuationPathSnapshot),makerOutcomesBytes:bytes(s.executionScenarios.maker.outcomeSnapshots),takerEntrySnapshotBytes:bytes(s.executionScenarios.taker.entrySnapshot),takerValuationPathBytes:bytes(s.executionScenarios.taker.valuationPathSnapshot),takerOutcomesBytes:bytes(s.executionScenarios.taker.outcomeSnapshots),marginBytes:bytes(s.marginSnapshot),evidenceBytes:bytes(s.evidenceTradeSnapshots??[]),evidenceUsageBytes:bytes(s.evidenceUsages??[])})),candidateSnapshotBytes:bytes(event.generationSnapshot.candidates),eventEvidenceCatalogBytes:bytes(event.evidenceCatalog??[]),totalBytes:bytes(event)};}
