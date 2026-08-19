@@ -948,23 +948,3 @@ footer { color: var(--muted); font-size: 10px; }
 .dd-endpoint { display: grid; gap: 6px; padding: 13px; border: 1px solid #29313d; border-radius: 8px; background: #0e131a; }
 .dd-endpoint strong { font-size: 20px; }
 @media (max-width: 900px) { .dd-two-col { grid-template-columns: 1fr; } .dd-funnel-row, .dd-quality-row, .dd-stacked-row, .dd-strip-row { grid-template-columns: 60px 1fr 80px; } }
-
-/* ==== BACKDROP IMAGE — revertible block ====================================
- * Delete everything between this marker and END BACKDROP IMAGE (and
- * public/backdrop.webp) to restore the original plain --bg colour (#0c0e0f).
- * The scrim opacity below is the single knob for image visibility: higher
- * alpha = dimmer image and more legible text.
- * ------------------------------------------------------------------------ */
-body, .app-shell {
-  background-image:
-    linear-gradient(rgba(10, 13, 18, 0.55), rgba(10, 13, 18, 0.55)),
-    url("/backdrop.webp");
-  background-size: cover;
-  background-position: center 12%;
-  background-attachment: fixed;
-  background-repeat: no-repeat;
-}
-/* The shell paints its own opaque ground above <body>; clear it so the
- * backdrop above is what shows through. */
-.app-shell { background-color: transparent; }
-/* ==== END BACKDROP IMAGE ================================================= */
