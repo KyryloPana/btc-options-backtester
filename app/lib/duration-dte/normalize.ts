@@ -2,7 +2,7 @@ import type {AnalysisDataset} from "../research-analysis.ts";
 import {normalizeMrEvents,type ResolutionOutcome} from "../underlying-resolution/normalize.ts";
 
 /**
- * Canonical research bundle 2.1.0 -> normalized Duration/DTE structures.
+ * Canonical research bundle 2.2.0 -> normalized Duration/DTE structures.
  *
  * This module joins `candidates.jsonl` (selected structures), `availability.jsonl`
  * (the full generated denominator, selected and unselected), `outcomes.jsonl`
@@ -15,18 +15,27 @@ import {normalizeMrEvents,type ResolutionOutcome} from "../underlying-resolution
  * (`candidates.actual_dte_days`), not the nominal `target_horizon_days` label.
  * `target_horizon_days` is used only as a grouping/reference key.
  *
+ * Execution scenario: candidates.jsonl carries one row per (structure,
+ * execution scenario) pair, sharing candidate_id as the stable structural
+ * identity. `execution_scenario` ("maker"|"taker") and `execution_scenario_status`
+ * ("evaluated"|"not_evaluated") are read verbatim -- maker and taker are two
+ * genuinely, independently evaluated scenarios, never one label standing in
+ * for both. A not_evaluated row keeps its structural fields (expiry, strikes,
+ * DTE-eligibility band) but every execution-dependent field (actual DTE,
+ * prices, PnL, capture) is null on that row, since the canonical bundle never
+ * evaluated it -- this module does not fabricate a 0 or borrow the other
+ * scenario's numbers.
+ *
  * Canonical granularity note: `availability.jsonl` records a single
  * `status` ("priced" | "unavailable") per generated candidate. The bundle does
  * not separately distinguish "an eligible expiry existed" from "both legs were
  * retrievable" -- those two funnel stages collapse into one canonical
- * availability status. `execution_mode` is the configured assumption for the
- * generation run, not an independently generated maker AND taker outcome per
- * candidate, so maker/taker are reported as two labelled views of the same
- * selected structure, never as a stricter/looser funnel stage.
+ * availability status.
  */
 
 export type EntryQuality="green"|"yellow"|"red";
-export type ExecutionMode="maker"|"taker";
+export type ExecutionScenario="maker"|"taker";
+export type ExecutionScenarioStatus="evaluated"|"not_evaluated";
 /** The four mutually exclusive, reconciling outcome-before-expiry buckets. */
 export type OutcomeBeforeExpiry="vpoc_before_expiry"|"invalidation_before_expiry"|"ambiguous_before_expiry"|"no_resolution_before_expiry";
 
@@ -45,24 +54,29 @@ export interface CaptureObservation {
 export interface DteCandidate {
  readonly eventId:string;
  readonly candidateId:string;
+ /** The genuine per-row key: one structure has one row per scenario, sharing candidateId. */
+ readonly structureExecutionId:string;
  readonly horizonNominalDays:number|null;
  readonly structureType:string|null;
+ readonly executionScenario:ExecutionScenario|null;
+ readonly executionScenarioStatus:ExecutionScenarioStatus|null;
+ /** Why this scenario is not_evaluated; null when evaluated or status is unknown. */
+ readonly executionScenarioReason:string|null;
  readonly entryQuality:EntryQuality|null;
- readonly executionMode:ExecutionMode|null;
  readonly synchronizationMinutes:number|null;
  readonly entryTimestampMs:number|null;
  readonly expiryTimestampMs:number|null;
- /** The primary analytical variable: actual selected-contract DTE in days. */
+ /** The primary analytical variable: actual selected-contract DTE in days. Null for a not_evaluated scenario. */
  readonly actualDteDays:number|null;
 
- /** Authoritative underlying facts, joined from Underlying Resolution -- never re-derived. */
+ /** Authoritative underlying facts, joined from Underlying Resolution -- never re-derived. Identical across a structure's maker/taker rows. */
  readonly underlyingOutcome:ResolutionOutcome;
  readonly underlyingCensored:boolean;
  readonly timeToResolutionDays:number|null;
  readonly timeToVpocDays:number|null;
  readonly timeToInvalidationDays:number|null;
 
- /** Null when the underlying event is ineligible for time-to-event analysis (see Underlying Resolution). */
+ /** Null when the underlying event is ineligible for time-to-event analysis, or when this scenario was not evaluated (no actual DTE to compare against). */
  readonly resolvedBeforeExpiry:boolean|null;
  readonly outcomeBeforeExpiry:OutcomeBeforeExpiry|null;
  /** actualDteDays - timeToResolutionDays. Only defined for a resolved event with a known actual DTE. Negative means expiry occurred before the thesis resolved. */
@@ -71,7 +85,7 @@ export interface DteCandidate {
  readonly pnlAtVpocUsd:number|null;
  readonly pnlAtInvalidationUsd:number|null;
  readonly pnlAtSettlementUsd:number|null;
- /** Most adverse mark-to-market before resolution/censoring, from the raw-VWAP valuation track. Null means Unavailable. */
+ /** Most adverse mark-to-market before resolution/censoring, from this scenario's raw-VWAP valuation track. Null means Unavailable. */
  readonly worstAdverseUsd:number|null;
 
  readonly capture25:CaptureObservation|null;
@@ -93,7 +107,9 @@ export interface HorizonAvailability {
  readonly candidatesGenerated:number;
  readonly priced:number;
  readonly selected:number;
+ /** Distinct events with a selected structure genuinely evaluated (evidence-supported) under the taker scenario. */
  readonly takerExecutable:number;
+ /** Distinct events with a selected structure genuinely evaluated (evidence-supported) under the maker scenario. Never a guaranteed fill. */
  readonly makerOpportunity:number;
  readonly entryQuality:{readonly green:number;readonly yellow:number;readonly red:number;readonly unavailable:number};
  readonly synchronizationMinutes:readonly number[];
@@ -106,7 +122,8 @@ const ms=(v:unknown):number|null=>{const s=str(v);if(!s)return null;const t=Date
 const DAY=864e5;
 const QUALITIES=new Set(["green","yellow","red"]);
 const quality=(v:unknown):EntryQuality|null=>{const s=str(v);return s&&QUALITIES.has(s)?s as EntryQuality:null};
-const mode=(v:unknown):ExecutionMode|null=>{const s=str(v);return s==="maker"||s==="taker"?s:null};
+const scenarioOf=(v:unknown):ExecutionScenario|null=>{const s=str(v);return s==="maker"||s==="taker"?s:null};
+const scenarioStatusOf=(v:unknown):ExecutionScenarioStatus|null=>{const s=str(v);return s==="evaluated"||s==="not_evaluated"?s:null};
 
 function horizonLabel(nominalDays:number):string{return `~${nominalDays}D`}
 
@@ -140,15 +157,16 @@ function actualDte(row:Readonly<Record<string,unknown>>):number|null{
 
 /**
  * Most adverse mark-to-market between entry and the resolution/censoring
- * boundary, from the raw-VWAP valuation track only -- the conservative,
- * executable-evidence track, not the modeled one. Mirrors the pre-resolution
- * excursion correction already applied to the underlying MFE/MAE.
+ * boundary, from THIS scenario's raw-VWAP valuation track only -- the
+ * conservative, executable-evidence track, not the modeled one. Filtering by
+ * execution_scenario as well as candidate_id matters once a structure has two
+ * scenario rows: without it, a maker row could silently read taker's marks.
  */
-function worstAdverse(valuations:readonly Readonly<Record<string,unknown>>[],candidateId:string,entryMs:number|null,boundaryMs:number|null):number|null{
- if(entryMs===null||boundaryMs===null)return null;
+function worstAdverse(valuations:readonly Readonly<Record<string,unknown>>[],candidateId:string,scenario:ExecutionScenario|null,entryMs:number|null,boundaryMs:number|null):number|null{
+ if(entryMs===null||boundaryMs===null||scenario===null)return null;
  let worst:number|null=null;
  for(const row of valuations){
-  if(row.candidate_id!==candidateId||row.pricing_track!=="raw_vwap"||row.valuation_status!=="priced")continue;
+  if(row.candidate_id!==candidateId||row.execution_scenario!==scenario||row.pricing_track!=="raw_vwap"||row.valuation_status!=="priced")continue;
   const t=ms(row.timestamp_utc);
   if(t===null||t<entryMs||t>boundaryMs)continue;
   const pnl=num(row.net_pnl_usd)??num(row.net_pnl_native);
@@ -158,8 +176,9 @@ function worstAdverse(valuations:readonly Readonly<Record<string,unknown>>[],can
  return worst;
 }
 
-function captureObservation(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:string,threshold:25|50|70,entryMs:number|null,timeToVpocDays:number|null,timeToInvalidationDays:number|null):CaptureObservation|null{
- const row=outcomes.find(o=>o.candidate_id===candidateId&&o.outcome_type===`credit_capture_${threshold}`);
+function captureObservation(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:string,scenario:ExecutionScenario|null,threshold:25|50|70,entryMs:number|null,timeToVpocDays:number|null,timeToInvalidationDays:number|null):CaptureObservation|null{
+ if(scenario===null)return null;
+ const row=outcomes.find(o=>o.candidate_id===candidateId&&o.execution_scenario===scenario&&o.outcome_type===`credit_capture_${threshold}`);
  if(!row)return null;
  const triggerMs=row.status==="priced"?ms(row.trigger_timestamp_utc):null;
  const timeToCaptureDays=triggerMs!==null&&entryMs!==null?(triggerMs-entryMs)/DAY:null;
@@ -170,8 +189,9 @@ function captureObservation(outcomes:readonly Readonly<Record<string,unknown>>[]
  };
 }
 
-function pnlAt(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:string,kind:"vpoc"|"invalidation"|"settlement"):number|null{
- const row=outcomes.find(o=>o.candidate_id===candidateId&&o.outcome_type===kind);
+function pnlAt(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:string,scenario:ExecutionScenario|null,kind:"vpoc"|"invalidation"|"settlement"):number|null{
+ if(scenario===null)return null;
+ const row=outcomes.find(o=>o.candidate_id===candidateId&&o.execution_scenario===scenario&&o.outcome_type===kind);
  if(!row||row.status!=="priced")return null;
  return num(row.net_pnl_usd)??num(row.net_pnl_native);
 }
@@ -182,13 +202,17 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
 
  return candidates.map(row=>{
   const eventId=str(row.event_id)??"unknown-event",candidateId=str(row.candidate_id)??"unknown-candidate";
+  const scenario=scenarioOf(row.execution_scenario),scenarioStatus=scenarioStatusOf(row.execution_scenario_status);
+  const structureExecutionId=str(row.structure_execution_id)??`${candidateId}~${scenario??"unknown"}`;
+  const evaluated=scenarioStatus==="evaluated";
   const event=eventsById.get(eventId);
-  const entry=ms(row.structure_entry_timestamp_utc),expiry=ms(row.expiry_timestamp_utc),dte=actualDte(row);
+  const entry=ms(row.structure_entry_timestamp_utc),expiry=ms(row.expiry_timestamp_utc),dte=evaluated?actualDte(row):null;
 
   if(!event||event.ineligibility!==null){
    return {
-    eventId,candidateId,horizonNominalDays:num(row.target_horizon_days),structureType:str(row.structure_type),
-    entryQuality:quality(row.entry_quality),executionMode:mode(row.execution_mode),
+    eventId,candidateId,structureExecutionId,horizonNominalDays:num(row.target_horizon_days),structureType:str(row.structure_type),
+    executionScenario:scenario,executionScenarioStatus:scenarioStatus,executionScenarioReason:str(row.execution_scenario_reason),
+    entryQuality:quality(row.entry_quality),
     synchronizationMinutes:num(row.spread_synchronization_minutes),entryTimestampMs:entry,expiryTimestampMs:expiry,actualDteDays:dte,
     underlyingOutcome:"unresolved",underlyingCensored:true,timeToResolutionDays:null,timeToVpocDays:null,timeToInvalidationDays:null,
     resolvedBeforeExpiry:null,outcomeBeforeExpiry:null,dteBufferDays:null,
@@ -201,7 +225,8 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
   const resolved=event.outcome==="vpoc_first"||event.outcome==="invalidation_first"||event.outcome==="ambiguous";
   const resolvedBeforeExpiry=resolved&&event.timeToResolutionDays!==null&&dte!==null?event.timeToResolutionDays<=dte:resolved?null:false;
   const outcomeBeforeExpiry:OutcomeBeforeExpiry|null=
-   resolvedBeforeExpiry===null?null
+   dte===null?null
+   :resolvedBeforeExpiry===null?null
    :!resolvedBeforeExpiry?"no_resolution_before_expiry"
    :event.outcome==="vpoc_first"?"vpoc_before_expiry"
    :event.outcome==="invalidation_first"?"invalidation_before_expiry"
@@ -211,7 +236,7 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
   const marginRow=margins.find(m=>m.candidate_id===candidateId),
    marginAvailable=marginRow?.margin_status==="available",
    requiredCapitalUsd=marginAvailable?num(marginRow!.maximum_loss_usd)??num(marginRow!.peak_initial_margin):null;
-  const pnlAtVpocUsd=pnlAt(outcomes,candidateId,"vpoc"),pnlAtInvalidationUsd=pnlAt(outcomes,candidateId,"invalidation"),pnlAtSettlementUsd=pnlAt(outcomes,candidateId,"settlement");
+  const pnlAtVpocUsd=pnlAt(outcomes,candidateId,scenario,"vpoc"),pnlAtInvalidationUsd=pnlAt(outcomes,candidateId,scenario,"invalidation"),pnlAtSettlementUsd=pnlAt(outcomes,candidateId,scenario,"settlement");
   const realizedPnl=event.outcome==="vpoc_first"?pnlAtVpocUsd:event.outcome==="invalidation_first"?pnlAtInvalidationUsd:!resolved?pnlAtSettlementUsd:null;
   const capitalDayReturn=requiredCapitalUsd!==null&&requiredCapitalUsd!==0&&realizedPnl!==null&&event.timeToResolutionDays!==null&&event.timeToResolutionDays>0
    ?realizedPnl/(requiredCapitalUsd*event.timeToResolutionDays):null;
@@ -219,17 +244,18 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
   const boundaryMs=event.resolutionTimestampMs??(event.entryTimestampMs!==null&&event.observationDays!==null?event.entryTimestampMs+event.observationDays*DAY:null);
 
   return {
-   eventId,candidateId,horizonNominalDays:num(row.target_horizon_days),structureType:str(row.structure_type),
-   entryQuality:quality(row.entry_quality),executionMode:mode(row.execution_mode),
+   eventId,candidateId,structureExecutionId,horizonNominalDays:num(row.target_horizon_days),structureType:str(row.structure_type),
+   executionScenario:scenario,executionScenarioStatus:scenarioStatus,executionScenarioReason:str(row.execution_scenario_reason),
+   entryQuality:quality(row.entry_quality),
    synchronizationMinutes:num(row.spread_synchronization_minutes),entryTimestampMs:entry,expiryTimestampMs:expiry,actualDteDays:dte,
    underlyingOutcome:event.outcome,underlyingCensored:event.censored,
    timeToResolutionDays:event.timeToResolutionDays,timeToVpocDays:event.timeToVpocDays,timeToInvalidationDays:event.timeToInvalidationDays,
    resolvedBeforeExpiry,outcomeBeforeExpiry,dteBufferDays,
    pnlAtVpocUsd,pnlAtInvalidationUsd,pnlAtSettlementUsd,
-   worstAdverseUsd:worstAdverse(valuations,candidateId,entry,boundaryMs),
-   capture25:captureObservation(outcomes,candidateId,25,entry,event.timeToVpocDays,event.timeToInvalidationDays),
-   capture50:captureObservation(outcomes,candidateId,50,entry,event.timeToVpocDays,event.timeToInvalidationDays),
-   capture70:captureObservation(outcomes,candidateId,70,entry,event.timeToVpocDays,event.timeToInvalidationDays),
+   worstAdverseUsd:worstAdverse(valuations,candidateId,scenario,entry,boundaryMs),
+   capture25:captureObservation(outcomes,candidateId,scenario,25,entry,event.timeToVpocDays,event.timeToInvalidationDays),
+   capture50:captureObservation(outcomes,candidateId,scenario,50,entry,event.timeToVpocDays,event.timeToInvalidationDays),
+   capture70:captureObservation(outcomes,candidateId,scenario,70,entry,event.timeToVpocDays,event.timeToInvalidationDays),
    requiredCapitalUsd,capitalDayReturn,
    ineligibilityReason:null,
   } satisfies DteCandidate;
@@ -240,6 +266,10 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
  * Coverage funnel and quality/sync stats per nominal horizon, at EVENT
  * granularity: one MR event is one observation even when it produced several
  * candidates at the same horizon, so every stage below counts distinct events.
+ *
+ * takerExecutable/makerOpportunity are now read from genuine, independent
+ * per-row execution_scenario_status values -- never a single configured-run
+ * label standing in for both scenarios.
  */
 export function buildHorizonAvailability(dataset:AnalysisDataset,families:readonly HorizonFamily[]):readonly HorizonAvailability[]{
  const availability=dataset.tables.availability??[],candidates=dataset.tables.candidates??[];
@@ -263,8 +293,12 @@ export function buildHorizonAvailability(dataset:AnalysisDataset,families:readon
 
   const selectedCandidates=candidates.filter(c=>num(c.target_horizon_days)===nominalDays);
   const selectedEvents=new Set(selectedCandidates.map(c=>c.event_id));
-  const taker=new Set(selectedCandidates.filter(c=>mode(c.execution_mode)==="taker").map(c=>c.event_id));
-  const maker=new Set(selectedCandidates.filter(c=>mode(c.execution_mode)==="maker").map(c=>c.event_id));
+  const taker=new Set(selectedCandidates.filter(c=>scenarioOf(c.execution_scenario)==="taker"&&scenarioStatusOf(c.execution_scenario_status)==="evaluated").map(c=>c.event_id));
+  const maker=new Set(selectedCandidates.filter(c=>scenarioOf(c.execution_scenario)==="maker"&&scenarioStatusOf(c.execution_scenario_status)==="evaluated").map(c=>c.event_id));
+  // Synchronization gap is scenario-specific evidence (maker and taker draw
+  // on different tape prints, so their leg-timestamp gaps can genuinely
+  // differ) -- every evaluated scenario row contributes its own measurement,
+  // not_evaluated rows contribute none.
   const synchronizationMinutes=selectedCandidates.map(c=>num(c.spread_synchronization_minutes)).filter((x):x is number=>x!==null);
 
   return {
@@ -274,4 +308,22 @@ export function buildHorizonAvailability(dataset:AnalysisDataset,families:readon
    synchronizationMinutes,
   } satisfies HorizonAvailability;
  });
+}
+
+export interface GlobalScenarioCoverage {readonly totalEvents:number;readonly takerExecutableEvents:number;readonly makerOpportunityEvents:number}
+
+/**
+ * All-horizons-combined coverage: distinct events with at least one selected
+ * structure genuinely evaluated (evidence-supported) under each scenario.
+ * Computed once, directly from candidates.jsonl, independent of which
+ * horizon a structure was generated at -- used for headline totals where
+ * summing the per-horizon HorizonAvailability figures would double-count an
+ * event selected at more than one horizon.
+ */
+export function globalScenarioCoverage(dataset:AnalysisDataset):GlobalScenarioCoverage{
+ const candidates=dataset.tables.candidates??[];
+ const totalEvents=new Set(dataset.tables.events?.map(e=>e.event_id)).size;
+ const taker=new Set(candidates.filter(c=>scenarioOf(c.execution_scenario)==="taker"&&scenarioStatusOf(c.execution_scenario_status)==="evaluated").map(c=>c.event_id));
+ const maker=new Set(candidates.filter(c=>scenarioOf(c.execution_scenario)==="maker"&&scenarioStatusOf(c.execution_scenario_status)==="evaluated").map(c=>c.event_id));
+ return {totalEvents,takerExecutableEvents:taker.size,makerOpportunityEvents:maker.size};
 }
