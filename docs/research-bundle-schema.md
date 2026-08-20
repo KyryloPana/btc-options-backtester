@@ -19,9 +19,13 @@ Schema **3.0.0** is a versioned, venue-aware interchange format. Every ZIP conta
 | `evidence_trades.jsonl` | `evidence_id` | Raw trade catalog with usage references that include `execution_scenario`. |
 | `futures_comparisons.jsonl` | `comparison_id` | Explicit futures comparison availability. |
 
-`candidate_id` remains the structural foreign key. `availability_id` is the generation-attempt denominator key, introduced in 2.3.0 so two requested variants that collapse onto the same actual contracts remain inspectable without colliding. Selected structures reconcile when at least one availability row for the same `candidate_id` is marked `is_selected:true`; they are not silently remapped.
+`candidate_id` remains the structural foreign key. `availability_id` is the stable generation-attempt denominator key, introduced in 2.3.0 so two requested variants that collapse onto the same actual contracts remain inspectable without colliding. It is derived from the structural identity plus requested strikes, target horizon, and strike method, not array order; an exact repeated attempt is rejected upstream. Selected structures reconcile when at least one availability row for the same `candidate_id` is marked `is_selected:true`; they are not silently remapped.
 
 Execution scenario status is scenario-local: `evaluated` means priced rows may exist, `unavailable` means an attempted scenario failed evidence/economic checks, and `not_evaluated` means it was intentionally not run. Unavailable and not-evaluated scenarios do not fabricate valuation/outcome rows and are not zero.
+
+Entry evidence is filtered and assembled independently for maker and taker. Immediately after assembly, a credit scenario is `evaluated` only when its scenario-specific short premium is strictly greater than its long premium. Debit and zero-credit evidence become `unavailable` with a reason before selection persistence; current-schema persistence also rejects an evaluated row that contradicts this invariant. A failure in one scenario never borrows evidence from, or changes the status of, the other.
+
+The generation snapshot is the foreign-key authority for saved selections. Regeneration preserves a selection only when its structural `candidate_id` still exists. A genuinely removed structure remains visibly stale, is never remapped or deleted automatically, and blocks both a new “successful” save and canonical export until the user removes/reselects it or restores its producing generation configuration.
 
 Consumers validate the schema version, primary keys, foreign keys, venues, statuses, reason codes, finite numbers, entry economics, and source-run compatibility first. Unknown versions are rejected. Schema changes require a new version and explicit migration. Historical margin and futures data are unavailable rather than fabricated. Export reads only persisted snapshots and never refetches an exchange.
 
