@@ -494,12 +494,12 @@ export function executionClock(input: {
   };
 }
 
-function tapeFill(series: ContractSeries | undefined, action: TradeSide, clock: ExecutionClock, amount: number, slippageBps: number): TapeFill {
-  const base = { action, compatibleDirection: action, requestedAmount: amount, filledAmount: 0, supportingTrades: [], supportingTradeTimestamps: [], totalPrintsLoaded: series?.trades.length ?? 0, printsBeforeOrder: series?.trades.filter(t => t.timestamp <= clock.orderSubmittedAt).length ?? 0, compatiblePrintsAfterOrder: 0, compatibleAmountBeforeSearchEnd: 0 };
+function tapeFill(series: ContractSeries | undefined, action: TradeSide, compatibleDirection: TradeSide, clock: ExecutionClock, amount: number, slippageBps: number, includeAtOrder = false): TapeFill {
+  const base = { action, compatibleDirection, requestedAmount: amount, filledAmount: 0, supportingTrades: [], supportingTradeTimestamps: [], totalPrintsLoaded: series?.trades.length ?? 0, printsBeforeOrder: series?.trades.filter(t => t.timestamp < clock.orderSubmittedAt).length ?? 0, compatiblePrintsAfterOrder: 0, compatibleAmountBeforeSearchEnd: 0 };
   if (!series) return { ...base, status: "missing-contract", reasonCode: "contract-history-unavailable", reason: "Contract history is unavailable; no executable price was constructed." };
   const compatible = series.trades
-    .filter(trade => trade.timestamp > clock.orderSubmittedAt && trade.timestamp <= clock.fillSearchEnd && trade.direction === action)
-    .sort((a, b) => a.timestamp - b.timestamp);
+    .filter(trade => trade.instrumentName === series.instrumentName && (includeAtOrder ? trade.timestamp >= clock.orderSubmittedAt : trade.timestamp > clock.orderSubmittedAt) && trade.timestamp <= clock.fillSearchEnd && trade.direction === compatibleDirection && trade.amount > 0 && trade.price >= 0)
+    .sort((a, b) => a.timestamp - b.timestamp || String(a.tradeId ?? "").localeCompare(String(b.tradeId ?? "")));
   const compatibleAmountBeforeSearchEnd = compatible.reduce((sum, trade) => sum + trade.amount, 0);
   const supportingTrades: ContractTrade[] = [];
   let remaining = amount;
@@ -512,16 +512,38 @@ function tapeFill(series: ContractSeries | undefined, action: TradeSide, clock: 
     remaining -= used;
   }
   const filledAmount = amount - remaining;
-  if (remaining > 1e-12) return { ...base, compatiblePrintsAfterOrder: compatible.length, compatibleAmountBeforeSearchEnd, status: compatible.length ? "insufficient-amount" : "no-fill", reasonCode: compatible.length ? "insufficient-compatible-amount" : "no-compatible-print-after-order", reason: compatible.length ? `Required ${amount} contracts of post-order ${action}-direction tape between ${clock.orderSubmittedAt} and ${clock.fillSearchEnd}; only ${compatibleAmountBeforeSearchEnd} was observed (${base.printsBeforeOrder} prints existed before the order).` : `Required ${amount} contracts of post-order ${action}-direction tape between ${clock.orderSubmittedAt} and ${clock.fillSearchEnd}; none was observed (${base.printsBeforeOrder} prints existed before the order).`, filledAmount, supportingTrades, supportingTradeTimestamps: supportingTrades.map(t => t.timestamp) };
+  if (remaining > 1e-12) return { ...base, compatiblePrintsAfterOrder: compatible.length, compatibleAmountBeforeSearchEnd, status: compatible.length ? "insufficient-amount" : "no-fill", reasonCode: compatible.length ? "insufficient-compatible-amount" : "no-compatible-print-after-order", reason: compatible.length ? `Required ${amount} contracts of post-order ${compatibleDirection}-direction tape between ${clock.orderSubmittedAt} and ${clock.fillSearchEnd}; only ${compatibleAmountBeforeSearchEnd} was observed (${base.printsBeforeOrder} prints existed before the order).` : `Required ${amount} contracts of post-order ${compatibleDirection}-direction tape between ${clock.orderSubmittedAt} and ${clock.fillSearchEnd}; none was observed (${base.printsBeforeOrder} prints existed before the order).`, filledAmount, supportingTrades, supportingTradeTimestamps: supportingTrades.map(t => t.timestamp) };
   const tapeVwapBtc = notional / amount;
   const adverseMultiplier = action === "buy" ? 1 + slippageBps / 10_000 : 1 - slippageBps / 10_000;
   return { ...base, compatiblePrintsAfterOrder: compatible.length, compatibleAmountBeforeSearchEnd, status: "filled", reasonCode: "filled", reason: "Requested amount covered chronologically by compatible post-order prints.", filledAmount, tapeVwapBtc, fillPriceBtc: tapeVwapBtc * adverseMultiplier, fillTimestamp: supportingTrades.at(-1)!.timestamp, supportingTrades, supportingTradeTimestamps: supportingTrades.map(t => t.timestamp) };
 }
 
+export interface HistoricalSpreadExecution extends SpreadExecution {
+  intent: "open" | "close";
+  executionMode: ExecutionMode;
+  decisionTimestamp: number;
+  orderSubmissionTimestamp: number;
+  completionTimestamp?: number;
+  synchronizationGapMs?: number;
+  queuePriorityProven: false;
+}
+
+/** Canonical causal tape primitive used by both execution and research valuation. */
+export function executeHistoricalSpread(input: {spread: Pick<RetrievedSpread,"soldContract"|"boughtContract">; intent:"open"|"close"; executionMode:ExecutionMode; decisionTimestamp:number; orderSubmissionTimestamp:number; fillWindowMs:number; amount:number; maxLegSyncMs:number; slippageBps:number}): HistoricalSpreadExecution {
+  const clock:ExecutionClock={signalTimestamp:input.decisionTimestamp,signalSourceTimestamp:input.decisionTimestamp,signalTimePrecision:"millisecond",decisionAvailableTimestamp:input.decisionTimestamp,configuredLatencyMs:Math.max(0,input.orderSubmissionTimestamp-input.decisionTimestamp),orderSubmittedAt:input.orderSubmissionTimestamp,fillSearchStart:input.orderSubmissionTimestamp,fillSearchEnd:input.orderSubmissionTimestamp+Math.max(0,input.fillWindowMs)};
+  const soldAction:TradeSide=input.intent==="open"?"sell":"buy",boughtAction:TradeSide=input.intent==="open"?"buy":"sell";
+  const sold=tapeFill(input.spread.soldContract,soldAction,tapeDirectionFor(soldAction,input.executionMode),clock,input.amount,input.slippageBps,true);
+  const bought=tapeFill(input.spread.boughtContract,boughtAction,tapeDirectionFor(boughtAction,input.executionMode),clock,input.amount,input.slippageBps,true);
+  const complete=sold.status==="filled"&&bought.status==="filled",gap=complete?Math.abs(sold.fillTimestamp!-bought.fillTimestamp!):undefined,synchronized=complete&&gap!<=input.maxLegSyncMs;
+  const reasonCode=complete?(synchronized?"filled":"leg-synchronization-exceeded"):sold.status==="filled"?"long-leg-rejected":bought.status==="filled"?"short-leg-rejected":"both-legs-rejected";
+  const opportunity=input.executionMode==="maker"&&synchronized;
+  return {scenario:input.executionMode==="maker"?"maker-opportunity-optimistic":"taker-tape-proxy",clock,sold,bought,status:synchronized?(opportunity?"opportunity-only":"filled"):"no-trade",reasonCode,reason:synchronized?(opportunity?"Maker opportunity supported by sufficient opposing-aggressor tape; queue priority cannot be proven.":"Both legs have sufficient synchronized causal tape evidence."):complete?"Leg completion timestamps exceed the synchronization threshold.":"Both exact legs require sufficient independent causal tape evidence.",intent:input.intent,executionMode:input.executionMode,decisionTimestamp:input.decisionTimestamp,orderSubmissionTimestamp:input.orderSubmissionTimestamp,completionTimestamp:synchronized?Math.max(sold.fillTimestamp!,bought.fillTimestamp!):undefined,synchronizationGapMs:gap,queuePriorityProven:false};
+}
+
 /** Conservative baseline proxy, not a claim about an exact historical market-order fill. */
 export function simulateTakerSpread(spread: Pick<RetrievedSpread, "soldContract" | "boughtContract">, clock: ExecutionClock, amount: number, slippageBps = 0, maxLegSyncMs = 60_000): SpreadExecution {
-  const sold = tapeFill(spread.soldContract, "sell", clock, amount, slippageBps);
-  const bought = tapeFill(spread.boughtContract, "buy", clock, amount, slippageBps);
+  const sold = tapeFill(spread.soldContract, "sell", "sell", clock, amount, slippageBps);
+  const bought = tapeFill(spread.boughtContract, "buy", "buy", clock, amount, slippageBps);
   const complete = sold.status === "filled" && bought.status === "filled";
   const synchronized = complete && Math.abs(sold.fillTimestamp! - bought.fillTimestamp!) <= maxLegSyncMs;
   const reasonCode = complete ? (synchronized ? "filled" : "leg-synchronization-exceeded") : sold.status === "filled" ? "long-leg-rejected" : bought.status === "filled" ? "short-leg-rejected" : "both-legs-rejected";
@@ -531,8 +553,8 @@ export function simulateTakerSpread(spread: Pick<RetrievedSpread, "soldContract"
 /** Close-side execution starts only after independently established trigger evidence. */
 export function simulateTakerExit(spread: Pick<RetrievedSpread, "soldContract" | "boughtContract">, clock: ExecutionClock, triggerEvidenceTimestamp: number, amount: number, slippageBps = 0, maxLegSyncMs = 60_000): ExitExecution {
   if (triggerEvidenceTimestamp > clock.decisionAvailableTimestamp) throw new Error("Exit decision cannot precede its trigger evidence.");
-  const sold = tapeFill(spread.soldContract, "buy", clock, amount, slippageBps);
-  const bought = tapeFill(spread.boughtContract, "sell", clock, amount, slippageBps);
+  const sold = tapeFill(spread.soldContract, "buy", "buy", clock, amount, slippageBps);
+  const bought = tapeFill(spread.boughtContract, "sell", "sell", clock, amount, slippageBps);
   const complete = sold.status === "filled" && bought.status === "filled";
   const synchronized = complete && Math.abs(sold.fillTimestamp! - bought.fillTimestamp!) <= maxLegSyncMs;
   const filled = complete && synchronized;

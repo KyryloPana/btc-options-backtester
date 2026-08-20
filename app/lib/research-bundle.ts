@@ -1,9 +1,9 @@
 import { canonicalJson, migrateResearchSelectionStore, type JsonValue } from "./research-selections.ts";
 import { reconcileCandidateSpread } from "./semantic-spread.ts";
 
-export const RESEARCH_BUNDLE_SCHEMA_VERSION="3.0.0" as const;
+export const RESEARCH_BUNDLE_SCHEMA_VERSION="3.1.0" as const;
 /** Bundle schema versions this app can still import (see importResearchBundle). */
-export const LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS=["1.0.0","2.0.0","2.1.0","2.2.0","2.3.0"] as const;
+export const LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS=["1.0.0","2.0.0","2.1.0","2.2.0","2.3.0","3.0.0"] as const;
 export const RESEARCH_BUNDLE_FILES=["run.json","events.jsonl","underlying_path.jsonl","candidates.jsonl","valuations.jsonl","outcomes.jsonl","availability.jsonl","margin_scenarios.jsonl","evidence_trades.jsonl","futures_comparisons.jsonl","futures_path.jsonl"] as const;
 export const REQUIRED_OUTCOMES=["vpoc","invalidation","credit_capture_25","credit_capture_50","credit_capture_70","fixed_3d","fixed_5d","fixed_7d","settlement"] as const;
 export const RESEARCH_REASON_CODES=["entry_priced","entry_unavailable","direct_vwap","model_reconstructed","quality_green","quality_yellow","quality_red","quality_unavailable","valuation_priced","pricing_track_unavailable","outside_executable_window","raw_source_evidence","executable_evidence","missing_target_index","missing_pricing_track","outcome_priced","outcome_not_reached","outcome_after_expiry","outcome_ambiguous_sequence","outcome_reached_but_unpriced","candidate_priced","candidate_unavailable","verified_historical_margin_model_unavailable","verified_futures_series_unavailable"] as const;
