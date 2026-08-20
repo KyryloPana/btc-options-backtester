@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "causal-inverse-surface/1.0.0",
+  "startingCommit": "8a1b18949a486d756597443d7813fd57e465593f",
+  "mode": "shadow",
+  "coverage": {"population": 9, "rawExecution": 0, "exactTrade": 2, "officialMark": 3, "sameExpiryInterpolation": 4, "adjacentExpiryTotalVariance": 5, "boundedExtrapolation": 6, "dvolSmilePrior": 7, "unavailable": 2},
+  "rawExecutionCoverageAfterAllTiers": 0,
+  "overlapValidation": {"chronological": true, "leaveOneOut": true, "n": 2, "biasBtc": -0.005, "maeBtc": 0.015, "medianAbsolutePercentageError": 0.2, "tailAbsoluteErrorP95Btc": 0.01, "netCreditSignErrors": 0, "segments": {"status": "insufficient-sample", "required": ["actualDte", "moneynessOrDelta", "optionType", "width", "volatilityRegime", "sourceTier", "anchorDensity"]}},
+  "executionCalibration": {"sampleSize": 0, "minimumForPromotion": 30, "expectedEstimatorPromoted": false, "label": "assumption sensitivity", "penaltyGridBps": [50, 100, 250, 500], "conservativePenaltyBps": 500}
+}
