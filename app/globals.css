@@ -1077,3 +1077,11 @@ footer { color: var(--muted); font-size: 12px; }
 /* Destructive action: neutral until intent is shown, then critical. */
 .danger-button { color: var(--muted); }
 .danger-button:hover { color: var(--critical); border-bottom-color: var(--critical); }
+
+/* Spread-construction controls: scoped so generic form grids cannot collapse these groups. */
+.config-card .expiry-selection-block { min-width: 0; }
+.config-card .expiry-selection-block .mode-list { grid-template-columns: minmax(0,1fr); align-content: start; }
+.config-card .expiry-selection-block .mode-list label { min-height: 27px; white-space: normal; }
+.config-card .pricing-output-block .check-row { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); }
+.config-card .pricing-output-block .check-chip { min-width: 0; width: 100%; white-space: nowrap; }
+@media(max-width:560px){.config-card .pricing-output-block .check-row{grid-template-columns:minmax(0,1fr)}}

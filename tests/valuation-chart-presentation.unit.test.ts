@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { CHART_GEOMETRY, CHART_SERIES, valuationChartTitle } from "../app/lib/valuation-chart.ts";
+import type {EstimatedPathPoint} from "../app/lib/research-valuation.ts";
+import { CHART_GEOMETRY, CHART_SERIES, researchPathStatistics, valuationChartTitle } from "../app/lib/valuation-chart.ts";
 
 const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
 const page = readFileSync(new URL("../app/options-backtester.tsx", import.meta.url), "utf8");
@@ -112,4 +113,23 @@ test("Research inspector is external, keyboard-clearable, responsive, and openin
  assert.match(css,/\.selected-point-inspector \{ position: static/);
  assert.doesNotMatch(css,/\.selected-point-inspector[^}]*position:\s*absolute/);
  assert.match(css,/@media \(max-width: 560px\) \{ \.inspector-grid \{ grid-template-columns: minmax\(0,1fr\)/);
+});
+
+
+test("point-level conversion, Worst Observed PnL, MAE, and evidence inclusion stay distinct",()=>{
+ const entry=Date.parse("2025-07-10T08:00:00Z"),path:EstimatedPathPoint[]=[
+  {timestamp:entry,status:"priced",estimatedNetPnlBtc:-.001,targetIndex:100000},
+  {timestamp:Date.parse("2025-07-10T12:00:00Z"),status:"priced",estimatedNetPnlBtc:-.002,targetIndex:90000},
+  {timestamp:entry+8*3600000,status:"missing",estimatedNetPnlBtc:99,targetIndex:1},
+  {timestamp:entry+12*3600000,status:"priced",estimatedNetPnlBtc:.001,targetIndex:80000},
+  {timestamp:entry+16*3600000,status:"priced",estimatedNetPnlBtc:-.004,targetIndex:70000},
+ ];
+ const stats=researchPathStatistics(path,entry);assert.equal(stats.worstObservedPnlUsd,-280,"post-profit worst observed remains visible");assert.equal(stats.maeBeforeProfitUsd,-180,"MAE stops at first profitable point");assert.equal(stats.pricedPoints,4,"invalid missing point is excluded by evidence status, not its outcome magnitude");
+ const missing=researchPathStatistics(path.slice(1),entry);assert.equal(missing.status,"unavailable");assert.match(missing.reason??"",/entry observation/);
+});
+
+
+test("spread construction control layout is scoped and responsive",()=>{
+ assert.match(page,/className="config-block expiry-selection-block"/);assert.match(page,/className="config-block pricing-output-block"/);
+ assert.match(css,/\.config-card \.expiry-selection-block \.mode-list/);assert.match(css,/\.config-card \.pricing-output-block \.check-row/);assert.match(css,/@media\(max-width:560px\)\{\.config-card \.pricing-output-block/);
 });
