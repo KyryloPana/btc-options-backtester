@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ResearchSelectionService } from "../scripts/research-selection-service.ts";
 import { canLeaveDirty } from "../app/lib/trade-datasets.ts";
-import { LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS, RESEARCH_SELECTION_SCHEMA_VERSION, canSelectResearchCandidate, canonicalJson, compactEntryEconomics, compactValuationPoint, emptyResearchSelectionStore, migrateResearchSelectionStore, reconcileSelectionIds, researchEventPayloadDiagnostics, stableCandidateId, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure, type Venue } from "../app/lib/research-selections.ts";
+import { LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS, RESEARCH_SELECTION_SCHEMA_VERSION, canSelectResearchCandidate, canonicalJson, compactEntryEconomics, compactValuationPoint, emptyResearchSelectionStore, migrateResearchSelectionStore, reconcileGeneratedSelection, sameSelectionIds, selectionChangeSet, researchEventPayloadDiagnostics, stableCandidateId, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure, type Venue } from "../app/lib/research-selections.ts";
 
 const now="2026-08-16T20:00:00.000Z";
 const identity=(venue:Venue="deribit",eventId="event-a")=>({venue,datasetId:"default-sample-trades",eventId,structure:"credit",optionType:"P",expiryTimestamp:1_800_000_000_000,shortStrike:100_000,longStrike:99_000,strikeMethod:"anchor",targetHorizon:7});
@@ -22,9 +22,9 @@ test("red but priced structures are selectable",()=>assert.equal(canSelectResear
 test("unavailable structures are not selectable",()=>assert.equal(canSelectResearchCandidate("unavailable","green"),false));
 test("two structures can be assigned to one event",()=>assert.equal(event("a",["one","two"]).selectedStructures.length,2));
 test("different events isolate selections",()=>assert.deepEqual(store([event("a",["one"]),event("b",["two"])]).events.map(e=>e.selectedStructures[0].candidateId),["one","two"]));
-test("resaving does not duplicate",()=>assert.deepEqual([...reconcileSelectionIds(new Set(["one"]),new Map([["one",true]]))],["one"]));
-test("deselect and save removes assignment",()=>assert.deepEqual([...reconcileSelectionIds(new Set(["one","two"]),new Map([["one",false]]))],["two"]));
-test("filtered-out saved rows remain selected",()=>assert.deepEqual([...reconcileSelectionIds(new Set(["hidden"]),new Map([["visible",true]]))].sort(),["hidden","visible"]));
+test("selection change set reports add, remove, and retained ids",()=>{const change=selectionChangeSet(["keep","remove"],["keep","add"]);assert.deepEqual([...change.toAdd],["add"]);assert.deepEqual([...change.toRemove],["remove"]);assert.deepEqual([...change.toKeep],["keep"]);});
+test("removing every saved id is dirty immediately",()=>{const draft=new Set<string>();assert.equal(draft.size,0);assert.equal(sameSelectionIds(["one","two"],draft),false);assert.deepEqual([...selectionChangeSet(["one","two"],draft).toRemove],["one","two"]);});
+test("regeneration exposes stale identity without remapping it",()=>{const result=reconcileGeneratedSelection(["stale-id","same-id"],["same-id","new-id"]);assert.deepEqual([...result.visible],["same-id"]);assert.deepEqual([...result.stale],["stale-id"]);assert.equal(result.visible.has("new-id"),false);});
 test("dataset switching isolates stores",()=>assert.notEqual(emptyResearchSelectionStore("one").datasetId,emptyResearchSelectionStore("two").datasetId));
 test("unsaved changes trigger guard",()=>{let called=false;assert.equal(canLeaveDirty(true,()=>{called=true;return false}),false);assert.equal(called,true)});
 test("valuation path and unavailable null survive serialization",()=>assert.deepEqual(JSON.parse(JSON.stringify(selected("a","one"))).executionScenarios.maker.valuationPathSnapshot,[{timestamp:1,value:1},{timestamp:2,value:null}]));
@@ -41,6 +41,30 @@ test("normalization deduplicates evidence and removes nested supporting trades",
 const legacy={eventId:"event-a",sourceRun:{eventId:"event-a"},generationSnapshot:event("event-a",selected.map(x=>x.candidateId)).generationSnapshot,selectedStructures:selected.map(x=>({...event("event-a",[x.candidateId]).selectedStructures[0],executionScenarios:{maker:{status:"evaluated",reason:null,entrySnapshot:{...x.entry,sold:{...x.entry.sold,supportingTrades:trades},bought:{...x.entry.bought,supportingTrades:trades}},valuationPathSnapshot:x.path,outcomeSnapshots:[]},taker:notEvaluated},evidenceTradeSnapshots:[...trades,...trades]}))};const normalized={...legacy,selectedStructures:selected.map(x=>{const localUsages=[];return{...event("event-a",[x.candidateId]).selectedStructures[0],executionScenarios:{maker:{status:"evaluated",reason:null,entrySnapshot:compactEntryEconomics("deribit",x.candidateId,x.entry,localUsages,catalog),valuationPathSnapshot:x.path.map(point=>compactValuationPoint("deribit",x.candidateId,point,localUsages,catalog)),outcomeSnapshots:[]},taker:notEvaluated},evidenceTradeSnapshots:[],evidenceUsages:localUsages}}),evidenceCatalog:[...catalog.values()]};const before=researchEventPayloadDiagnostics(legacy as ResearchSelectionEvent),after=researchEventPayloadDiagnostics(normalized as ResearchSelectionEvent);assert.ok(before.selectedCandidateBytes[0].evidenceBytes>100_000);assert.ok(after.totalBytes<10_000_000);assert.ok(after.totalBytes<before.totalBytes/10);assert.equal(normalized.evidenceCatalog.length,17);assert.doesNotMatch(JSON.stringify(normalized),/supportingTrades/);});
 
 test("event upsert preserves other events and rejects stale writes",async()=>{const dir=await mkdtemp(join(tmpdir(),"research-upsert-")),service=new ResearchSelectionService(dir);await service.save("default-sample-trades",store([event("event-a",["a1"]),event("event-b",["b1"])]));const loaded=await service.read("default-sample-trades");const updated=await service.upsertEvent("default-sample-trades","event-b",event("event-b",["b2"]),loaded.updatedAtUtc);assert.deepEqual(updated.events.map(e=>[e.eventId,e.selectedStructures.map(s=>s.candidateId)]),[["event-a",["a1"]],["event-b",["b2"]]]);await assert.rejects(()=>service.upsertEvent("default-sample-trades","event-b",event("event-b",["b3"]),loaded.updatedAtUtc),/changed on disk/);});
+
+test("clear persists across restart, excludes only that event, and permits reselection",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"research-clear-"));let service=new ResearchSelectionService(dir);
+ const sourceBacktestEvents=[{id:"event-a"},{id:"event-b"}];
+ await service.save("default-sample-trades",store([event("event-a",["a1","a2"]),event("event-b",["b1"])]));
+ const before=await service.read("default-sample-trades");
+ await service.deleteEvent("default-sample-trades","event-a",before.updatedAtUtc);
+ service=new ResearchSelectionService(dir);let loaded=await service.read("default-sample-trades");
+ assert.deepEqual(sourceBacktestEvents.map(item=>item.id),["event-a","event-b"],"the source trade dataset is not owned or deleted by selection clearing");
+ assert.deepEqual(loaded.events.map(item=>item.eventId),["event-b"],"selected-only export projection excludes the cleared event after reload");
+ assert.deepEqual(loaded.events.flatMap(item=>item.selectedStructures.map(structure=>structure.candidateId)),["b1"]);
+ loaded=await service.upsertEvent("default-sample-trades","event-a",event("event-a",["a3"]),loaded.updatedAtUtc);
+ assert.deepEqual(loaded.events.flatMap(item=>item.selectedStructures.map(structure=>[item.eventId,structure.candidateId])),[["event-a","a3"],["event-b","b1"]],"reselection makes the event exportable again");
+});
+
+test("failed partial save preserves canonical snapshots and remains retryable",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"research-retry-")),service=new ResearchSelectionService(dir);
+ await service.save("default-sample-trades",store([event("event-a",["keep","remove"])]));
+ const loaded=await service.read("default-sample-trades"),canonicalKeep=structuredClone(loaded.events[0].selectedStructures[0]);
+ await assert.rejects(()=>service.upsertEvent("default-sample-trades","event-a",event("event-a",["replacement"]),"stale-version"),/changed on disk/);
+ const afterFailure=await service.read("default-sample-trades");assert.deepEqual(afterFailure.events[0].selectedStructures[0],canonicalKeep);assert.deepEqual(afterFailure.events[0].selectedStructures.map(item=>item.candidateId),["keep","remove"]);
+ const retried=await service.upsertEvent("default-sample-trades","event-a",{...afterFailure.events[0],selectedStructures:[canonicalKeep]},afterFailure.updatedAtUtc);
+ assert.deepEqual(retried.events[0].selectedStructures,[canonicalKeep]);
+});
 
 test("schema migration wraps legacy single-scenario data into executionScenarios, never fabricating the other mode",()=>{
  const legacyStructure={selectionId:"s-event-a-c1",eventId:"event-a",candidateId:"c1",venue:"deribit" as const,selectedAtUtc:now,quantity:1,
