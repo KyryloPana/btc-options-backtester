@@ -93,6 +93,13 @@ export function validateResearchSelectionStore(value:unknown):{ok:true;store:Res
     if(!event.generationSnapshot||!Array.isArray(event.generationSnapshot.candidates))errors.push({path:`${p}.generationSnapshot.candidates`,message:"Complete generated candidate universe is required."});
     if(!Array.isArray(event.selectedStructures))errors.push({path:`${p}.selectedStructures`,message:"Selected structures must be an array."});
     const keys=new Set<string>();
+    const generationAttempts=new Set<string>();
+    for(const [j,c] of (Array.isArray(event.generationSnapshot?.candidates)?event.generationSnapshot.candidates:[]).entries()){
+      if(!c||typeof c!=="object")continue;
+      const attempt=JSON.stringify([c.candidateId,c.requestedStrikes,c.targetHorizon,c.strikeMethod]);
+      if(generationAttempts.has(attempt))errors.push({path:`${p}.generationSnapshot.candidates[${j}]`,message:"Duplicate generation attempt; distinct requested variants may share candidateId, but an identical attempt must occur only once."});
+      generationAttempts.add(attempt);
+    }
     for(const [j,s] of (Array.isArray(event.selectedStructures)?event.selectedStructures:[]).entries()){
       const q=`${p}.selectedStructures[${j}]`;
       if(!s||typeof s!=="object"){errors.push({path:q,message:"Selection must be an object."});continue;}
@@ -105,7 +112,7 @@ export function validateResearchSelectionStore(value:unknown):{ok:true;store:Res
       const generated=Array.isArray(event.generationSnapshot?.candidates)?event.generationSnapshot.candidates:[];
       if(typeof s.candidateId==="string"&&!generated.some(c=>c&&typeof c==="object"&&(c as GenerationCandidateSnapshot).candidateId===s.candidateId))errors.push({path:`${q}.candidateId`,message:"Selected candidate is stale/unmatched in the current generation snapshot; remove/reselect or restore the producing snapshot before export."});
       const scenarios=(s as Partial<SelectedStructure>).executionScenarios;
-      for(const mode of ["maker","taker"] as const){const scenario=scenarios?.[mode];if(scenario){if(!["evaluated","unavailable","not_evaluated"].includes(String(scenario.status)))errors.push({path:`${q}.executionScenarios.${mode}.status`,message:"Scenario status must be evaluated, unavailable, or not_evaluated."});if(scenario.status!=="evaluated"&&scenario.reason===null)errors.push({path:`${q}.executionScenarios.${mode}.reason`,message:"Unavailable and not_evaluated scenarios require an explicit reason."});}}
+      for(const mode of ["maker","taker"] as const){const scenario=scenarios?.[mode];if(scenario){if(!["evaluated","unavailable","not_evaluated"].includes(String(scenario.status)))errors.push({path:`${q}.executionScenarios.${mode}.status`,message:"Scenario status must be evaluated, unavailable, or not_evaluated."});if(scenario.status!=="evaluated"&&scenario.reason===null)errors.push({path:`${q}.executionScenarios.${mode}.reason`,message:"Unavailable and not_evaluated scenarios require an explicit reason."});if(scenario.status==="evaluated"){const entry=asObj(scenario.entrySnapshot),sold=finite(asObj(entry.sold).priceBtcPerContract),bought=finite(asObj(entry.bought).priceBtcPerContract);if((sold!==null||bought!==null)&&(sold===null||bought===null))errors.push({path:`${q}.executionScenarios.${mode}.entrySnapshot`,message:"Evaluated scenario requires both finite scenario-specific short and long entry premiums."});else if(sold!==null&&bought!==null&&sold<=bought)errors.push({path:`${q}.executionScenarios.${mode}.entrySnapshot`,message:sold===bought?"Credit spread entry has zero gross credit; evaluated scenarios require short premium > long premium.":"Credit spread entry prices imply a debit, not a credit; persist this scenario as unavailable with an explicit reason."});}}}
     }
   }
   inspectJson(value,"$",errors);

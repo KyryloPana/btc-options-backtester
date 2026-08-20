@@ -75,3 +75,13 @@ test("neither scenario is silently assumed: both come back unavailable when no e
  assert.equal(maker.executionMode,"maker");
  assert.equal(taker.executionMode,"taker");
 });
+
+
+test("debit and zero-credit evidence fail independently before a scenario is priced",()=>{
+ const debit=spread([trade("BTC-8JAN24-39000-P",0,.02,"sell")],[trade("BTC-8JAN24-38000-P",0,.03,"buy")]);
+ const zero=spread([trade("BTC-8JAN24-39000-P",0,.03,"sell")],[trade("BTC-8JAN24-38000-P",0,.03,"buy")]);
+ const debitTaker=estimateResearchSpread({spread:debit,targetTimestamp:T,targetIndex:40000,slippageBps:0,executionMode:"taker"});
+ const zeroTaker=estimateResearchSpread({spread:zero,targetTimestamp:T,targetIndex:40000,slippageBps:0,executionMode:"taker"});
+ assert.equal(debitTaker.status,"unavailable");assert.match(debitTaker.status==="unavailable"?debitTaker.reason:"",/debit/);
+ assert.equal(zeroTaker.status,"unavailable");assert.match(zeroTaker.status==="unavailable"?zeroTaker.reason:"",/zero gross credit/);
+});
