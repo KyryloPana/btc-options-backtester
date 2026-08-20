@@ -27,6 +27,7 @@ export interface DeribitInstrumentManifest {
   authoritative: true;
 }
 export interface DesiredRequest { requestId: string; targetDte: number; minDte: number; maxDte: number; soldStrike: number; boughtStrike: number; optionType: "C" | "P" }
+export interface DeribitDvolPoint { timestamp: number; open: number; high: number; low: number; close: number; source: "deribit-volatility-index" }
 export interface DeribitCandidateManifest extends Omit<DesiredRequest, "soldStrike" | "boughtStrike"> {
   desiredSoldStrike: number; desiredBoughtStrike: number; expiryTimestamp: number; expiryLabel: string; actualDte: number;
   soldInstrumentName?: string; boughtInstrumentName?: string; soldStrike?: number; boughtStrike?: number;
@@ -140,6 +141,14 @@ export class DeribitHistoryService {
     } catch (error) { this.phase = "error"; this.error = error instanceof Error ? error.message : "Manifest synchronization failed"; }
   }
   async waitUntilReady() { if (this.synchronizing) await this.synchronizing; if (this.phase !== "ready") throw new Error(this.error ?? "Deribit manifest is not ready"); }
+
+  /** Official DVOL history. Values are percentages and are normalized here, never attached to an option contract. */
+  async fetchDvolRange(start: number, end: number, resolution = 3600): Promise<DeribitDvolPoint[]> {
+    const result = await this.api("get_volatility_index_data", { currency: "BTC", start_timestamp: start, end_timestamp: end, resolution }) as { data?: number[][] };
+    return (result.data ?? []).flatMap(row => row.length >= 5 && row.slice(0, 5).every(Number.isFinite)
+      ? [{ timestamp: row[0], open: row[1] / 100, high: row[2] / 100, low: row[3] / 100, close: row[4] / 100, source: "deribit-volatility-index" as const }]
+      : []);
+  }
 
   private async boundary(name: string, start: number, end: number, sorting: "asc" | "desc") {
     const result = await this.api("get_last_trades_by_instrument", { instrument_name: name, start_timestamp: start, end_timestamp: end, count: 1, sorting }) as { trades?: ApiTrade[] };
