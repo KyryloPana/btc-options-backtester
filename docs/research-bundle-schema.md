@@ -36,3 +36,13 @@ Consumers validate the schema version, primary keys, foreign keys, venues, statu
 * **2.3.0** adds `availability_id`, `requested_strikes`, and `actual_strikes` to `availability.jsonl`; preserves duplicate structural generation attempts; and distinguishes attempted-but-invalid execution scenarios as `unavailable`.
 * **2.2.0** added parallel maker/taker execution scenarios with `structure_execution_id` as the candidates row key.
 * **2.0.0** exports every persisted event, generated availability denominator, and stored hourly path even when no candidate is selected.
+
+## Selection schema 1.3.0: independent model track
+
+Selection stores now persist `modelTrack` beside (never inside) `executionScenarios.maker` and
+`executionScenarios.taker`. `statusLayers` preserves structural, model, maker, taker, raw-VWAP,
+reason-code, amount, direction, time-window, and synchronization evidence. A selection with
+`selectionProvenance: "model-only-diagnostic"` has a valid theoretical track while both execution
+scenarios remain unavailable; analytics must not count that model track as execution coverage or
+raw PnL. Versions 1.0.0–1.2.0 migrate deterministically with an unevaluated model track and
+`legacy` provenance; execution economics are never fabricated during migration.

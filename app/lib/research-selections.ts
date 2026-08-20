@@ -1,8 +1,8 @@
 import type { BacktestEvent, Candle, QualityFlag, RetrievedSpread } from "./backtester";
 
-export const RESEARCH_SELECTION_SCHEMA_VERSION = "1.2.0" as const;
+export const RESEARCH_SELECTION_SCHEMA_VERSION = "1.3.0" as const;
 /** Every schema version this app can still read and migrate forward from. */
-export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS = ["1.0.0", "1.1.0"] as const;
+export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS = ["1.0.0", "1.1.0", "1.2.0"] as const;
 /** @deprecated kept for external callers; prefer LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS. */
 export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSION = "1.0.0" as const;
 export type Venue = "deribit" | "bybit" | "binance";
@@ -61,6 +61,10 @@ export interface SelectedStructure {
   candidateSnapshot: JsonValue;
   /** Maker opportunity and taker execution, evaluated independently against the same structure. Neither is derived from the other. */
   executionScenarios: { maker: ExecutionScenarioSnapshot; taker: ExecutionScenarioSnapshot };
+  /** Execution-independent theoretical track. Never stored inside maker/taker. */
+  modelTrack?: ExecutionScenarioSnapshot;
+  selectionProvenance?: "model-only-diagnostic"|"raw-priced"|"legacy";
+  statusLayers?: JsonValue;
   marginSnapshot: JsonValue; evidenceTradeSnapshots?: JsonValue[]; evidenceUsages?: EvidenceUsageDto[];
 }
 export interface ResearchSelectionEvent { eventId: string; sourceRun: JsonValue; generationSnapshot: GenerationSnapshot; selectedStructures: SelectedStructure[]; evidenceCatalog?: EvidenceTradeDto[] }
@@ -182,7 +186,7 @@ export function migrateResearchSelectionStore(value:unknown):ResearchSelectionSt
     executionScenarios=legacyMode==="maker"?{maker:evaluated,taker:notEvaluated}:{maker:notEvaluated,taker:evaluated};
   }
   const {entrySnapshot:_es,valuationPathSnapshot:_vp,outcomeSnapshots:_os,...rest}=legacy;void _es;void _vp;void _os;
-  return{...(rest as unknown as SelectedStructure),executionScenarios,marginSnapshot:compactMarginResult(legacy.marginSnapshot),evidenceTradeSnapshots:[],evidenceUsages:usages};
+  return{...(rest as unknown as SelectedStructure),executionScenarios,modelTrack:(legacy.modelTrack as ExecutionScenarioSnapshot|undefined)??{status:"not_evaluated",reason:"Predates execution-independent model tracks.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]},selectionProvenance:(legacy.selectionProvenance as SelectedStructure["selectionProvenance"]|undefined)??"legacy",statusLayers:(legacy.statusLayers as JsonValue|undefined)??null,marginSnapshot:compactMarginResult(legacy.marginSnapshot),evidenceTradeSnapshots:[],evidenceUsages:usages};
  });return{...event,selectedStructures,evidenceCatalog:[...catalog.values()].sort((a,b)=>a.evidenceId.localeCompare(b.evidenceId))};});return{...store,schemaVersion:RESEARCH_SELECTION_SCHEMA_VERSION,events};}
 export function researchEventPayloadDiagnostics(event:ResearchSelectionEvent){const encoder=new TextEncoder(),bytes=(v:unknown)=>encoder.encode(JSON.stringify(v)).byteLength;return{sourceEventBytes:bytes(event.sourceRun),selectedCandidateBytes:event.selectedStructures.map(s=>({candidateId:s.candidateId,totalBytes:bytes(s),candidateSnapshotBytes:bytes(s.candidateSnapshot),makerEntrySnapshotBytes:bytes(s.executionScenarios.maker.entrySnapshot),makerValuationPathBytes:bytes(s.executionScenarios.maker.valuationPathSnapshot),makerOutcomesBytes:bytes(s.executionScenarios.maker.outcomeSnapshots),takerEntrySnapshotBytes:bytes(s.executionScenarios.taker.entrySnapshot),takerValuationPathBytes:bytes(s.executionScenarios.taker.valuationPathSnapshot),takerOutcomesBytes:bytes(s.executionScenarios.taker.outcomeSnapshots),marginBytes:bytes(s.marginSnapshot),evidenceBytes:bytes(s.evidenceTradeSnapshots??[]),evidenceUsageBytes:bytes(s.evidenceUsages??[])})),candidateSnapshotBytes:bytes(event.generationSnapshot.candidates),eventEvidenceCatalogBytes:bytes(event.evidenceCatalog??[]),totalBytes:bytes(event)};}
 

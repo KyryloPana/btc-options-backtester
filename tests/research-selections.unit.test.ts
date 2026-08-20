@@ -108,8 +108,8 @@ test("current-schema stores round-trip through migration unchanged",()=>{
  assert.deepEqual(migrated,current);
 });
 
-test("both 1.0.0 and 1.1.0 are recognized as migratable legacy versions",()=>{
- assert.deepEqual([...LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS],["1.0.0","1.1.0"]);
+test("all prior schema versions are recognized as migratable legacy versions",()=>{
+ assert.deepEqual([...LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS],["1.0.0","1.1.0","1.2.0"]);
  for(const legacyVersion of LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS){
   const result=validateResearchSelectionStore({...store([]),schemaVersion:legacyVersion});
   assert.equal(result.ok,true,`schema ${legacyVersion} must validate as migratable`);

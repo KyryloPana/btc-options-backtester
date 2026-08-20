@@ -2,7 +2,7 @@
 import test from "node:test";import assert from "node:assert/strict";
 import {execFile} from "node:child_process";import {createServer,type RequestListener} from "node:http";import {mkdtemp,readFile,writeFile} from "node:fs/promises";import {tmpdir} from "node:os";import {join} from "node:path";import {promisify} from "node:util";
 import type {ResearchSelectionStore} from "../app/lib/research-selections.ts";
-import {compactEntryEconomics,type EvidenceTradeDto,type EvidenceUsageDto} from "../app/lib/research-selections.ts";
+import {RESEARCH_SELECTION_SCHEMA_VERSION,compactEntryEconomics,type EvidenceTradeDto,type EvidenceUsageDto} from "../app/lib/research-selections.ts";
 import {buildResearchBundle,RESEARCH_BUNDLE_FILES,REQUIRED_OUTCOMES,summarizeResearchBundleErrors,validateResearchBundle} from "../app/lib/research-bundle.ts";
 import {ResearchSelectionService} from "../scripts/research-selection-service.ts";import {createResearchBundleZip,researchBundleApiPlugin} from "../scripts/research-bundle-service.ts";
 const now="2026-08-16T00:00:00.000Z",ts=Date.parse(now),config={applicationBuild:"120adbb",pricingEngineVersion:"v1",qualityRulesVersion:"q1",feeScheduleVersion:"f1",dteWindows:{},expirySelectionMode:"all",executionMode:"taker",pricingAssumption:"research-estimate",pricingTracks:["vwap","iv"],historicalEvidenceWindows:{},synchronizationThresholds:{},qualityThresholds:{},feeAssumptions:{},settlementRules:{},valuationInterval:"4h",modelAssumptions:{},generatedAtUtc:now};
@@ -104,7 +104,7 @@ test("a structure genuinely evaluated under both maker and taker exports two ind
  // Isolate this one already-current-shape structure so the fixture's other
  // (legacy-shaped) structures don't need migrating for this test's purpose.
  dual.events=[{...dual.events[0],selectedStructures:[s]}];
- dual.schemaVersion="1.2.0";
+ dual.schemaVersion=RESEARCH_SELECTION_SCHEMA_VERSION;
  const bundle=buildResearchBundle(dual,now);
  assert.equal(validateResearchBundle(bundle.files).ok,true);
  const rows=bundle.files["candidates.jsonl"].trim().split("\n").map(JSON.parse).filter((x:any)=>x.candidate_id===s.candidateId);
@@ -156,7 +156,7 @@ test("evidence usage provenance is tagged with the execution scenario it support
  delete s.entrySnapshot;delete s.valuationPathSnapshot;delete s.outcomeSnapshots;delete s.evidenceTradeSnapshots;
  s.evidenceUsages=usages;
  dual.events=[{...dual.events[0],selectedStructures:[s],evidenceCatalog:[...catalog.values()]}];
- dual.schemaVersion="1.2.0";
+ dual.schemaVersion=RESEARCH_SELECTION_SCHEMA_VERSION;
  const bundle=buildResearchBundle(dual,now);
  assert.equal(validateResearchBundle(bundle.files).ok,true);
  const evidence=bundle.files["evidence_trades.jsonl"].trim().split("\n").map(JSON.parse);
