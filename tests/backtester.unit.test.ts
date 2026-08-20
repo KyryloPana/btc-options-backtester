@@ -13,7 +13,7 @@ import {
   parseContractText,
   type ValuationPoint,
 } from "../app/lib/backtester.ts";
-import { CHART_GEOMETRY, CHART_SERIES, hitExitGroups, nearestPoint, timestampAtX, timeX, visibleMatrixSpreads } from "../app/lib/valuation-chart.ts";
+import { CHART_GEOMETRY, CHART_SERIES, hitExitGroups, nearestPoint, timestampAtX, timeX, uniqueCanonicalSpreads, visibleMatrixSpreads } from "../app/lib/valuation-chart.ts";
 import { estimateResearchSpread } from "../app/lib/research-valuation.ts";
 
 function close(actual: number | undefined, expected: number) {
@@ -115,8 +115,7 @@ test("all-Red bounded candidates remain Research-eligible and rank by evidence b
   assert.deepEqual([candidates[0].soldContract?.strike,candidates[0].boughtContract?.strike],[127000,130000]);
   assert.deepEqual([candidates[0].soldListingStatus,candidates[0].boughtListingStatus],["listing-plausible","listing-plausible"],"no pre-entry print is not non-listing");
   const estimate=estimateResearchSpread({spread:candidates[0],targetTimestamp:entry,targetIndex:120000,amount:1,slippageBps:0});
-  assert.equal(estimate.status,"priced","the reproduced candidate enables Run full backtest valuation");
-  if(estimate.status==="priced") { assert.equal(estimate.estimateQuality,"red"); assert.equal(estimate.evidenceWindowMinutes,720); assert.equal(estimate.synchronizationGapMinutes,224); assert.ok(estimate.netOpeningCashFlowBtc>0); }
+  assert.equal(estimate.status,"unavailable","future, 224-minute-separated IV evidence cannot create a priced Research point");
   const conservative = buildExpiryCandidates([desired],[close.manifest],entry,120000,close.inventory,"taker","liquidity-aware","conservative-tape-check")[0];
   assert.equal(conservative.entryLiquidity?.viable,false,"strict causal tape may fail without invalidating Research");
 });
@@ -271,6 +270,8 @@ test("matrix display filter hides only actual Red entry liquidity", () => {
   assert.equal(visibleMatrixSpreads(spreads, false), spreads, "off preserves the original collection exactly");
   assert.deepEqual(visibleMatrixSpreads(spreads, true).map(spread => spread.id), ["yellow", "green", "unavailable"]);
   assert.deepEqual(visibleMatrixSpreads([spreads[0]], true), []);
+  assert.deepEqual(visibleMatrixSpreads(spreads,false,true).map(spread=>spread.id),["red","yellow","green"]);
+  assert.deepEqual(visibleMatrixSpreads(spreads,true,true).map(spread=>spread.id),["yellow","green"]);
 });
 
 test("matrix toggle defaults off and disclosure buttons retain accessible relationships", () => {
@@ -279,6 +280,7 @@ test("matrix toggle defaults off and disclosure buttons retain accessible relati
   assert.match(page, /className="matrix-filter"/);
   assert.match(page, /checked=\{hideRed\}/);
   assert.match(page, />Hide red<\/label>/);
+  assert.match(page, />Hide data-unavailable<\/label>/);
   assert.match(page, /className="expand-button" aria-expanded=\{expanded\} aria-controls=/);
   assert.match(page, /aria-label=\{`\$\{expanded \? "Collapse" : "Expand"\} opening ledgers/);
   assert.match(page, /className="expand-chevron" aria-hidden="true"/);
@@ -443,4 +445,12 @@ test("fixed-time valuation retains causal completed-candle index evidence", () =
   const exit = evaluateExits([point, settlement], { spreadKind: "credit", expiryTimestamp: expiry } as Parameters<typeof evaluateExits>[1], { entryTimestamp: entry } as Parameters<typeof evaluateExits>[2], []).find(result => result.rule === "3D fixed")!;
   assert.equal(exit.valuationTimestamp, target + 1);
   assert.ok(point.btcIndexTimestamp! <= exit.valuationTimestamp! && point.btcIndexSourceCandleCloseTime! <= exit.valuationTimestamp!);
+});
+
+
+test("generation attempts collapse only at canonical evaluation/rendering boundary",()=>{
+ // Deliberately minimal identity-only objects exercise this boundary helper.
+ // eslint-disable-next-line @typescript-eslint/no-explicit-any
+ const attempts=[{id:"same",targetWidth:1000},{id:"same",targetWidth:2000},{id:"other",targetWidth:3000}] as any;
+ const canonical=uniqueCanonicalSpreads(attempts);assert.deepEqual(canonical.map(x=>x.id),["same","other"]);assert.equal(attempts.length,3,"availability input retains every requested attempt");assert.equal(canonical[0],attempts[0],"collapse is deterministic and does not synthesize economics");
 });

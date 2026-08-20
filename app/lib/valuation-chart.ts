@@ -87,8 +87,26 @@ export function timestampAtX(x: number, start: number, end: number, left: number
   return start + Math.max(0, Math.min(1, (x - left) / (right - left))) * (end - start);
 }
 
-export function visibleMatrixSpreads(spreads: RetrievedSpread[], hideRed: boolean) {
-  return hideRed ? spreads.filter(spread => spread.entryLiquidityQuality !== "red") : spreads;
+export function visibleMatrixSpreads(spreads: RetrievedSpread[], hideRed: boolean, hideDataUnavailable=false) {
+  return !hideRed&&!hideDataUnavailable?spreads:spreads.filter(spread=>(!hideRed||spread.entryLiquidityQuality!=="red")&&(!hideDataUnavailable||spread.dataStatus!=="data-unavailable"));
+}
+
+/** Collapse generation attempts only for economic evaluation/rendering; the caller retains the original array for availability provenance. */
+export function uniqueCanonicalSpreads(spreads:RetrievedSpread[]):RetrievedSpread[]{
+ const byId=new Map<string,RetrievedSpread>();
+ for(const spread of spreads)if(!byId.has(spread.id))byId.set(spread.id,spread);
+ return [...byId.values()];
+}
+
+export interface ResearchPathStatistics {status:"available"|"unavailable";reason:string|null;pricedPoints:number;worstObservedPnlUsd:number|null;maeBeforeProfitUsd:number|null}
+/** Evidence inclusion is mechanical: valid, point-index-convertible marks from an entry-inclusive path; no outcome-based trimming. */
+export function researchPathStatistics(path:EstimatedPathPoint[],entryTimestamp:number):ResearchPathStatistics{
+ const entry=path.find(p=>p.timestamp===entryTimestamp);
+ if(!entry||entry.status!=="priced")return{status:"unavailable",reason:"The valuation path has no priced entry observation; adverse statistics cannot be entry-inclusive.",pricedPoints:0,worstObservedPnlUsd:null,maeBeforeProfitUsd:null};
+ const marks=path.filter(p=>p.timestamp>=entryTimestamp&&p.status==="priced").map(p=>({t:p.timestamp,pnl:researchPnlUsd(p)!})).filter(p=>Number.isFinite(p.pnl)).sort((a,b)=>a.t-b.t);
+ if(!marks.length)return{status:"unavailable",reason:"No valid point-level index-convertible marks exist at or after entry.",pricedPoints:0,worstObservedPnlUsd:null,maeBeforeProfitUsd:null};
+ const firstProfit=marks.find(m=>m.pnl>0),mae=firstProfit?Math.min(...marks.filter(m=>m.t<=firstProfit.t).map(m=>m.pnl)):null;
+ return{status:"available",reason:null,pricedPoints:marks.length,worstObservedPnlUsd:Math.min(...marks.map(m=>m.pnl)),maeBeforeProfitUsd:mae};
 }
 
 export function nearestPoint<T extends { timestamp: number }>(points: T[], timestamp: number) {
