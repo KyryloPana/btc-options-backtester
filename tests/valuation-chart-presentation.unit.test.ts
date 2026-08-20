@@ -131,5 +131,10 @@ test("point-level conversion, Worst Observed PnL, MAE, and evidence inclusion st
 
 test("spread construction control layout is scoped and responsive",()=>{
  assert.match(page,/className="config-block expiry-selection-block"/);assert.match(page,/className="config-block pricing-output-block"/);
- assert.match(css,/\.config-card \.expiry-selection-block \.mode-list/);assert.match(css,/\.config-card \.pricing-output-block \.check-row/);assert.match(css,/@media\(max-width:560px\)\{\.config-card \.pricing-output-block/);
+ assert.equal((page.match(/name="expiry-mode"/g)??[]).length,3,"all expiry labels retain a native clickable radio");
+ assert.match(css,/\.expiry-selection-block \.mode-list > label \{\s*display: grid; grid-template-columns: 12px minmax\(0,1fr\) auto/);
+ assert.match(css,/\.mode-list > label > input\[type="radio"\][\s\S]*?inline-size: 12px; block-size: 12px/);
+ assert.match(css,/\.pricing-output-block \.check-chip \{[\s\S]*?grid-template-columns: 12px minmax\(0,1fr\) 18px/);
+ assert.match(css,/\.pricing-output-block \.check-chip > input\[type="checkbox"\][\s\S]*?position: static/);
+ assert.match(css,/@media\(max-width:760px\)\{\.config-card \.pricing-output-block/);assert.match(css,/@media\(max-width:420px\)/);
 });

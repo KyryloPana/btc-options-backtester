@@ -282,7 +282,7 @@ test("PATH: worst adverse widens with width and never uses a modelled mark",()=>
  assert.equal(pick("e1-w1000").worstAdverseUsd,-180);
  assert.equal(pick("e1-w3000").worstAdverseUsd,-300);
  assert.equal(pick("e2-w1000").worstAdverseUsd,null,"no raw track for e2");
- assert.equal(pick("e2-w1000").adverse.status,"no_raw_marks");
+ assert.equal(pick("e2-w1000").adverse.status,"raw_evaluation_not_attempted");
 });
 
 test("PATH: slow-resolution cohorts reuse the canonical Duration & DTE boundaries",()=>{

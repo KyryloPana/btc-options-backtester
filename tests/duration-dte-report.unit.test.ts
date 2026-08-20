@@ -8,6 +8,7 @@ import {share} from "../app/lib/duration-dte/statistics.ts";
 import {normalizeExecutionScenarioStatus} from "../app/lib/execution-scenario.ts";
 import {normalizeShortStrikeStructures} from "../app/lib/short-strike/normalize.ts";
 import {normalizeWidthStructures} from "../app/lib/spread-width/normalize.ts";
+import {DEFAULT_ANALYSIS_CONFIGURATION} from "../app/lib/analysis-configuration.ts";
 
 const D=(day:number,hour=0)=>new Date(Date.UTC(2026,0,day,hour)).toISOString();
 const ENTRY=D(1);
@@ -513,7 +514,7 @@ test("ADVERSE PATH: a missing worst-adverse always carries an inspectable, non-z
  assert.ok(d.withValue>0&&d.withValue<d.totalRows,"this fixture has both kinds");
  // c2a's taker row has raw marks; c4a has none at all.
  assert.equal(byId("c4a").worstAdverseUsd,null);
- assert.equal(byId("c4a").adversePath.status,"no_raw_marks");
+ assert.equal(byId("c4a").adversePath.status,"raw_evaluation_not_attempted");
  assert.match(byId("c4a").adversePath.reason!,/raw-VWAP/);
  assert.equal(row("c1a","maker").adversePath.status,"scenario_not_evaluated");
  assert.ok(d.dominantReason!==null);
@@ -601,4 +602,18 @@ test("legacy-undifferentiated rows cannot form maker/taker execution-drag pairs"
  assert.equal(row.matchedN,0);
  assert.equal(row.makerOnlyN,0);
  assert.equal(row.takerOnlyN,0);
+});
+
+test("operational holding and capital-day metrics require the locked complete policy and track",()=>{
+ const nullPolicy=buildDurationDteReport(dataset,"taker",DEFAULT_ANALYSIS_CONFIGURATION).operationalHolding;
+ assert.equal(nullPolicy.available,false);assert.equal(nullPolicy.policy,null);assert.match(nullPolicy.reason!,/Requires complete exit policy/);
+ const configured=buildDurationDteReport(dataset,"taker",{...DEFAULT_ANALYSIS_CONFIGURATION,exitPolicy:"thesis",pricingTrack:"raw_vwap"}).operationalHolding;
+ assert.equal(configured.policy,"Thesis exit");assert.equal(configured.pricingTrack,"raw_vwap");assert.equal(configured.capitalBasis,"maximum_economic_loss");
+});
+
+test("matched tables disclose exact economic pair denominators separately from structural matches",()=>{
+ const r=buildDurationDteReport(dataset,"taker");
+ const execution=r.matchedExecution.find(x=>x.matchedN>0)!;
+ assert.ok(execution);assert.ok(execution.comparableN.pnl<=execution.matchedN);assert.ok(execution.comparableN.synchronization<=execution.matchedN);
+ const dte=r.matchedDte[0];if(dte){assert.ok(dte.comparableN.pnl<=dte.matchedVariants);assert.ok(dte.shorterOnlyN>=0&&dte.longerOnlyN>=0)}
 });

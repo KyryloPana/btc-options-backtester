@@ -20,7 +20,8 @@ export type PathEvidenceStatus=
  |"scenario_not_evaluated"
  /** Entry or the resolution/censoring boundary is unknown, so no window can be bounded. */
  |"no_observation_window"
- /** The window is well-defined but the canonical raw-VWAP track has no priced mark inside it. */
+ |"raw_evaluation_not_attempted"|"no_compatible_tape"|"insufficient_amount"|"missing_leg"|"synchronization_failure"
+ /** The window is well-defined but raw evidence is unavailable for another explicit reason. */
  |"no_raw_marks";
 
 export interface AdversePathObservation {
@@ -62,10 +63,11 @@ export function adversePath(
   reason:"Structure entry or the first-resolution/censoring boundary is unknown, so no post-entry observation window can be bounded."};
 
  const marks:{t:number;pnl:number}[]=[];
- let rawRowsForScenario=0;
+ let rawRowsForScenario=0;const rawReasons:string[]=[];
  for(const row of valuations){
   if(row.candidate_id!==candidateId||row.execution_scenario!==scenario||row.pricing_track!=="raw_vwap")continue;
   rawRowsForScenario++;
+  rawReasons.push(String(row.unavailable_reason??""),...(Array.isArray(row.unavailable_reason_codes)?row.unavailable_reason_codes.map(String):[]),...(Array.isArray(row.missing_field_codes)?row.missing_field_codes.map(String):[]));
   if(row.valuation_status!=="priced")continue;
   const t=ms(row.timestamp_utc);
   if(t===null||t<entryMs||t>boundaryMs)continue;
@@ -73,10 +75,16 @@ export function adversePath(
   if(pnl===null)continue;
   marks.push({t,pnl});
  }
- if(!marks.length)return {...empty,status:"no_raw_marks",
+ if(!marks.length){const reasons=rawReasons.join(" ").toLowerCase();const status:PathEvidenceStatus=rawRowsForScenario===0?"raw_evaluation_not_attempted"
+  :reasons.includes("amount")||reasons.includes("size")?"insufficient_amount"
+  :reasons.includes("missing_leg")||reasons.includes("contract")?"missing_leg"
+  :reasons.includes("sync")?"synchronization_failure"
+  :reasons.includes("tape")||reasons.includes("print")?"no_compatible_tape":"no_raw_marks";
+ return {...empty,status,
   reason:rawRowsForScenario===0
-   ?"The canonical bundle exports no raw-VWAP valuation row for this structure and scenario."
+   ?"Raw evaluation was not attempted: the canonical bundle exports no raw-VWAP valuation row for this structure and scenario."
    :`The canonical bundle exports ${rawRowsForScenario} raw-VWAP valuation row(s) for this scenario, but none is priced inside the post-entry observation window. The raw track carries a mark only where a direct-VWAP estimate was recorded for that point; modelled (iv_normalized) marks are deliberately not substituted.`};
+ }
 
  marks.sort((a,b)=>a.t-b.t);
  const worstAdverseUsd=Math.min(...marks.map(m=>m.pnl));

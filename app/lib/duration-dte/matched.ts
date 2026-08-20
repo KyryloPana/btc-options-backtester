@@ -38,6 +38,8 @@ export interface MatchedDteComparisonRow {
  readonly medianHoldingDeltaDays:number|null;
  readonly medianCapture50DeltaDays:number|null;
  readonly medianDteDeltaDays:number|null;
+ readonly comparableN:{readonly pnl:number;readonly worstAdverse:number;readonly holding:number;readonly capture50:number};
+ readonly shorterOnlyN:number;readonly longerOnlyN:number;
 }
 
 /**
@@ -65,16 +67,13 @@ export function buildMatchedDteComparison(candidates:readonly DteCandidate[],hor
   if(!a||!b)continue;
   const matched=[...a.keys()].filter(k=>b.has(k)).map(k=>[b.get(k)!,a.get(k)!] as const);
   if(!matched.length)continue;
+  const pnl=delta(matched.map(([l,s])=>[realizedPnlOf(l),realizedPnlOf(s)] as const)),worst=delta(matched.map(([l,s])=>[l.worstAdverseUsd,s.worstAdverseUsd] as const)),holding=delta(matched.map(([l,s])=>[l.holdingDays,s.holdingDays] as const)),capture=delta(matched.map(([l,s])=>[l.capture50?.reached?l.capture50.timeToCaptureDays:null,s.capture50?.reached?s.capture50.timeToCaptureDays:null] as const));
   rows.push({
    shorter,longer,matchedVariants:matched.length,
-   medianPnlDeltaUsd:median(delta(matched.map(([l,s])=>[realizedPnlOf(l),realizedPnlOf(s)] as const))),
-   medianWorstAdverseDeltaUsd:median(delta(matched.map(([l,s])=>[l.worstAdverseUsd,s.worstAdverseUsd] as const))),
-   medianHoldingDeltaDays:median(delta(matched.map(([l,s])=>[l.holdingDays,s.holdingDays] as const))),
-   medianCapture50DeltaDays:median(delta(matched.map(([l,s])=>[
-    l.capture50?.reached?l.capture50.timeToCaptureDays:null,
-    s.capture50?.reached?s.capture50.timeToCaptureDays:null,
-   ] as const))),
+   medianPnlDeltaUsd:median(pnl),medianWorstAdverseDeltaUsd:median(worst),medianHoldingDeltaDays:median(holding),medianCapture50DeltaDays:median(capture),
    medianDteDeltaDays:median(delta(matched.map(([l,s])=>[l.actualDteDays,s.actualDteDays] as const))),
+   comparableN:{pnl:pnl.length,worstAdverse:worst.length,holding:holding.length,capture50:capture.length},
+   shorterOnlyN:[...a.keys()].filter(k=>!b.has(k)).length,longerOnlyN:[...b.keys()].filter(k=>!a.has(k)).length,
   });
  }
  return rows;
@@ -92,6 +91,7 @@ export interface MatchedExecutionRow {
  readonly medianCapture50DragDays:number|null;
  readonly medianCapitalDayReturnDrag:number|null;
  readonly medianSynchronizationDragMinutes:number|null;
+ readonly comparableN:{readonly pnl:number;readonly worstAdverse:number;readonly capture50:number;readonly capitalDayReturn:number;readonly synchronization:number};
 }
 
 /**
@@ -110,18 +110,13 @@ export function buildMatchedExecution(allScenarios:readonly DteCandidate[],horiz
   const maker=pick("maker"),taker=pick("taker");
   const matchedIds=[...maker.keys()].filter(id=>taker.has(id));
   const pairs=matchedIds.map(id=>[maker.get(id)!,taker.get(id)!] as const);
+  const pnl=delta(pairs.map(([m,t])=>[realizedPnlOf(m),realizedPnlOf(t)] as const)),worst=delta(pairs.map(([m,t])=>[m.worstAdverseUsd,t.worstAdverseUsd] as const)),capture=delta(pairs.map(([m,t])=>[m.capture50?.reached?m.capture50.timeToCaptureDays:null,t.capture50?.reached?t.capture50.timeToCaptureDays:null] as const)),capital=delta(pairs.map(([m,t])=>[m.capitalDayReturn,t.capitalDayReturn] as const)),sync=delta(pairs.map(([m,t])=>[m.synchronizationMinutes,t.synchronizationMinutes] as const));
   return {
    horizon,matchedN:pairs.length,
    makerOnlyN:[...maker.keys()].filter(id=>!taker.has(id)).length,
    takerOnlyN:[...taker.keys()].filter(id=>!maker.has(id)).length,
-   medianPnlDragUsd:median(delta(pairs.map(([m,t])=>[realizedPnlOf(m),realizedPnlOf(t)] as const))),
-   medianWorstAdverseDragUsd:median(delta(pairs.map(([m,t])=>[m.worstAdverseUsd,t.worstAdverseUsd] as const))),
-   medianCapture50DragDays:median(delta(pairs.map(([m,t])=>[
-    m.capture50?.reached?m.capture50.timeToCaptureDays:null,
-    t.capture50?.reached?t.capture50.timeToCaptureDays:null,
-   ] as const))),
-   medianCapitalDayReturnDrag:median(delta(pairs.map(([m,t])=>[m.capitalDayReturn,t.capitalDayReturn] as const))),
-   medianSynchronizationDragMinutes:median(delta(pairs.map(([m,t])=>[m.synchronizationMinutes,t.synchronizationMinutes] as const))),
+   medianPnlDragUsd:median(pnl),medianWorstAdverseDragUsd:median(worst),medianCapture50DragDays:median(capture),medianCapitalDayReturnDrag:median(capital),medianSynchronizationDragMinutes:median(sync),
+   comparableN:{pnl:pnl.length,worstAdverse:worst.length,capture50:capture.length,capitalDayReturn:capital.length,synchronization:sync.length},
   };
  });
 }

@@ -337,7 +337,7 @@ test("ECONOMICS: modelled marks never fill an adverse figure",()=>{
  // e2-anchor's only valuation is on the iv_normalized track.
  const s=pick("e2-anchor");
  assert.equal(s.worstAdverseUsd,null);
- assert.equal(s.adverse.status,"no_raw_marks");
+ assert.equal(s.adverse.status,"raw_evaluation_not_attempted");
  assert.match(s.adverse.reason!,/raw-VWAP/);
 });
 
