@@ -2,7 +2,7 @@
 import test from "node:test";import assert from "node:assert/strict";
 import {execFile} from "node:child_process";import {createServer,type RequestListener} from "node:http";import {mkdtemp,readFile,writeFile} from "node:fs/promises";import {tmpdir} from "node:os";import {join} from "node:path";import {promisify} from "node:util";
 import type {ResearchSelectionStore} from "../app/lib/research-selections.ts";
-import {RESEARCH_SELECTION_SCHEMA_VERSION,compactEntryEconomics,type EvidenceTradeDto,type EvidenceUsageDto} from "../app/lib/research-selections.ts";
+import {RESEARCH_SELECTION_SCHEMA_VERSION,compactEntryEconomics,migrateResearchSelectionStore,type EvidenceTradeDto,type EvidenceUsageDto} from "../app/lib/research-selections.ts";
 import {buildResearchBundle,RESEARCH_BUNDLE_FILES,REQUIRED_OUTCOMES,summarizeResearchBundleErrors,validateResearchBundle} from "../app/lib/research-bundle.ts";
 import {ResearchSelectionService} from "../scripts/research-selection-service.ts";import {createResearchBundleZip,researchBundleApiPlugin} from "../scripts/research-bundle-service.ts";
 const now="2026-08-16T00:00:00.000Z",ts=Date.parse(now),config={applicationBuild:"120adbb",pricingEngineVersion:"v1",qualityRulesVersion:"q1",feeScheduleVersion:"f1",dteWindows:{},expirySelectionMode:"all",executionMode:"taker",pricingAssumption:"research-estimate",pricingTracks:["vwap","iv"],historicalEvidenceWindows:{},synchronizationThresholds:{},qualityThresholds:{},feeAssumptions:{},settlementRules:{},valuationInterval:"4h",modelAssumptions:{},generatedAtUtc:now};
@@ -198,4 +198,25 @@ test("debit evaluated evidence is rejected before persistence/export",()=>{
 test("stale selected candidates are rejected at store validation before bundle export",()=>{
  const fixture=structuredClone(store) as any;fixture.schemaVersion="1.2.0";fixture.events[0].selectedStructures[0]={...fixture.events[0].selectedStructures[0],candidateId:"deribit~missing"};
  assert.throws(()=>buildResearchBundle(fixture,now),/stale\/unmatched/);
+});
+
+test("reference-only candidates are admissible without fabricating maker/taker execution",()=>{
+ const fixture=migrateResearchSelectionStore(structuredClone(store)) as any;
+ const event=fixture.events[0],s=event.selectedStructures[0],entry=structuredClone(s.executionScenarios.taker.entrySnapshot);
+ s.contractResolution={status:"exact_resolved",reason:null,short:{instrumentName:"BTC-S",creationTimestamp:ts-1,expirationTimestamp:ts+7*864e5,strike:100,optionType:"P",contractSize:1,source:"fixture",retrievedAtUtc:now,authoritative:true},long:{instrumentName:"BTC-L",creationTimestamp:ts-1,expirationTimestamp:ts+7*864e5,strike:90,optionType:"P",contractSize:1,source:"fixture",retrievedAtUtc:now,authoritative:true}};
+ s.referenceValuation={status:"valued",reason:null,source:"local_iv_interpolation",entrySnapshot:entry,valuationPathSnapshot:[],outcomeSnapshots:[],provenance:{executionIndependent:true,method:"causal fixture"}};
+ s.executionScenarios={maker:{status:"unavailable",reason:"No maker tape.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]},taker:{status:"not_evaluated",reason:"Taker was intentionally skipped.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]}};
+ s.selectionProvenance="model-only-diagnostic";fixture.events=[{...event,selectedStructures:[s]},{...fixture.events[1],selectedStructures:[]}];
+ const bundle=buildResearchBundle(fixture,now),candidateRows=bundle.files["candidates.jsonl"].trim().split("\n").map(JSON.parse);
+ assert.deepEqual(candidateRows.map((r:any)=>r.execution_scenario_status),["unavailable","not_evaluated"]);
+ assert.ok(candidateRows.every((r:any)=>r.structure_entry_timestamp_utc===null&&r.gross_credit_debit_native===null));
+ assert.equal(bundle.files["valuations.jsonl"],"");assert.equal(bundle.files["outcomes.jsonl"],"");
+ assert.equal(validateResearchBundle(bundle.files).ok,true);
+ const unsupported=candidateRows.map((r:any)=>JSON.stringify({...r,reference_valuation:{status:"unavailable",reason:"No valuation.",source:"unavailable",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[],provenance:{executionIndependent:true}}})).join("\n")+"\n";
+ assert.match(validateResearchBundle({...bundle.files,"candidates.jsonl":unsupported}).errors.join(" "),/no valid analytical track/);
+ for(const mutation of [
+  (r:any)=>{r.reference_valuation.provenance={};},
+  (r:any)=>{r.reference_valuation.entrySnapshot.targetTimestamp=ts+8*864e5;},
+  (r:any)=>{r.reference_valuation.entrySnapshot.sold.priceBtcPerContract=.005;r.reference_valuation.entrySnapshot.bought.priceBtcPerContract=.01;},
+ ]){const rows=structuredClone(candidateRows);rows.forEach(mutation);const checked=validateResearchBundle({...bundle.files,"candidates.jsonl":rows.map(JSON.stringify).join("\n")+"\n"});assert.equal(checked.ok,false,"status alone must not validate malformed reference economics");}
 });

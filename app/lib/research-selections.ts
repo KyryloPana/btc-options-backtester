@@ -131,6 +131,14 @@ export function validateResearchSelectionStore(value:unknown):{ok:true;store:Res
       if(typeof s.candidateId==="string"&&!generated.some(c=>c&&typeof c==="object"&&(c as GenerationCandidateSnapshot).candidateId===s.candidateId))errors.push({path:`${q}.candidateId`,message:"Selected candidate is stale/unmatched in the current generation snapshot; remove/reselect or restore the producing snapshot before export."});
       const scenarios=(s as Partial<SelectedStructure>).executionScenarios;
       for(const mode of ["maker","taker"] as const){const scenario=scenarios?.[mode];if(scenario){if(!["evaluated","unavailable","not_evaluated"].includes(String(scenario.status)))errors.push({path:`${q}.executionScenarios.${mode}.status`,message:"Scenario status must be evaluated, unavailable, or not_evaluated."});if(scenario.status!=="evaluated"&&scenario.reason===null)errors.push({path:`${q}.executionScenarios.${mode}.reason`,message:"Unavailable and not_evaluated scenarios require an explicit reason."});if(scenario.status==="evaluated"){const entry=asObj(scenario.entrySnapshot),sold=finite(asObj(entry.sold).priceBtcPerContract),bought=finite(asObj(entry.bought).priceBtcPerContract);if((sold!==null||bought!==null)&&(sold===null||bought===null))errors.push({path:`${q}.executionScenarios.${mode}.entrySnapshot`,message:"Evaluated scenario requires both finite scenario-specific short and long entry premiums."});else if(sold!==null&&bought!==null&&sold<=bought)errors.push({path:`${q}.executionScenarios.${mode}.entrySnapshot`,message:sold===bought?"Credit spread entry has zero gross credit; evaluated scenarios require short premium > long premium.":"Credit spread entry prices imply a debit, not a credit; persist this scenario as unavailable with an explicit reason."});}}}
+      // Legacy stores are audited after deterministic migration because their
+      // one flat execution track predates executionScenarios. Current stores
+      // must already satisfy the canonical retention rule at persistence time.
+      if(store.schemaVersion===RESEARCH_SELECTION_SCHEMA_VERSION){
+        const eventSource=asObj(asObj(event.sourceRun).event??event.sourceRun);
+        const audit=assessCandidateAnalyticalTracks({referenceValuation:s.referenceValuation,executionScenarios:scenarios,contractResolution:s.contractResolution,candidateSnapshot:s.candidateSnapshot,quantity:s.quantity,eventEntryTimestamp:eventSource.entryTimestamp});
+        if(!audit.admissible)errors.push({path:q,message:`Selected candidate has no valid analytical track.${audit.referenceErrors.length?` Reference valuation: ${audit.referenceErrors.join("; ")}.`:""}`});
+      }
     }
   }
   inspectJson(value,"$",errors);
@@ -166,6 +174,43 @@ export function canonicalJson(value:unknown):JsonValue { if(value===undefined||t
 const asObj=(value:unknown):Record<string,unknown>=>value&&typeof value==="object"&&!Array.isArray(value)?value as Record<string,unknown>:{};
 const finite=(v:unknown)=>typeof v==="number"&&Number.isFinite(v)?v:null;
 const text=(v:unknown)=>typeof v==="string"&&v?v:null;
+const close=(a:number,b:number)=>Math.abs(a-b)<=1e-12*Math.max(1,Math.abs(a),Math.abs(b));
+
+/**
+ * The single canonical definition of whether a selected structure has a real
+ * analytical track. Delayed/modeled placeholders do not qualify: the current
+ * bundle schema exports those states as metadata, not standalone analytical
+ * rows. A reference track qualifies only after its contents (not merely its
+ * status label) have passed the same structural, temporal and economic audit.
+ */
+export function assessCandidateAnalyticalTracks(input:{
+  referenceValuation?:unknown; executionScenarios?:unknown; contractResolution?:unknown;
+  candidateSnapshot?:unknown; quantity?:unknown; eventEntryTimestamp?:unknown;
+}){
+  const scenarios=asObj(input.executionScenarios);
+  const evaluatedExecution=["maker","taker"].some(mode=>asObj(scenarios[mode]).status==="evaluated");
+  const reference=asObj(input.referenceValuation),referenceErrors:string[]=[];
+  if(reference.status==="valued"){
+    const resolution=asObj(input.contractResolution),entry=asObj(reference.entrySnapshot),candidate=asObj(input.candidateSnapshot);
+    const sold=finite(asObj(entry.sold).priceBtcPerContract),bought=finite(asObj(entry.bought).priceBtcPerContract);
+    const timestamp=finite(entry.valuationTimestamp)??finite(entry.targetTimestamp),expiry=finite(candidate.expiryTimestamp);
+    const eventEntry=finite(input.eventEntryTimestamp),quantity=finite(input.quantity);
+    const gross=finite(entry.grossSpreadBtc),fees=finite(entry.openingFeesBtc),net=finite(entry.netOpeningCashFlowBtc);
+    if(!["exact_resolved","nearest_listed_resolved"].includes(String(resolution.status))||!text(asObj(resolution.short).instrumentName)||!text(asObj(resolution.long).instrumentName))referenceErrors.push("exact structural contracts are not resolved");
+    if(reference.source==="unavailable"||!text(reference.source))referenceErrors.push("reference source is unavailable");
+    if(!reference.provenance||typeof reference.provenance!=="object"||Array.isArray(reference.provenance)||asObj(reference.provenance).executionIndependent!==true)referenceErrors.push("execution-independent reference provenance is missing");
+    if(entry.status!=="priced"||sold===null||bought===null||sold<=bought||quantity===null||quantity<=0)referenceErrors.push("priced reference entry economics are incomplete or invalid");
+    if(timestamp===null||!plausibleTimestamp(timestamp)||expiry===null||timestamp>expiry||(eventEntry!==null&&timestamp<eventEntry))referenceErrors.push("reference entry timestamp is outside the candidate lifetime");
+    if(gross!==null&&sold!==null&&bought!==null&&quantity!==null&&!close(gross,(sold-bought)*quantity))referenceErrors.push("reference opening gross does not reconcile");
+    if(gross!==null&&fees!==null&&net!==null&&!close(net,gross-fees))referenceErrors.push("reference opening total does not reconcile");
+    for(const point of Array.isArray(reference.valuationPathSnapshot)?reference.valuationPathSnapshot:[]){const t=finite(asObj(point).timestamp);if(t===null||timestamp===null||expiry===null||t<timestamp||t>expiry){referenceErrors.push("reference valuation timestamp is outside entry-to-expiry bounds");break}}
+    const futureTimestamp=(value:unknown):boolean=>{if(Array.isArray(value))return value.some(futureTimestamp);if(value&&typeof value==="object")return Object.entries(value as Record<string,unknown>).some(([key,child])=>/(anchorTimestamp|evidenceTimestamp|supportingTimestamps)$/.test(key)&&(Array.isArray(child)?child.some(x=>finite(x)!==null&&timestamp!==null&&finite(x)!>timestamp):finite(child)!==null&&timestamp!==null&&finite(child)!>timestamp)||futureTimestamp(child));return false};
+    if(futureTimestamp(entry))referenceErrors.push("reference entry uses future information");
+  }
+  const validReference=reference.status==="valued"&&referenceErrors.length===0;
+  return{admissible:validReference||evaluatedExecution,validReference,evaluatedExecution,referenceErrors};
+}
+function plausibleTimestamp(v:number){return Number.isInteger(v)&&v>=946684800000&&v<=4102444800000}
 export function stableEvidenceId(venue:Venue,trade:Record<string,unknown>):string{const instrument=text(trade.instrumentName)??text(trade.instrument)??"unknown",tradeId=text(trade.tradeId)??text(trade.exchangeTradeId);if(tradeId)return `evidence~${part(venue)}~${part(instrument)}~${part(tradeId)}`;return `evidence~${part(venue)}~${part(instrument)}~${part(finite(trade.timestamp)??"no-time")}~${part(text(trade.direction)??"no-side")}~${part(finite(trade.price)??"no-price")}~${part(finite(trade.amount)??"no-amount")}`;}
 export function evidenceTradeDto(venue:Venue,trade:Record<string,unknown>):EvidenceTradeDto{return{evidenceId:stableEvidenceId(venue,trade),venue,instrument:text(trade.instrumentName)??text(trade.instrument),tradeId:text(trade.tradeId)??text(trade.exchangeTradeId),timestamp:finite(trade.timestamp),direction:text(trade.direction),price:finite(trade.price),amount:finite(trade.amount),indexPrice:finite(trade.indexPrice),ivApiPercent:finite(trade.ivApiPercent),ivDecimal:finite(trade.ivDecimal),blockTradeId:text(trade.blockTradeId),rfqId:text(trade.rfqId)};}
 function addEvidenceUsage(usages:EvidenceUsageDto[],usage:EvidenceUsageDto){const key=JSON.stringify(usage);if(!usages.some(item=>JSON.stringify(item)===key))usages.push(usage);}
