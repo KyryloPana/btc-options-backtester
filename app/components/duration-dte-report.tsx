@@ -234,11 +234,11 @@ function CaptureSection({report}:{report:DurationDteReport}){
    <thead><tr><th>Horizon</th><th>Reached</th><th>Median time to capture</th><th>Before VPOC</th><th>Before invalidation</th></tr></thead>
    <tbody>{rows.map((r:CaptureThresholdRow)=>
     <tr key={r.horizon.nominalDays}><td>{r.horizon.label}</td>
-     <td>{r.totalN?`${r.reachedN} / ${r.totalN} (${(r.reachedN/r.totalN*100).toFixed(0)}%)`:NOT_ESTIMABLE}</td>
-     <td>{days(r.medianTimeToCaptureDays)}</td><td>{pct(r.beforeVpocShare)}</td><td>{pct(r.beforeInvalidationShare)}</td>
+     <td title={r.dominantReason??undefined}>{r.totalN?`${r.reachedN} / ${r.totalN} (${(r.reachedN/r.totalN*100).toFixed(0)}%)`:"Raw path unavailable"}</td>
+     <td>{r.totalN===0?"Raw path unavailable":r.reachedN===0?"Not reached":days(r.medianTimeToCaptureDays)}</td><td>{pct(r.beforeVpocShare)}</td><td>{pct(r.beforeInvalidationShare)}</td>
     </tr>)}</tbody>
   </table></div>
-  <small className="dd-note">Capture timestamps use canonical valuation/outcome evidence for the selected execution scenario only; a threshold never reached leaves its time Not estimable, never zero.</small>
+  <small className="dd-note">Denominator = eligible rows with enough scenario-local raw-VWAP path evidence to evaluate the threshold. 0/N is a valid result and reads Not reached; no evaluable path reads Raw path unavailable. Ordering shares include only determinate endpoint orderings.</small>
  </>;
 }
 
@@ -286,46 +286,46 @@ function MatchedExecutionSection({report}:{report:DurationDteReport}){
  const rows=report.matchedExecution;
  if(!rows.some(r=>r.matchedN>0))return <p className="dd-empty-inline">{UNAVAILABLE} — no structure in this bundle was genuinely evaluated under both maker and taker, so there is no matched pair to compare. Unmatched structures are never compared against each other.</p>;
  return <><div className="table-scroll"><table className="dd-table">
-  <thead><tr><th>Horizon</th><th>Matched</th><th>Maker only</th><th>Taker only</th><th>Δ PnL</th><th>Δ worst adverse</th><th>Δ T50% capture</th><th>Δ sync</th><th>Δ capital-day return</th></tr></thead>
+  <thead><tr><th>Horizon</th><th>Structural matches</th><th>Maker only</th><th>Taker only</th><th>Δ PnL</th><th>Δ worst adverse</th><th>Δ T50% capture</th><th>Δ sync</th><th>Δ capital-day return</th></tr></thead>
   <tbody>{rows.map(r=><tr key={r.horizon.nominalDays}>
    <td>{r.horizon.label}</td>
    <td>{r.matchedN}</td>
    <td className="dd-muted">{r.makerOnlyN}</td>
    <td className="dd-muted">{r.takerOnlyN}</td>
-   <td className={r.medianPnlDragUsd===null?"dd-muted":r.medianPnlDragUsd>=0?"positive":"negative"}>{signedUsd(r.medianPnlDragUsd)}</td>
-   <td className={r.medianWorstAdverseDragUsd===null?"dd-muted":"negative"}>{signedUsd(r.medianWorstAdverseDragUsd)}</td>
-   <td>{signedDays(r.medianCapture50DragDays)}</td>
-   <td>{r.medianSynchronizationDragMinutes===null?NOT_ESTIMABLE:`${r.medianSynchronizationDragMinutes>=0?"+":"−"}${Math.abs(r.medianSynchronizationDragMinutes).toFixed(2)}m`}</td>
-   <td>{r.medianCapitalDayReturnDrag===null?UNAVAILABLE:r.medianCapitalDayReturnDrag.toFixed(4)}</td>
+   <td className={r.medianPnlDragUsd===null?"dd-muted":r.medianPnlDragUsd>=0?"positive":"negative"}>{signedUsd(r.medianPnlDragUsd)} <small>N={r.comparableN.pnl}</small></td>
+   <td className={r.medianWorstAdverseDragUsd===null?"dd-muted":"negative"}>{signedUsd(r.medianWorstAdverseDragUsd)} <small>N={r.comparableN.worstAdverse}</small></td>
+   <td>{signedDays(r.medianCapture50DragDays)} <small>N={r.comparableN.capture50}</small></td>
+   <td>{r.medianSynchronizationDragMinutes===null?NOT_ESTIMABLE:`${r.medianSynchronizationDragMinutes>=0?"+":"−"}${Math.abs(r.medianSynchronizationDragMinutes).toFixed(2)}m`} <small>N={r.comparableN.synchronization}</small></td>
+   <td>{r.medianCapitalDayReturnDrag===null?UNAVAILABLE:r.medianCapitalDayReturnDrag.toFixed(4)} <small>N={r.comparableN.capitalDayReturn}</small></td>
   </tr>)}</tbody>
  </table></div>
  <small className="dd-note">Maker-opportunity result minus taker result, for structures genuinely evaluated under BOTH scenarios (same candidate_id). Maker-only and taker-only structures are counted and shown but never entered into the difference. A negative Δ PnL means the maker opportunity, had it filled, would have underperformed the conservative taker proxy for that structure; it says nothing about whether the resting order would actually have filled.</small>
  </>;
 }
 
-/* ---------- 10. Holding period (capital-free) ---------- */
+/* ---------- 10. Execution-independent thesis-survival window ---------- */
 
 function HoldingPeriodSection({rows}:{rows:readonly HoldingPeriodRow[]}){
  return <div className="table-scroll"><table className="dd-table dd-compact">
-  <thead><tr><th>Horizon</th><th>N</th><th>Median holding</th><th>P80 holding</th><th>Held to settlement</th></tr></thead>
+  <thead><tr><th>Horizon</th><th>N</th><th>Median survival window</th><th>P80 survival window</th><th>Window ends at expiry</th></tr></thead>
   <tbody>{rows.map(r=><tr key={r.horizon.nominalDays}>
    <td>{r.horizon.label}</td><td>{r.n}</td>
    <td>{days(r.medianHoldingDays)}</td><td>{days(r.p80HoldingDays)}</td>
    <td>{pct(r.heldToSettlementShare)}</td>
   </tr>)}</tbody>
  </table>
- <small className="dd-note">T_hold = min(post-entry first resolution, expiry), measured from structure entry. This needs no margin data and is reported whether or not required capital is available. A VPOC that occurred before entry is never used as the holding endpoint.</small>
+ <small className="dd-note" title="Execution-independent structural metric">T_survival = min(post-entry first resolution, expiry) − structure entry. Execution-independent; this is not an operational holding period and makes no exit-policy or capital-use claim.</small>
  </div>;
 }
 
 /* ---------- 11. Capital-time efficiency ---------- */
 
 function CapitalTimeSection({report}:{report:DurationDteReport}){
- const c=report.capitalTime;
- if(!c.available)return <p className="dd-empty-inline">{UNAVAILABLE} — {c.reason}</p>;
+ const c=report.operationalHolding;
+ if(!c.available)return <p className="dd-empty-inline" title={c.reason??undefined}><strong>Requires complete exit policy</strong> — {c.reason}</p>;
  return <div className="dd-endpoints">
-  <div className="dd-endpoint"><span className="dd-label">Median capital-days</span><strong>{c.medianCapitalDays===null?UNAVAILABLE:c.medianCapitalDays.toFixed(1)}</strong></div>
-  <div className="dd-endpoint"><span className="dd-label">Median capital-day return</span><strong>{c.medianCapitalDayReturn===null?UNAVAILABLE:c.medianCapitalDayReturn.toFixed(4)}</strong></div>
+  <div className="dd-endpoint" title="Entry to the complete policy engine's actual same-track executable exit"><span className="dd-label">Operational holding · {c.policy} · {c.pricingTrack}</span><strong>{days(c.medianHoldingDays)}</strong><small>{c.pricedExits} priced exit(s)</small></div>
+  <div className="dd-endpoint" title="Net PnL / (selected capital basis × actual policy holding days)"><span className="dd-label">Capital-day return · {c.capitalBasis.replaceAll("_"," ")} · {c.policy} · {c.pricingTrack}</span><strong>{c.medianCapitalDayReturn===null?UNAVAILABLE:c.medianCapitalDayReturn.toFixed(4)}</strong></div>
  </div>;
 }
 
@@ -479,7 +479,7 @@ export function DurationDteReportView({report,view="maker",onViewChange}:{report
    <HeadlineCard label="Maker opportunity coverage" value={<Coverage coverage={h.maker}/>} detail={h.maker.status==="measured"?`${h.maker.events} of ${h.maker.eligibleEvents} eligible events`:undefined} title="Eligible MR events with at least one structure genuinely evaluated as a maker opportunity. Not a confirmed fill."/>
    <HeadlineCard label="Taker executable coverage" value={<Coverage coverage={h.taker}/>} detail={h.taker.status==="measured"?`${h.taker.events} of ${h.taker.eligibleEvents} eligible events`:undefined} title="Eligible MR events with at least one structure genuinely evaluated as taker-executable."/>
    <HeadlineCard label="Median actual DTE" value={h.medianActualDteDays===null?NOT_ESTIMABLE:`${d1(h.medianActualDteDays)}d`}/>
-   <HeadlineCard label="Median holding period" value={days(h.medianHoldingDays)} detail="capital-free"/>
+   <HeadlineCard label="Median thesis-survival window" value={days(h.medianHoldingDays)} detail="execution-independent" title="T_survival = min(post-entry first resolution, expiry) − entry. This is structural, not an operational holding period."/>
    <HeadlineCard label="No resolution before expiry" value={pct(h.noResolutionBeforeExpiryShare)}/>
    <HeadlineCard label="Median T resolution" value={days(h.medianFirstResolutionDays)}/>
   </div>
@@ -511,8 +511,8 @@ export function DurationDteReportView({report,view="maker",onViewChange}:{report
   {!compare&&<section className="dd-block"><h3>9 · Execution drag: maker vs. taker</h3><MatchedExecutionSection report={report}/></section>}
 
   <div className="dd-two-col">
-   <section className="dd-block"><h3>10 · Holding period</h3><HoldingPeriodSection rows={report.holdingPeriod}/></section>
-   <section className="dd-block"><h3>11 · Capital-time efficiency</h3><CapitalTimeSection report={report}/></section>
+   <section className="dd-block"><h3>10 · Thesis-survival window</h3><HoldingPeriodSection rows={report.holdingPeriod}/></section>
+   <section className="dd-block"><h3>11 · Operational holding &amp; capital-time efficiency</h3><CapitalTimeSection report={report}/></section>
   </div>
 
   <section className="dd-block"><h3>12 · Resolution-speed sensitivity</h3><ResolutionSpeedSection report={report}/></section>
@@ -528,7 +528,7 @@ export function DurationDteReportView({report,view="maker",onViewChange}:{report
    <h3>Event-level observations</h3>
    <p className="dd-sub">Individual {scenarioLabel} rows underlying this report.</p>
    <div className="table-scroll"><table className="dd-table">
-    <thead><tr><th>Event</th><th>Horizon</th><th>Actual DTE</th><th>Width</th><th>Quality</th><th>{report.scenario==="maker"?"Maker":"Taker"} status</th><th>T_res (post-entry)</th><th>Outcome before expiry</th><th>DTE buffer</th><th>T_hold</th><th>T50%</th><th>PnL@VPOC</th><th>PnL@Inv.</th><th>Worst adverse</th></tr></thead>
+    <thead><tr><th>Event</th><th>Horizon</th><th>Actual DTE</th><th>Width</th><th>Quality</th><th>{report.scenario==="maker"?"Maker":"Taker"} status</th><th>T_res (post-entry)</th><th>Outcome before expiry</th><th>DTE buffer</th><th>T_survival</th><th>T50%</th><th>PnL@VPOC</th><th>PnL@Inv.</th><th>Worst adverse</th></tr></thead>
     <tbody>{rows.map(c=><EventRow key={c.structureExecutionId} c={c}/>)}</tbody>
    </table></div>
    <div className="ur-pager">

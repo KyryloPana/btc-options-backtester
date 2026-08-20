@@ -26,7 +26,7 @@ export function ResearchAnalytics(){
  const d=result&&result.status!=="invalid"?result.dataset:undefined,summary=useMemo(()=>d?buildResearchSummary(d,configuration):undefined,[d,configuration]),underlying=useMemo(()=>d?buildUnderlyingResolutionReport(d):undefined,[d]),// Compare contrasts maker against taker on matched structures, so the
 // execution-dependent body stays scoped to maker -- the preferred assumption --
 // while the matched comparison reads both scenarios directly.
-durationDte=useMemo(()=>d?buildDurationDteReport(d,dteView==="taker"?"taker":"maker"):undefined,[d,dteView]),
+durationDte=useMemo(()=>d?buildDurationDteReport(d,dteView==="taker"?"taker":"maker",configuration):undefined,[d,dteView,configuration]),
  // Short-strike comparisons are scoped to one scenario; Compare additionally
  // builds the taker view so the same matched pairs can be read under the
  // conservative proxy without ever pooling the two.

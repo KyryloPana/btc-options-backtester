@@ -1080,8 +1080,26 @@ footer { color: var(--muted); font-size: 12px; }
 
 /* Spread-construction controls: scoped so generic form grids cannot collapse these groups. */
 .config-card .expiry-selection-block { min-width: 0; }
-.config-card .expiry-selection-block .mode-list { grid-template-columns: minmax(0,1fr); align-content: start; }
-.config-card .expiry-selection-block .mode-list label { min-height: 27px; white-space: normal; }
-.config-card .pricing-output-block .check-row { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); }
-.config-card .pricing-output-block .check-chip { min-width: 0; width: 100%; white-space: nowrap; }
-@media(max-width:560px){.config-card .pricing-output-block .check-row{grid-template-columns:minmax(0,1fr)}}
+.config-card .expiry-selection-block .mode-list { display: grid; grid-template-columns: minmax(0,1fr); align-content: start; justify-items: stretch; gap: 6px; }
+.config-card .expiry-selection-block .mode-list > label {
+  display: grid; grid-template-columns: 12px minmax(0,1fr) auto; align-items: center;
+  justify-content: start; column-gap: 7px; min-height: 28px; width: 100%;
+  white-space: normal; cursor: pointer;
+}
+.config-card .expiry-selection-block .mode-list > label > input[type="radio"] {
+  display: block; flex: none; inline-size: 12px; block-size: 12px; min-inline-size: 12px;
+  margin: 0; padding: 0; align-self: center;
+}
+.config-card .pricing-output-block .check-row { display: grid; grid-template-columns: repeat(2,minmax(112px,1fr)); gap: 6px; }
+.config-card .pricing-output-block .check-chip {
+  display: grid; grid-template-columns: 12px minmax(0,1fr) 18px; align-items: center;
+  justify-content: start; gap: 6px; min-width: 0; width: 100%; height: 30px;
+  padding: 0 8px; white-space: nowrap; text-align: left;
+}
+.config-card .pricing-output-block .check-chip > input[type="checkbox"] {
+  position: static; display: block; opacity: 1; inline-size: 12px; block-size: 12px;
+  min-inline-size: 12px; margin: 0; padding: 0; accent-color: var(--accent);
+}
+.config-card .pricing-output-block .check-chip > button { justify-self: end; min-width: 18px; }
+@media(max-width:760px){.config-card .pricing-output-block .check-row{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:420px){.config-card .pricing-output-block .check-row{grid-template-columns:minmax(0,1fr)}}

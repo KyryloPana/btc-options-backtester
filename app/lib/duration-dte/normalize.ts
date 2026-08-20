@@ -88,6 +88,8 @@ export interface CaptureObservation {
  /** Null when the event never experienced that endpoint, not merely "false". */
  readonly beforeVpoc:boolean|null;
  readonly beforeInvalidation:boolean|null;
+ readonly evaluable:boolean;
+ readonly unavailableReason:string|null;
 }
 
 
@@ -282,10 +284,13 @@ function captureObservation(outcomes:readonly Readonly<Record<string,unknown>>[]
  if(scenario===null)return null;
  const row=outcomes.find(o=>o.candidate_id===candidateId&&o.execution_scenario===scenario&&o.outcome_type===`credit_capture_${threshold}`);
  if(!row)return null;
- const triggerMs=row.status==="priced"?ms(row.trigger_timestamp_utc):null;
+ const legacy=row.trigger_status===undefined,reached=legacy?row.status==="priced":row.trigger_status==="reached";
+ const evaluable=legacy||reached||row.trigger_status==="not_reached";
+ const triggerMs=reached?ms(row.trigger_timestamp_utc):null;
  const timeToCaptureDays=triggerMs!==null&&entryMs!==null?(triggerMs-entryMs)/DAY:null;
  return {
-  thresholdPct:threshold,reached:row.status==="priced",timeToCaptureDays,
+  thresholdPct:threshold,reached,timeToCaptureDays,evaluable,
+  unavailableReason:evaluable?null:str(row.evidence_reason)??(Array.isArray(row.reason_codes)?row.reason_codes.join(", "):"Raw path evidence is missing or invalid."),
   beforeVpoc:timeToVpocDays!==null&&timeToCaptureDays!==null?timeToCaptureDays<=timeToVpocDays:null,
   beforeInvalidation:timeToInvalidationDays!==null&&timeToCaptureDays!==null?timeToCaptureDays<=timeToInvalidationDays:null,
  };
@@ -294,8 +299,11 @@ function captureObservation(outcomes:readonly Readonly<Record<string,unknown>>[]
 function pnlAt(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:string,scenario:ExecutionScenario|null,kind:"vpoc"|"invalidation"|"settlement"):number|null{
  if(scenario===null)return null;
  const row=outcomes.find(o=>o.candidate_id===candidateId&&o.execution_scenario===scenario&&o.outcome_type===kind);
- if(!row||row.status!=="priced")return null;
- return num(row.net_pnl_usd)??num(row.net_pnl_native);
+ if(!row)return null;
+ const canonical=row.raw_status!==undefined;
+ if(canonical&&(row.trigger_status!=="reached"||row.raw_status!=="priced"))return null;
+ if(!canonical&&row.status!=="priced")return null;
+ return canonical?(num(row.raw_net_pnl_usd)??num(row.raw_net_pnl_native)):(num(row.net_pnl_usd)??num(row.net_pnl_native));
 }
 
 export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCandidate[]{
