@@ -86,7 +86,7 @@ function selectionEvent(eventId:string,structures=1):ResearchSelectionEvent{
  };
 }
 
-const store=(events:ResearchSelectionEvent[]):ResearchSelectionStore=>({schemaVersion:"1.2.0",datasetId:DATASET_ID,updatedAtUtc:"2026-08-19T00:00:00.000Z",events});
+const store=(events:ResearchSelectionEvent[]):ResearchSelectionStore=>({schemaVersion:"1.3.0",datasetId:DATASET_ID,updatedAtUtc:"2026-08-19T00:00:00.000Z",events});
 
 /* ---------------- editing ---------------- */
 

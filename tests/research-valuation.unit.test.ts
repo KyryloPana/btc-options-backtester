@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildEstimatedPath, buildResearchExport, buildResearchOutcomes, estimateResearchSpread, expiryWeekday, isFridayExpiry, resolveUnderlyingIndex, openingUsdEquivalent, scaleResearchEstimate, scaleResearchPath, validateResearchAmount } from "../app/lib/research-valuation.ts";
+import { buildEstimatedPath, buildResearchExport, buildResearchOutcomes, estimateResearchSpread, evaluateResearchEntryLayers, expiryWeekday, isFridayExpiry, resolveUnderlyingIndex, openingUsdEquivalent, scaleResearchEstimate, scaleResearchPath, validateResearchAmount } from "../app/lib/research-valuation.ts";
 import { buildInventory, executionClock, parseContractText, retrieveSpread, simulateTakerSpread, type ContractSeries, type ContractTrade, type RetrievedSpread } from "../app/lib/backtester.ts";
 import { parseOhlcCandles } from "../app/lib/candle-pipeline.ts";
 const T=Date.UTC(2024,0,1,12), expiry=T+7*864e5;
@@ -105,4 +105,17 @@ test("2025-07-10 12:00 UTC cliff cannot see future IV or use an unsynchronized l
  const row=(name:string,timestamp:number,price:number,direction:"buy"|"sell",id:string):ContractTrade=>({instrumentName:name,timestamp,price,indexPrice:118000,direction,amount:1,iv:60,ivApiPercent:60,ivDecimal:.6,tradeId:id});
  const shortName="BTC-17JUL25-110000-P",longName="BTC-17JUL25-108000-P",s:RetrievedSpread={...spread([],[]),soldContract:put(shortName,110000,[row(shortName,cliff-2*3600000,.04,"sell","short-old"),row(shortName,future,.20,"buy","short-future")]),boughtContract:put(longName,108000,[row(longName,cliff-250*60_000,.02,"buy","long-unsynced"),row(longName,future,.10,"sell","long-future")]),expiryTimestamp:cliff+7*864e5};
  const value=estimateResearchSpread({spread:s,targetTimestamp:cliff,targetIndex:118000,slippageBps:0,executionMode:"taker"});assert.equal(value.status,"unavailable");if(value.status==="unavailable")assert.match(value.reason,/causal IV-anchor pair synchronized within 60 minutes/);
+});
+
+test("nine-variant discontinuity keeps model valuation independent from raw execution",()=>{
+ const resolved=Array.from({length:5},(_,i)=>{const shortName="BTC-8JAN24-39000-P",longName="BTC-8JAN24-38000-P";return{...spread(
+  [trade(shortName,-10,.08,"sell",.2,60),trade(shortName,1,.08,"sell",.1,60),trade(shortName,2,.08,"buy",.1,60)],
+  [trade(longName,-9,.03,"buy",.2,55),trade(longName,1,.03,"buy",.1,55),trade(longName,2,.03,"sell",.1,55)]),id:`resolved-${i}`};});
+ const unresolved=Array.from({length:4},(_,i)=>({...spread([],[]),id:`unresolved-${i}`,soldContract:undefined,boughtContract:undefined,retrievalStatus:"partial" as const,retrievalNote:"API retrieval failed for both exact instruments"}));
+ const layers=[...resolved,...unresolved].map(s=>evaluateResearchEntryLayers({spread:s,targetTimestamp:T,targetIndex:40000,amount:1,slippageBps:0,fillWindowMinutes:30}));
+ assert.equal(layers.length,9);assert.equal(layers.filter(x=>x.structural.status==="resolved").length,5);assert.equal(layers.filter(x=>x.structural.status==="unresolved").length,4);
+ assert.equal(layers.filter(x=>x.model.status==="priced").length,5,"causal model values survive the size shortfall");
+ assert.equal(layers.filter(x=>x.maker.status==="available").length,0);assert.equal(layers.filter(x=>x.taker.status==="available").length,0);
+ for(const x of layers.slice(0,5)){assert.equal(x.maker.reasonCode,"insufficient-compatible-amount");assert.equal(x.taker.reasonCode,"insufficient-compatible-amount");assert.equal(x.maker.requestedAmount,1);assert.equal(x.maker.shortQualifyingAmount,.1);assert.equal(x.maker.rawVwapStatus,"unavailable");}
+ for(const x of layers.slice(5)){assert.equal(x.model.status,"unavailable");assert.equal(x.maker.entry.status,"unavailable");assert.equal(x.taker.entry.status,"unavailable");}
 });
