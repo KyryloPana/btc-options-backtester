@@ -1,6 +1,6 @@
 # Research Bundle Schema
 
-Schema **2.3.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and `events.jsonl`, `underlying_path.jsonl`, `candidates.jsonl`, `valuations.jsonl`, `outcomes.jsonl`, `availability.jsonl`, `margin_scenarios.jsonl`, `evidence_trades.jsonl`, `futures_comparisons.jsonl`, and `futures_path.jsonl`. Empty tables remain empty files and availability is stated in `run.json`.
+Schema **3.0.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and `events.jsonl`, `underlying_path.jsonl`, `candidates.jsonl`, `valuations.jsonl`, `outcomes.jsonl`, `availability.jsonl`, `margin_scenarios.jsonl`, `evidence_trades.jsonl`, `futures_comparisons.jsonl`, and `futures_path.jsonl`. Empty tables remain empty files and availability is stated in `run.json`.
 
 **`candidates.jsonl` = selected performance numerator; `availability.jsonl` = complete generated denominator.** Reports calculate coverage from availability and recompute extrema from valuations, never UI summaries.
 
@@ -26,6 +26,8 @@ Execution scenario status is scenario-local: `evaluated` means priced rows may e
 Consumers validate the schema version, primary keys, foreign keys, venues, statuses, reason codes, finite numbers, entry economics, and source-run compatibility first. Unknown versions are rejected. Schema changes require a new version and explicit migration. Historical margin and futures data are unavailable rather than fabricated. Export reads only persisted snapshots and never refetches an exchange.
 
 ## Version history
+
+* **3.0.0** separates trigger state (`reached`, `not_reached`, `unavailable`, `after_expiry`, `ambiguous`) from per-track pricing state (`priced`, `unavailable`, `not_applicable`), preserves per-track PnL independently, removes unused `fixed_14d`, and requires `credit_capture_25`. Legacy outcomes migrate as ambiguous/degraded because their trigger and pricing histories cannot be reconstructed safely.
 
 * **2.3.0** adds `availability_id`, `requested_strikes`, and `actual_strikes` to `availability.jsonl`; preserves duplicate structural generation attempts; and distinguishes attempted-but-invalid execution scenarios as `unavailable`.
 * **2.2.0** added parallel maker/taker execution scenarios with `structure_execution_id` as the candidates row key.
