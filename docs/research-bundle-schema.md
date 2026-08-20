@@ -62,3 +62,13 @@ explicit `not_evaluated` delayed/modeled placeholders. Contract resolution disti
 tape amount is relevant only to execution evidence. Reference economics are never copied into raw
 maker/taker rows or their coverage. Legacy records migrate with explicit legacy/unavailable states;
 no missing evidence or economics is inferred.
+
+Reference valuation is independent from execution evidence. A selected structure is canonically
+retainable when either (a) at least one immediate maker/taker scenario is genuinely `evaluated`, or
+(b) its `reference_valuation` passes the complete structural, causal, provenance, timestamp, and
+economic-reconciliation audit. Consequently, a reference-valued structure does not require
+immediate maker or taker historical support. The two scenario rows remain `unavailable` or
+`not_evaluated`, keep execution-dependent fields null, and produce no valuation/outcome rows.
+Delayed and modeled fields in schema 3.2.0 are metadata/placeholders and do not independently make
+a candidate retainable. A status label alone, an unresolved structure, unavailable provenance,
+future evidence, or unreconciled reference economics cannot satisfy the reference branch.

@@ -1,4 +1,4 @@
-import { canonicalJson, migrateResearchSelectionStore, type JsonValue } from "./research-selections.ts";
+import { assessCandidateAnalyticalTracks, canonicalJson, migrateResearchSelectionStore, type JsonValue } from "./research-selections.ts";
 import { reconcileCandidateSpread } from "./semantic-spread.ts";
 
 export const RESEARCH_BUNDLE_SCHEMA_VERSION="3.2.0" as const;
@@ -143,12 +143,14 @@ export function validateResearchBundle(files:Partial<Record<string,string>>):{ok
   const kinds=new Set(rows("outcomes.jsonl").filter(r=>r.candidate_id===id&&r.execution_scenario===scenario).map(r=>r.outcome_type));
   for(const kind of REQUIRED_OUTCOMES)if(!kinds.has(kind))errors.push(`Candidate ${String(id)} (${String(scenario)}) is missing required outcome ${kind}.`);
  }
- // Every structural candidate_id must have been genuinely evaluated under at
- // least one scenario -- a structure with both maker and taker not_evaluated
- // should never have been exported at all.
+ // Candidate retention is structural, not synonymous with immediate fill
+ // evidence. Reference valuation is an independent economic track, but its
+ // contents must pass the canonical audit before it can qualify a structure.
+ const eventEntryTimes=new Map(rows("events.jsonl").map(e=>[e.event_id,Date.parse(String(e.entry_timestamp_utc??e.signal_timestamp_utc))]));
  for(const id of candidateIds){
   const scenarios=rows("candidates.jsonl").filter(r=>r.candidate_id===id);
-  if(!scenarios.some(r=>r.execution_scenario_status==="evaluated"))errors.push(`Candidate ${String(id)} has no evaluated execution scenario.`);
+  const base=scenarios[0]??{},audit=assessCandidateAnalyticalTracks({referenceValuation:base.reference_valuation,executionScenarios:Object.fromEntries(scenarios.map(r=>[String(r.execution_scenario),{status:r.execution_scenario_status}])),contractResolution:base.contract_resolution,candidateSnapshot:{expiryTimestamp:Date.parse(String(base.expiry_timestamp_utc))},quantity:base.quantity,eventEntryTimestamp:eventEntryTimes.get(base.event_id)});
+  if(!audit.admissible)errors.push(`Candidate ${String(id)} has no valid analytical track.${audit.referenceErrors.length?` Reference valuation: ${audit.referenceErrors.join("; ")}.`:""}`);
  }
  const close=(a:number,b:number)=>Math.abs(a-b)<=1e-12*Math.max(1,Math.abs(a),Math.abs(b));for(const c of rows("candidates.jsonl")){const legs=obj(c.entry_legs),short=num(obj(legs.short).price_native),long=num(obj(legs.long).price_native),qty=num(c.quantity),fees=num(c.opening_fees_native),gross=num(c.gross_credit_debit_native),net=num(c.net_opening_cash_flow_native);if(short!==null&&long!==null&&qty!==null&&gross!==null&&!close(gross,(short-long)*qty))errors.push(`Candidate ${String(c.candidate_id)} has unreconciled opening gross.`);if(gross!==null&&fees!==null&&net!==null&&!close(net,gross-fees))errors.push(`Candidate ${String(c.candidate_id)} has unreconciled opening total.`)}for(const v of rows("valuations.jsonl")){const pnl=num(v.net_pnl_native),index=num(v.target_underlying_index),usd=num(v.net_pnl_usd);if(pnl!==null&&index!==null&&usd!==null&&!close(usd,pnl*index))errors.push(`Valuation ${String(v.valuation_id)} has unreconciled USD PnL.`)}
  return{ok:!errors.length,errors};

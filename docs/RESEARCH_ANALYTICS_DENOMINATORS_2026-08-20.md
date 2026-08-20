@@ -24,6 +24,12 @@ The denominator ledger deliberately keeps these non-interchangeable counts:
   conservative modeled track, never as observed execution.
 * **Fully unavailable** counts normalized observations without any available track.
 
+Reference valuation is independent from execution evidence. A reference-only structure contributes
+once to the reference/economic population because observation identity remains
+`event_id × strategy_variant_id`; its maker and taker rows do not multiply that observation. When
+those scenarios are unavailable/not evaluated, it contributes zero to immediate maker, immediate
+taker, matched maker-vs-taker, and strict observed-execution PnL denominators.
+
 Each execution summary has two explicitly different statistics. Trade-conditional
 uses entered trades with priced exit PnL. Opportunity-normalized uses eligible
 opportunities, assigns zero deployed capital and zero PnL only to a missed entry,
