@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ResearchSelectionService, researchSelectionApiPlugin } from "../scripts/research-selection-service.ts";
 import { canLeaveDirty } from "../app/lib/trade-datasets.ts";
-import { LOCAL_PERSISTENCE_REQUIRED_MESSAGE, persistenceEndpointUnavailable } from "../app/lib/local-persistence.ts";
+import { LOCAL_PERSISTENCE_REQUIRED_MESSAGE, RESEARCH_SELECTION_ENDPOINT_FAILED_MESSAGE, probeLocalPersistence, researchSelectionFailure } from "../app/lib/local-persistence.ts";
 import { LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS, RESEARCH_SELECTION_SCHEMA_VERSION, canSelectResearchCandidate, canonicalJson, compactEntryEconomics, compactValuationPoint, emptyResearchSelectionStore, migrateResearchSelectionStore, reconcileGeneratedSelection, sameSelectionIds, selectionChangeSet, researchEventPayloadDiagnostics, stableCandidateId, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure, type Venue } from "../app/lib/research-selections.ts";
 
 const now="2026-08-16T20:00:00.000Z";
@@ -50,25 +50,43 @@ test("HTTP first-touch PUT persists, reloads, validates, and retains If-Match co
  const server=createServer(middleware);await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
  try{
   const address=server.address();assert.ok(address&&typeof address!=="string");const base=`http://127.0.0.1:${address.port}/__local/research-selections/default-sample-trades`;
+  const capabilities=await (await fetch(`http://127.0.0.1:${address.port}/__local/persistence-capabilities`)).json() as {runtime:string;researchSelections:boolean};
+  assert.deepEqual(capabilities,{runtime:"local-application-server",researchSelections:true,version:1});
   const initial=await (await fetch(base)).json() as ResearchSelectionStore;
-  const put=await fetch(`${base}/events/event-a`,{method:"PUT",headers:{"Content-Type":"application/json","If-Match":initial.updatedAtUtc},body:JSON.stringify(event("event-a",["one","two"]))});
+  const put=await fetch(`${base}/events/event-a`,{method:"PUT",headers:{"Content-Type":"application/json","If-Match":initial.updatedAtUtc},body:JSON.stringify(event("event-a",Array.from({length:9},(_,index)=>`selection-${index+1}`)))});
   assert.equal(put.status,200,"a missing store has a stable first-touch If-Match version");
   const saved=(await put.json() as {store:ResearchSelectionStore}).store;
   const reloaded=await (await fetch(base)).json() as ResearchSelectionStore;
-  assert.deepEqual(reloaded.events[0].selectedStructures.map(item=>item.candidateId),["one","two"]);
-  assert.equal((await readFile(join(dir,"default-sample-trades.json"),"utf8")).includes('"candidateId": "two"'),true,"the HTTP route writes the canonical filesystem file");
+  assert.equal(reloaded.events[0].selectedStructures.length,9,"all nine checked selections persist");
+  assert.equal((await readFile(join(dir,"default-sample-trades.json"),"utf8")).includes('"candidateId": "selection-9"'),true,"the HTTP route writes the canonical filesystem file");
   const invalid=await fetch(`${base}/events/event-b`,{method:"PUT",headers:{"Content-Type":"application/json","If-Match":saved.updatedAtUtc},body:"{}"});
   assert.equal(invalid.status,400);assert.match((await invalid.json() as {error:string}).error,/event ID must match/i,"validation remains a readable HTTP response");
   const stale=await fetch(`${base}/events/event-a`,{method:"PUT",headers:{"Content-Type":"application/json","If-Match":initial.updatedAtUtc},body:JSON.stringify(event("event-a",["replacement"]))});
   assert.equal(stale.status,409);assert.match((await stale.json() as {error:string}).error,/changed on disk/i);
-  assert.deepEqual((await new ResearchSelectionService(dir).read("default-sample-trades")).events[0].selectedStructures.map(item=>item.candidateId),["one","two"],"failed requests never mark or write the draft as saved");
+  assert.deepEqual((await new ResearchSelectionService(dir).read("default-sample-trades")).events[0].selectedStructures.map(item=>item.candidateId),Array.from({length:9},(_,index)=>`selection-${index+1}`),"failed requests never mark or write the draft as saved");
  }finally{await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));await rm(dir,{recursive:true,force:true})}
 });
 
-test("unsupported persistence is classified explicitly without disguising HTTP validation",()=>{
+test("runtime capability distinguishes static, healthy, transient, and route-specific failures",async()=>{
  assert.equal(LOCAL_PERSISTENCE_REQUIRED_MESSAGE,"Research-state persistence requires the local application server.");
- assert.equal(persistenceEndpointUnavailable(new TypeError("Failed to fetch"),false),true);
- assert.equal(persistenceEndpointUnavailable(new Error("Validation failed"),true),false);
+ const staticProbe=await probeLocalPersistence(async()=>({ok:false,status:404,json:async()=>({})}));
+ assert.equal(staticProbe.status,"unsupported");
+ const staleServerProbe=await probeLocalPersistence(async input=>input==="/__local/trade-datasets"
+  ? {ok:true,status:200,json:async()=>({datasets:[]})}
+  : {ok:false,status:404,json:async()=>({})});
+ assert.equal(staleServerProbe.status,"unreachable","an active dataset plugin proves this is a stale/broken local server, not static hosting");
+ assert.deepEqual(researchSelectionFailure(new TypeError("Failed to fetch"),staticProbe),{unavailable:true,message:LOCAL_PERSISTENCE_REQUIRED_MESSAGE});
+ const healthyProbe=await probeLocalPersistence(async()=>({ok:true,status:200,json:async()=>({runtime:"local-application-server",researchSelections:true})}));
+ assert.equal(healthyProbe.status,"available");
+ const routeFailure=researchSelectionFailure(new Error("route crashed after datasets loaded"),healthyProbe);
+ assert.equal(routeFailure.unavailable,false);
+ assert.match(routeFailure.message,new RegExp(`^${RESEARCH_SELECTION_ENDPOINT_FAILED_MESSAGE}`));
+ assert.match(routeFailure.message,/route crashed/);
+ let attempts=0;const transientProbe=await probeLocalPersistence(async()=>{attempts++;if(attempts===1)throw new TypeError("connection dropped");return {ok:true,status:200,json:async()=>({runtime:"local-application-server",researchSelections:true})}});
+ assert.equal(transientProbe.status,"unreachable");
+ assert.equal(researchSelectionFailure(new TypeError("PUT disconnected"),transientProbe).unavailable,false,"one rejected fetch never permanently classifies the origin as static");
+ const retry=await probeLocalPersistence(async()=>{attempts++;return {ok:true,status:200,json:async()=>({runtime:"local-application-server",researchSelections:true})}});
+ assert.equal(retry.status,"available","a later retry can recover");
 });
 
 test("clear persists across restart, excludes only that event, and permits reselection",async()=>{
