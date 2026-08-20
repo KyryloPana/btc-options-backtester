@@ -485,13 +485,20 @@ test("RESOLUTION SPEED: an insufficient sample is reported, never cut with inven
 });
 
 test("ENTRY DELAY: causal support is detected from raw evidence, never assumed",()=>{
- const ed=buildEntryDelayReport(dataset);
- // c1a's taker track carries raw marks out to +3.5d, so every offset is covered
- // by genuinely later evidence rather than by reusing the original fill.
+ const delayed={...dataset,tables:{...dataset.tables,valuations:valuations.map(v=>({...v,point_role:"delayed_entry"}))}} as unknown as AnalysisDataset;
+ const ed=buildEntryDelayReport(delayed);
+ // Dedicated delayed-entry rows are fresh opening evaluations. Ordinary
+ // scheduled-close raw marks intentionally do not qualify.
  assert.equal(ed.supported,true);
  assert.deepEqual(ed.rows.map(r=>r.delayHours),[0,4,8,12]);
  assert.ok(ed.rows.every(r=>r.structuresWithRawEvidence.taker>0));
  assert.equal(ed.requiredCanonicalInputs.length,0);
+});
+
+test("ENTRY DELAY: scheduled close marks cannot masquerade as delayed openings",()=>{
+ const ed=buildEntryDelayReport(dataset);
+ assert.equal(ed.supported,false);
+ assert.ok(ed.rows.every(r=>r.structuresWithRawEvidence.maker===0&&r.structuresWithRawEvidence.taker===0));
 });
 
 test("ENTRY DELAY: without raw marks the section is explicitly unsupported, never fabricated",()=>{
