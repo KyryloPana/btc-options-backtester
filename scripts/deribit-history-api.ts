@@ -21,6 +21,10 @@ export interface DeribitInstrumentManifest {
   minimumTradeAmount?: number;
   amountStep?: number;
   amountPrecision?: number;
+  contractSize?: number;
+  metadataSource: "deribit-get-instruments";
+  metadataRetrievedAtUtc: string;
+  authoritative: true;
 }
 export interface DesiredRequest { requestId: string; targetDte: number; minDte: number; maxDte: number; soldStrike: number; boughtStrike: number; optionType: "C" | "P" }
 export interface DeribitCandidateManifest extends Omit<DesiredRequest, "soldStrike" | "boughtStrike"> {
@@ -28,6 +32,7 @@ export interface DeribitCandidateManifest extends Omit<DesiredRequest, "soldStri
   soldInstrumentName?: string; boughtInstrumentName?: string; soldStrike?: number; boughtStrike?: number;
   soldCreationTimestamp?: number; boughtCreationTimestamp?: number; strikeResolutionSensible: boolean; strikeResolutionNote: string;
   dataStatus?: "available" | "data-unavailable";
+  contractStatus?: "exact_resolved"|"nearest_listed_resolved"|"confirmed_not_listed"|"retrieval_failure"|"metadata_unavailable";
   failedInstruments?: string[];
   retrievalErrors?: Array<{ instrumentName: string; cause: string; retryable: boolean }>;
   priceIndex?: string;
@@ -126,7 +131,7 @@ export class DeribitHistoryService {
         const minimumTradeAmount = Number(row.min_trade_amount);
         const amountStep = Number(row.amount_step ?? row.min_trade_amount);
         const amountPrecision = amountStep > 0 ? Math.max(0, (String(amountStep).split(".")[1] ?? "").length) : undefined;
-        map.set(name, { instrumentName: name, expiryTimestamp: expiry, expiryLabel: expiryLabel(expiry), creationTimestamp: Number.isFinite(Number(row.creation_timestamp)) ? Number(row.creation_timestamp) : undefined, strike, optionType: type, status, priceIndex: String(row.price_index ?? "btc_usd"), minimumTradeAmount: minimumTradeAmount > 0 ? minimumTradeAmount : undefined, amountStep: amountStep > 0 ? amountStep : undefined, amountPrecision });
+        map.set(name, { instrumentName: name, expiryTimestamp: expiry, expiryLabel: expiryLabel(expiry), creationTimestamp: Number.isFinite(Number(row.creation_timestamp)) ? Number(row.creation_timestamp) : undefined, strike, optionType: type, status, priceIndex: String(row.price_index ?? "btc_usd"), minimumTradeAmount: minimumTradeAmount > 0 ? minimumTradeAmount : undefined, amountStep: amountStep > 0 ? amountStep : undefined, amountPrecision, contractSize:Number.isFinite(Number(row.contract_size))?Number(row.contract_size):undefined,metadataSource:"deribit-get-instruments",metadataRetrievedAtUtc:new Date().toISOString(),authoritative:true });
       }
       this.manifest = [...map.values()].sort((a, b) => a.expiryTimestamp - b.expiryTimestamp || a.strike - b.strike);
       await mkdir(dirname(this.cachePath), { recursive: true });
@@ -200,7 +205,7 @@ export class DeribitHistoryService {
         const pair = resolveOrderedPair(chain, request.soldStrike, request.boughtStrike);
         const sold = pair?.sold, bought = pair?.bought;
         const sensible = Boolean(pair);
-        candidates.push({ ...request, desiredSoldStrike: request.soldStrike, desiredBoughtStrike: request.boughtStrike, expiryTimestamp: expiry, expiryLabel: expiryLabel(expiry), actualDte: (expiry-entryTimestamp)/DAY_MS, soldInstrumentName: sold?.instrumentName, boughtInstrumentName: bought?.instrumentName, soldStrike: sold?.strike, boughtStrike: bought?.strike, soldCreationTimestamp: sold?.creationTimestamp, boughtCreationTimestamp: bought?.creationTimestamp, priceIndex: sold?.priceIndex ?? bought?.priceIndex ?? "btc_usd", strikeResolutionSensible: sensible, strikeResolutionNote: sensible ? `Resolved ${request.soldStrike}/${request.boughtStrike} to ${sold!.strike}/${bought!.strike}.` : "No distinct, correctly ordered strike pair known to exist at entry." });
+        candidates.push({ ...request, desiredSoldStrike: request.soldStrike, desiredBoughtStrike: request.boughtStrike, expiryTimestamp: expiry, expiryLabel: expiryLabel(expiry), actualDte: (expiry-entryTimestamp)/DAY_MS, soldInstrumentName: sold?.instrumentName, boughtInstrumentName: bought?.instrumentName, soldStrike: sold?.strike, boughtStrike: bought?.strike, soldCreationTimestamp: sold?.creationTimestamp, boughtCreationTimestamp: bought?.creationTimestamp, priceIndex: sold?.priceIndex ?? bought?.priceIndex ?? "btc_usd", strikeResolutionSensible: sensible, strikeResolutionNote: sensible ? `Resolved ${request.soldStrike}/${request.boughtStrike} to ${sold!.strike}/${bought!.strike}.` : "No distinct, correctly ordered strike pair known to exist at entry.",contractStatus:!sensible?"confirmed_not_listed":sold!.strike===request.soldStrike&&bought!.strike===request.boughtStrike?"exact_resolved":"nearest_listed_resolved" });
         if (sensible) { selected.set(sold!.instrumentName, sold!); selected.set(bought!.instrumentName, bought!); }
       }
     }

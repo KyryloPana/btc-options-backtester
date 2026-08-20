@@ -1,6 +1,6 @@
 # Research Bundle Schema
 
-Schema **3.0.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and `events.jsonl`, `underlying_path.jsonl`, `candidates.jsonl`, `valuations.jsonl`, `outcomes.jsonl`, `availability.jsonl`, `margin_scenarios.jsonl`, `evidence_trades.jsonl`, `futures_comparisons.jsonl`, and `futures_path.jsonl`. Empty tables remain empty files and availability is stated in `run.json`.
+Schema **3.2.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and `events.jsonl`, `underlying_path.jsonl`, `candidates.jsonl`, `valuations.jsonl`, `outcomes.jsonl`, `availability.jsonl`, `margin_scenarios.jsonl`, `evidence_trades.jsonl`, `futures_comparisons.jsonl`, and `futures_path.jsonl`. Empty tables remain empty files and availability is stated in `run.json`.
 
 **`candidates.jsonl` = selected performance numerator; `availability.jsonl` = complete generated denominator.** Reports calculate coverage from availability and recompute extrema from valuations, never UI summaries.
 
@@ -46,3 +46,19 @@ reason-code, amount, direction, time-window, and synchronization evidence. A sel
 scenarios remain unavailable; analytics must not count that model track as execution coverage or
 raw PnL. Versions 1.0.0–1.2.0 migrate deterministically with an unevaluated model track and
 `legacy` provenance; execution economics are never fabricated during migration.
+
+## Schema 3.2.0 / selection schema 1.4.0: structural, valuation, and execution separation
+
+`strategy_variant_id` is the canonical identity for the event, configuration, actual expiry,
+actual short and long instruments, and target width. During the compatibility period it is equal
+to `candidate_id`; maker, taker, delayed, reference, expected-modeled, and conservative-modeled
+tracks all reference that one identity and never create scenario-specific structural identities.
+
+Selections and exported availability/candidate rows now carry a typed `contract_resolution`, an
+execution-independent `reference_valuation`, independent immediate maker and taker scenarios, and
+explicit `not_evaluated` delayed/modeled placeholders. Contract resolution distinguishes
+`exact_resolved`, `nearest_listed_resolved`, `confirmed_not_listed`, `retrieval_failure`, and
+`metadata_unavailable`. An authoritative listing remains resolved when its trade retrieval is empty;
+tape amount is relevant only to execution evidence. Reference economics are never copied into raw
+maker/taker rows or their coverage. Legacy records migrate with explicit legacy/unavailable states;
+no missing evidence or economics is inferred.

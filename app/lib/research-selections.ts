@@ -1,8 +1,8 @@
 import type { BacktestEvent, Candle, QualityFlag, RetrievedSpread } from "./backtester";
 
-export const RESEARCH_SELECTION_SCHEMA_VERSION = "1.3.0" as const;
+export const RESEARCH_SELECTION_SCHEMA_VERSION = "1.4.0" as const;
 /** Every schema version this app can still read and migrate forward from. */
-export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS = ["1.0.0", "1.1.0", "1.2.0"] as const;
+export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS = ["1.0.0", "1.1.0", "1.2.0", "1.3.0"] as const;
 /** @deprecated kept for external callers; prefer LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS. */
 export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSION = "1.0.0" as const;
 export type Venue = "deribit" | "bybit" | "binance";
@@ -37,6 +37,11 @@ export interface GenerationSnapshot { generatedAtUtc: string; configuration: Rep
 export interface EvidenceTradeDto { evidenceId:string; venue:Venue; instrument:string|null; tradeId:string|null; timestamp:number|null; direction:string|null; price:number|null; amount:number|null; indexPrice:number|null; ivApiPercent:number|null; ivDecimal:number|null; blockTradeId:string|null; rfqId:string|null; }
 export interface EvidenceUsageDto { evidenceId:string; candidateId:string; role:string; valuationTimestamp:number|null; pricingTrack:string|null; leg:string|null; executionScenario:"maker"|"taker"|null; }
 export type ExecutionScenarioEvaluationStatus = "evaluated" | "unavailable" | "not_evaluated";
+export type ContractResolutionStatus = "exact_resolved"|"nearest_listed_resolved"|"confirmed_not_listed"|"retrieval_failure"|"metadata_unavailable";
+export type ReferenceValuationSource = "causal_exact_trade_anchor"|"historical_mark"|"local_iv_interpolation"|"surface_interpolation"|"surface_extrapolation"|"dvol_anchored_smile_proxy"|"unavailable";
+export interface ContractMetadataSnapshot {instrumentName:string|null;creationTimestamp:number|null;expirationTimestamp:number|null;strike:number|null;optionType:string|null;contractSize:number|null;source:string|null;retrievedAtUtc:string|null;authoritative:boolean;}
+export interface ContractResolutionSnapshot {status:ContractResolutionStatus;reason:string|null;short:ContractMetadataSnapshot|null;long:ContractMetadataSnapshot|null;}
+export interface IndependentTrackSnapshot {status:"valued"|"unavailable"|"not_evaluated";reason:string|null;source:ReferenceValuationSource;entrySnapshot:JsonValue;valuationPathSnapshot:JsonValue[];outcomeSnapshots:JsonValue[];provenance:JsonValue;}
 /**
  * One execution scenario's independently-evaluated entry/path/outcomes for a
  * structure. `status:"unavailable"` means this scenario was attempted but
@@ -65,6 +70,12 @@ export interface SelectedStructure {
   modelTrack?: ExecutionScenarioSnapshot;
   selectionProvenance?: "model-only-diagnostic"|"raw-priced"|"legacy";
   statusLayers?: JsonValue;
+  /** Canonical structural key. Equal to candidateId during the compatibility period. */
+  strategyVariantId?: string;
+  contractResolution?: ContractResolutionSnapshot;
+  referenceValuation?: IndependentTrackSnapshot;
+  delayedExecution?: {status:"not_evaluated";reason:string};
+  modeledExecution?: {expected:{status:"not_evaluated";reason:string};conservative:{status:"not_evaluated";reason:string}};
   marginSnapshot: JsonValue; evidenceTradeSnapshots?: JsonValue[]; evidenceUsages?: EvidenceUsageDto[];
 }
 export interface ResearchSelectionEvent { eventId: string; sourceRun: JsonValue; generationSnapshot: GenerationSnapshot; selectedStructures: SelectedStructure[]; evidenceCatalog?: EvidenceTradeDto[] }
@@ -172,7 +183,7 @@ export function compactMarginResult(input:unknown):JsonValue{return stripEvidenc
  * evaluation. The OTHER scenario is explicitly not_evaluated: never fabricated
  * as 0, never silently dropped.
  */
-export function migrateResearchSelectionStore(value:unknown):ResearchSelectionStore{const checked=validateResearchSelectionStore(value);if(!checked.ok)throw new Error(checked.errors.map(e=>`${e.path}: ${e.message}`).join(" | "));const store=checked.store;if(store.schemaVersion===RESEARCH_SELECTION_SCHEMA_VERSION)return store;const events=store.events.map(event=>{const catalog=new Map<string,EvidenceTradeDto>();const selectedStructures=event.selectedStructures.map(raw=>{const legacy=raw as unknown as Record<string,unknown>;const usages:EvidenceUsageDto[]=[];for(const t of (legacy.evidenceTradeSnapshots as unknown[]|undefined)??[]){const dto=evidenceTradeDto(raw.venue,asObj(t));catalog.set(dto.evidenceId,dto);usages.push({evidenceId:dto.evidenceId,candidateId:raw.candidateId,role:"legacy-saved-source-trade",valuationTimestamp:finite(asObj(t).timestamp),pricingTrack:null,leg:null,executionScenario:null});}
+export function migrateResearchSelectionStore(value:unknown):ResearchSelectionStore{const checked=validateResearchSelectionStore(value);if(!checked.ok)throw new Error(checked.errors.map(e=>`${e.path}: ${e.message}`).join(" | "));const store=checked.store;if(store.schemaVersion===RESEARCH_SELECTION_SCHEMA_VERSION)return store;const wasLegacy=true;const events=store.events.map(event=>{const catalog=new Map<string,EvidenceTradeDto>((event.evidenceCatalog??[]).map(t=>[t.evidenceId,t]));const selectedStructures=event.selectedStructures.map(raw=>{const legacy=raw as unknown as Record<string,unknown>;const usages:EvidenceUsageDto[]=[...(raw.evidenceUsages??[])];for(const t of (legacy.evidenceTradeSnapshots as unknown[]|undefined)??[]){const dto=evidenceTradeDto(raw.venue,asObj(t));catalog.set(dto.evidenceId,dto);usages.push({evidenceId:dto.evidenceId,candidateId:raw.candidateId,role:"legacy-saved-source-trade",valuationTimestamp:finite(asObj(t).timestamp),pricingTrack:null,leg:null,executionScenario:null});}
   const existing=legacy.executionScenarios as {maker:ExecutionScenarioSnapshot;taker:ExecutionScenarioSnapshot}|undefined;
   let executionScenarios:{maker:ExecutionScenarioSnapshot;taker:ExecutionScenarioSnapshot};
   if(existing){executionScenarios=existing;}
@@ -186,7 +197,8 @@ export function migrateResearchSelectionStore(value:unknown):ResearchSelectionSt
     executionScenarios=legacyMode==="maker"?{maker:evaluated,taker:notEvaluated}:{maker:notEvaluated,taker:evaluated};
   }
   const {entrySnapshot:_es,valuationPathSnapshot:_vp,outcomeSnapshots:_os,...rest}=legacy;void _es;void _vp;void _os;
-  return{...(rest as unknown as SelectedStructure),executionScenarios,modelTrack:(legacy.modelTrack as ExecutionScenarioSnapshot|undefined)??{status:"not_evaluated",reason:"Predates execution-independent model tracks.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]},selectionProvenance:(legacy.selectionProvenance as SelectedStructure["selectionProvenance"]|undefined)??"legacy",statusLayers:(legacy.statusLayers as JsonValue|undefined)??null,marginSnapshot:compactMarginResult(legacy.marginSnapshot),evidenceTradeSnapshots:[],evidenceUsages:usages};
+  const notImplemented="Schema placeholder only; no search or modeled execution was performed.";
+  return{...(rest as unknown as SelectedStructure),strategyVariantId:String(legacy.strategyVariantId??raw.candidateId),contractResolution:(legacy.contractResolution as ContractResolutionSnapshot|undefined)??{status:"metadata_unavailable",reason:"Legacy record; contract metadata status was not recorded.",short:null,long:null},referenceValuation:(legacy.referenceValuation as IndependentTrackSnapshot|undefined)??{status:"not_evaluated",reason:"Legacy record; reference valuation was not independently evaluated.",source:"unavailable",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[],provenance:{legacy:true}},delayedExecution:(legacy.delayedExecution as SelectedStructure["delayedExecution"]|undefined)??{status:"not_evaluated",reason:notImplemented},modeledExecution:(legacy.modeledExecution as SelectedStructure["modeledExecution"]|undefined)??{expected:{status:"not_evaluated",reason:notImplemented},conservative:{status:"not_evaluated",reason:notImplemented}},executionScenarios,modelTrack:(legacy.modelTrack as ExecutionScenarioSnapshot|undefined)??{status:"not_evaluated",reason:"Predates execution-independent model tracks.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]},selectionProvenance:(legacy.selectionProvenance as SelectedStructure["selectionProvenance"]|undefined)??(wasLegacy?"legacy":undefined),statusLayers:(legacy.statusLayers as JsonValue|undefined)??null,marginSnapshot:compactMarginResult(legacy.marginSnapshot),evidenceTradeSnapshots:[],evidenceUsages:usages};
  });return{...event,selectedStructures,evidenceCatalog:[...catalog.values()].sort((a,b)=>a.evidenceId.localeCompare(b.evidenceId))};});return{...store,schemaVersion:RESEARCH_SELECTION_SCHEMA_VERSION,events};}
 export function researchEventPayloadDiagnostics(event:ResearchSelectionEvent){const encoder=new TextEncoder(),bytes=(v:unknown)=>encoder.encode(JSON.stringify(v)).byteLength;return{sourceEventBytes:bytes(event.sourceRun),selectedCandidateBytes:event.selectedStructures.map(s=>({candidateId:s.candidateId,totalBytes:bytes(s),candidateSnapshotBytes:bytes(s.candidateSnapshot),makerEntrySnapshotBytes:bytes(s.executionScenarios.maker.entrySnapshot),makerValuationPathBytes:bytes(s.executionScenarios.maker.valuationPathSnapshot),makerOutcomesBytes:bytes(s.executionScenarios.maker.outcomeSnapshots),takerEntrySnapshotBytes:bytes(s.executionScenarios.taker.entrySnapshot),takerValuationPathBytes:bytes(s.executionScenarios.taker.valuationPathSnapshot),takerOutcomesBytes:bytes(s.executionScenarios.taker.outcomeSnapshots),marginBytes:bytes(s.marginSnapshot),evidenceBytes:bytes(s.evidenceTradeSnapshots??[]),evidenceUsageBytes:bytes(s.evidenceUsages??[])})),candidateSnapshotBytes:bytes(event.generationSnapshot.candidates),eventEvidenceCatalogBytes:bytes(event.evidenceCatalog??[]),totalBytes:bytes(event)};}
 
