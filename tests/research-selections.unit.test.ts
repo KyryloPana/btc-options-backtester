@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer, type RequestListener } from "node:http";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ResearchSelectionService } from "../scripts/research-selection-service.ts";
+import { ResearchSelectionService, researchSelectionApiPlugin } from "../scripts/research-selection-service.ts";
 import { canLeaveDirty } from "../app/lib/trade-datasets.ts";
+import { LOCAL_PERSISTENCE_REQUIRED_MESSAGE, persistenceEndpointUnavailable } from "../app/lib/local-persistence.ts";
 import { LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS, RESEARCH_SELECTION_SCHEMA_VERSION, canSelectResearchCandidate, canonicalJson, compactEntryEconomics, compactValuationPoint, emptyResearchSelectionStore, migrateResearchSelectionStore, reconcileGeneratedSelection, sameSelectionIds, selectionChangeSet, researchEventPayloadDiagnostics, stableCandidateId, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure, type Venue } from "../app/lib/research-selections.ts";
 
 const now="2026-08-16T20:00:00.000Z";
@@ -41,6 +43,33 @@ test("normalization deduplicates evidence and removes nested supporting trades",
 const legacy={eventId:"event-a",sourceRun:{eventId:"event-a"},generationSnapshot:event("event-a",selected.map(x=>x.candidateId)).generationSnapshot,selectedStructures:selected.map(x=>({...event("event-a",[x.candidateId]).selectedStructures[0],executionScenarios:{maker:{status:"evaluated",reason:null,entrySnapshot:{...x.entry,sold:{...x.entry.sold,supportingTrades:trades},bought:{...x.entry.bought,supportingTrades:trades}},valuationPathSnapshot:x.path,outcomeSnapshots:[]},taker:notEvaluated},evidenceTradeSnapshots:[...trades,...trades]}))};const normalized={...legacy,selectedStructures:selected.map(x=>{const localUsages=[];return{...event("event-a",[x.candidateId]).selectedStructures[0],executionScenarios:{maker:{status:"evaluated",reason:null,entrySnapshot:compactEntryEconomics("deribit",x.candidateId,x.entry,localUsages,catalog),valuationPathSnapshot:x.path.map(point=>compactValuationPoint("deribit",x.candidateId,point,localUsages,catalog)),outcomeSnapshots:[]},taker:notEvaluated},evidenceTradeSnapshots:[],evidenceUsages:localUsages}}),evidenceCatalog:[...catalog.values()]};const before=researchEventPayloadDiagnostics(legacy as ResearchSelectionEvent),after=researchEventPayloadDiagnostics(normalized as ResearchSelectionEvent);assert.ok(before.selectedCandidateBytes[0].evidenceBytes>100_000);assert.ok(after.totalBytes<10_000_000);assert.ok(after.totalBytes<before.totalBytes/10);assert.equal(normalized.evidenceCatalog.length,17);assert.doesNotMatch(JSON.stringify(normalized),/supportingTrades/);});
 
 test("event upsert preserves other events and rejects stale writes",async()=>{const dir=await mkdtemp(join(tmpdir(),"research-upsert-")),service=new ResearchSelectionService(dir);await service.save("default-sample-trades",store([event("event-a",["a1"]),event("event-b",["b1"])]));const loaded=await service.read("default-sample-trades");const updated=await service.upsertEvent("default-sample-trades","event-b",event("event-b",["b2"]),loaded.updatedAtUtc);assert.deepEqual(updated.events.map(e=>[e.eventId,e.selectedStructures.map(s=>s.candidateId)]),[["event-a",["a1"]],["event-b",["b2"]]]);await assert.rejects(()=>service.upsertEvent("default-sample-trades","event-b",event("event-b",["b3"]),loaded.updatedAtUtc),/changed on disk/);});
+
+test("HTTP first-touch PUT persists, reloads, validates, and retains If-Match conflicts",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"research-http-"));let middleware:RequestListener|undefined;
+ researchSelectionApiPlugin(dir).configureServer?.({middlewares:{use(handler:RequestListener){middleware=handler}}} as never);assert.ok(middleware);
+ const server=createServer(middleware);await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
+ try{
+  const address=server.address();assert.ok(address&&typeof address!=="string");const base=`http://127.0.0.1:${address.port}/__local/research-selections/default-sample-trades`;
+  const initial=await (await fetch(base)).json() as ResearchSelectionStore;
+  const put=await fetch(`${base}/events/event-a`,{method:"PUT",headers:{"Content-Type":"application/json","If-Match":initial.updatedAtUtc},body:JSON.stringify(event("event-a",["one","two"]))});
+  assert.equal(put.status,200,"a missing store has a stable first-touch If-Match version");
+  const saved=(await put.json() as {store:ResearchSelectionStore}).store;
+  const reloaded=await (await fetch(base)).json() as ResearchSelectionStore;
+  assert.deepEqual(reloaded.events[0].selectedStructures.map(item=>item.candidateId),["one","two"]);
+  assert.equal((await readFile(join(dir,"default-sample-trades.json"),"utf8")).includes('"candidateId": "two"'),true,"the HTTP route writes the canonical filesystem file");
+  const invalid=await fetch(`${base}/events/event-b`,{method:"PUT",headers:{"Content-Type":"application/json","If-Match":saved.updatedAtUtc},body:"{}"});
+  assert.equal(invalid.status,400);assert.match((await invalid.json() as {error:string}).error,/event ID must match/i,"validation remains a readable HTTP response");
+  const stale=await fetch(`${base}/events/event-a`,{method:"PUT",headers:{"Content-Type":"application/json","If-Match":initial.updatedAtUtc},body:JSON.stringify(event("event-a",["replacement"]))});
+  assert.equal(stale.status,409);assert.match((await stale.json() as {error:string}).error,/changed on disk/i);
+  assert.deepEqual((await new ResearchSelectionService(dir).read("default-sample-trades")).events[0].selectedStructures.map(item=>item.candidateId),["one","two"],"failed requests never mark or write the draft as saved");
+ }finally{await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));await rm(dir,{recursive:true,force:true})}
+});
+
+test("unsupported persistence is classified explicitly without disguising HTTP validation",()=>{
+ assert.equal(LOCAL_PERSISTENCE_REQUIRED_MESSAGE,"Research-state persistence requires the local application server.");
+ assert.equal(persistenceEndpointUnavailable(new TypeError("Failed to fetch"),false),true);
+ assert.equal(persistenceEndpointUnavailable(new Error("Validation failed"),true),false);
+});
 
 test("clear persists across restart, excludes only that event, and permits reselection",async()=>{
  const dir=await mkdtemp(join(tmpdir(),"research-clear-"));let service=new ResearchSelectionService(dir);

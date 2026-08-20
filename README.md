@@ -11,6 +11,11 @@ npm ci
 npm run dev
 ```
 
+Research selections and trade-dataset edits are persisted to the canonical
+project files only by this Vite local application server. A built/static site
+does not expose the `/__local/*` persistence routes; the Backtester detects
+that runtime and disables research-state saving rather than reporting a save.
+
 The optional server-side API setting defaults to Deribit's public History API:
 
 ```env
