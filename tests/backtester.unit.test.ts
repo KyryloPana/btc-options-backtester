@@ -11,6 +11,7 @@ import {
   normalizeLeg,
   evaluateExits,
   parseContractText,
+  valuationTimestamps,
   type ValuationPoint,
 } from "../app/lib/backtester.ts";
 import { CHART_GEOMETRY, CHART_SERIES, hitExitGroups, nearestPoint, timestampAtX, timeX, uniqueCanonicalSpreads, visibleMatrixSpreads } from "../app/lib/valuation-chart.ts";
@@ -19,6 +20,13 @@ import { estimateResearchSpread } from "../app/lib/research-valuation.ts";
 function close(actual: number | undefined, expected: number) {
   assert.ok(actual !== undefined && Math.abs(actual - expected) < 1e-10, `${actual} should be close to ${expected}`);
 }
+
+test("valuation grid and special timestamps are strictly entry-to-expiry bounded",()=>{
+  const entry=Date.UTC(2025,9,1,8),fourHours=4*3_600_000,unalignedExpiry=entry+9*3_600_000;
+  assert.deepEqual(valuationTimestamps(entry,entry,[entry-fourHours,entry+fourHours]),[entry]);
+  assert.deepEqual(valuationTimestamps(entry,unalignedExpiry,[entry-fourHours,entry+2*3_600_000,unalignedExpiry+fourHours]),[entry,entry+2*3_600_000,entry+fourHours,entry+2*fourHours,unalignedExpiry]);
+  assert.ok(!valuationTimestamps(entry,entry+7*86_400_000,[entry+8*86_400_000]).includes(entry+8*86_400_000));
+});
 
 function valuationFixture(kind: "credit" | "debit", comboExecution = false) {
   const entry = Date.parse("2024-04-10T03:00:00Z");
