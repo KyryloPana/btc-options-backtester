@@ -65,6 +65,23 @@ test("live-shaped October Deribit rows retain independent IV anchors through dir
 
 test("invalid amount is rejected before constructing a research path",()=>{assert.match(validateResearchAmount(0)??"",/greater than zero/);});
 
+test("scheduled raw-VWAP marks use fresh causal closing tape and their own path accounting",()=>{
+ const closeAt=T+4*36e5,s=spread(
+  [trade("BTC-8JAN24-39000-P",0,.08,"sell",2),trade("BTC-8JAN24-39000-P",241,.04,"buy",2)],
+  [trade("BTC-8JAN24-38000-P",0,.03,"buy",2),trade("BTC-8JAN24-38000-P",242,.01,"sell",2)],
+ );
+ const entry=estimateResearchSpread({spread:s,targetTimestamp:T,targetIndex:40000,amount:2,slippageBps:0,executionMode:"taker"});
+ assert.equal(entry.status,"priced");if(entry.status!=="priced")return;
+ const [point]=buildEstimatedPath({spread:s,timestamps:[closeAt],indexAt:()=>41000,entry,slippageBps:0});
+ assert.equal(point.status,"priced");assert.equal(point.rawEstimate?.intent,"close");
+ assert.deepEqual(point.rawEstimate?.sold.supportingTrades.map(t=>t.direction),["buy"]);
+ assert.deepEqual(point.rawEstimate?.bought.supportingTrades.map(t=>t.direction),["sell"]);
+ assert.ok(point.rawEstimate!.sold.supportingTimestamps.every(t=>t>=closeAt));
+ assert.equal(point.rawEstimate?.observedAmount,2);
+ assert.equal(point.rawClosingSpreadValueBtc,-.06);
+ assert.equal(point.rawEstimatedNetPnlBtc,entry.netOpeningCashFlowBtc+point.rawClosingSpreadValueBtc!-point.rawClosingFeesBtc!);
+});
+
 test("opening USD equivalents retain the canonical synchronized entry index",()=>{
  const direct=estimateResearchSpread({spread:spread([trade("BTC-8JAN24-39000-P",0,.08,"sell",2)],[trade("BTC-8JAN24-38000-P",0,.03,"buy",2)]),targetTimestamp:T,targetIndex:41_234.5,amount:2,slippageBps:0,executionMode:"taker"});
  assert.equal(direct.status,"priced"); if(direct.status!=="priced")return;

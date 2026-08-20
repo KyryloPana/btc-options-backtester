@@ -75,7 +75,10 @@ export function buildEntryDelayReport(dataset:AnalysisDataset):EntryDelayReport{
  // per-timestamp evidence a causal delayed entry could be built from.
  const rawMarksByKey=new Map<string,number[]>();
  for(const row of valuations){
-  if(row.pricing_track!=="raw_vwap"||row.valuation_status!=="priced")continue;
+  // Scheduled close marks use the opposite actions and therefore cannot prove
+  // that a delayed opening was executable. Only an explicitly exported fresh
+  // opening evaluation may support this table.
+  if(row.pricing_track!=="raw_vwap"||row.valuation_status!=="priced"||row.point_role!=="delayed_entry")continue;
   const id=str(row.candidate_id),scenario=str(row.execution_scenario),t=ms(row.timestamp_utc);
   if(!id||!scenario||t===null)continue;
   const key=`${id}~${scenario}`;
