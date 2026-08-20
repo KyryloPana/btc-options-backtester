@@ -50,7 +50,7 @@ test("triggered-unfilled positions fall back to versioned settlement with delive
   const noClose = spread("settle"); noClose.soldContract!.trades = noClose.soldContract!.trades.filter(t => t.direction === "sell"); noClose.boughtContract!.trades = noClose.boughtContract!.trades.filter(t => t.direction === "buy"); noClose.deliveryPrice = 52_000;
   const legacy = runEventBacktest({ event: event("legacy"), candidates: [noClose], candles, config });
   assert.equal(legacy.eventOutcome, "settled"); assert.equal(legacy.selectedExitLifecycle?.reasonCode, "triggered-unfilled-carried-to-settlement"); assert.equal(legacy.settlementLedger?.legs[0].version, "legacy-direct-cash"); assert.ok(legacy.settlementLedger!.deliveryFeesBtc > 0); assert.match(legacy.settlementNetPnl!.identity, /delivery fees/);
-  const modernSpread = spread("modern", true, "ready", Date.parse("2026-08-02T08:00:00Z")); modernSpread.deliveryPrice = 52_000; modernSpread.soldContract!.trades = noClose.soldContract!.trades; modernSpread.boughtContract!.trades = noClose.boughtContract!.trades;
+  const modernSpread = spread("modern", true, "ready", Date.parse("2026-08-02T08:00:00Z")); modernSpread.deliveryPrice = 52_000; modernSpread.soldContract!.trades = noClose.soldContract!.trades.map(t=>({...t,instrumentName:modernSpread.soldContract!.instrumentName})); modernSpread.boughtContract!.trades = noClose.boughtContract!.trades.map(t=>({...t,instrumentName:modernSpread.boughtContract!.instrumentName}));
   const modern = runEventBacktest({ event: event("modern"), candidates: [modernSpread], candles, config });
   assert.equal(modern.settlementLedger?.legs[0].version, "option-to-future");
 });
