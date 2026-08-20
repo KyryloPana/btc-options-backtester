@@ -5,6 +5,9 @@ import {buildHorizonAvailability,buildHorizonFamilies,normalizeDteCandidates} fr
 import {buildDurationDteReport} from "../app/lib/duration-dte/report.ts";
 import {buildEntryDelayReport} from "../app/lib/duration-dte/entry-delay.ts";
 import {share} from "../app/lib/duration-dte/statistics.ts";
+import {normalizeExecutionScenarioStatus} from "../app/lib/execution-scenario.ts";
+import {normalizeShortStrikeStructures} from "../app/lib/short-strike/normalize.ts";
+import {normalizeWidthStructures} from "../app/lib/spread-width/normalize.ts";
 
 const D=(day:number,hour=0)=>new Date(Date.UTC(2026,0,day,hour)).toISOString();
 const ENTRY=D(1);
@@ -344,8 +347,8 @@ test("COVERAGE: not evaluated, unavailable and a genuine share are three distinc
  assert.equal(availabilityFor(14).maker.status,"not_evaluated");
  assert.equal(availabilityFor(14).maker.share,null,"never rendered as 0%");
  assert.match(availabilityFor(14).maker.reason!,/not a 0% result/i);
- // Horizon 30 has a taker row, but it is not_evaluated: assessed, unsupported.
- assert.equal(availabilityFor(30).taker.status,"unavailable");
+ // Horizon 30 has only an explicit not_evaluated row; that is not failed executability.
+ assert.equal(availabilityFor(30).taker.status,"not_evaluated");
  assert.equal(availabilityFor(30).taker.share,null);
  assert.match(availabilityFor(30).taker.reason!,/not_evaluated/);
  // Horizon 7 has genuinely evaluated maker evidence, so a share is meaningful.
@@ -574,4 +577,28 @@ test("data sufficiency: an empty bundle produces zero candidates and no fabricat
 test("normalize: buildHorizonAvailability is independent of buildDurationDteReport's own aggregation",()=>{
  const families=buildHorizonFamilies(dataset),availabilityDirect=buildHorizonAvailability(dataset,families);
  assert.deepEqual(availabilityDirect,report.availability);
+});
+
+test("canonical unavailable status and reason survive every research normalizer",()=>{
+ const reason="Credit spread entry prices imply a debit, not a credit.";
+ const candidate={event_id:"audit",candidate_id:"audit-c",structure_execution_id:"audit-c~maker",execution_scenario:"maker",
+  execution_scenario_status:"unavailable",execution_scenario_reason:reason,execution_scenario_legacy_undifferentiated:true,
+  target_horizon_days:7,actual_strikes:{short:40000,long:39000,width:1000},expiry_timestamp_utc:D(8)};
+ const audit={metadata:{},tables:{candidates:[candidate]}} as unknown as AnalysisDataset;
+ assert.equal(normalizeExecutionScenarioStatus("unavailable"),"unavailable");
+ for(const row of [normalizeDteCandidates(audit)[0],normalizeShortStrikeStructures(audit)[0],normalizeWidthStructures(audit)[0]]){
+  assert.equal(row.executionScenarioStatus,"unavailable");
+  assert.equal(row.executionScenarioReason,reason);
+  assert.equal(row.executionScenarioLegacyUndifferentiated,true);
+ }
+ assert.equal(normalizeWidthStructures(audit)[0].entry.netCreditBtc,null,"unavailable must not fabricate economics");
+});
+
+test("legacy-undifferentiated rows cannot form maker/taker execution-drag pairs",()=>{
+ const candidates=(dataset.tables.candidates??[]).map(r=>({...r,execution_scenario_legacy_undifferentiated:true}));
+ const legacy={...dataset,tables:{...dataset.tables,candidates}} as AnalysisDataset;
+ const row=buildDurationDteReport(legacy,"maker").matchedExecution.find(r=>r.horizon.nominalDays===7)!;
+ assert.equal(row.matchedN,0);
+ assert.equal(row.makerOnlyN,0);
+ assert.equal(row.takerOnlyN,0);
 });

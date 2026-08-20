@@ -4,6 +4,7 @@ import type {SpreadWidthReport} from "../lib/spread-width/report";
 import type {WidthStructure} from "../lib/spread-width/normalize";
 import {ChartMarker,ChartReadout,useChartCursor} from "./chart-cursor";
 import {nearestInPlot,type PlotGeometry} from "../lib/chart-interaction";
+import {executionScenarioStatusLabel} from "../lib/execution-scenario";
 
 /**
  * Presentation only. Every number comes from the prebuilt Spread-Width view
@@ -240,7 +241,7 @@ export function SpreadWidthReportView({report,view="maker",onViewChange}:{
      <td>{money(r.identity.shortStrike)}</td>
      <td className={r.identity.widthSubstituted?"dd-muted":undefined} title={r.identity.widthSubstituted?"Historical availability forced a different protective long; economics use the actual width.":undefined}>{r.identity.requestedWidthUsd===null?"—":widthLabel(r.identity.requestedWidthUsd)}</td>
      <td>{r.identity.actualWidthUsd===null?"—":widthLabel(r.identity.actualWidthUsd)}{r.identity.widthSubstituted&&<small className="dd-muted"> ⓘ</small>}</td>
-     <td className="dd-muted">{r.executionScenario??"—"}</td>
+     <td className="dd-muted" title={r.executionScenarioReason??undefined}>{r.executionScenario??"—"} · {executionScenarioStatusLabel(r.executionScenarioStatus)}{r.executionScenarioLegacyUndifferentiated?" · legacy undifferentiated":""}</td>
      <td>{usd(r.entry.grossCreditUsd)}</td><td>{usd(r.entry.netCreditUsd)}</td>
      <td>{usd(r.protection.longLegPremiumUsd)}</td>
      <td>{r.entry.openingFeesBtc===null?UNAVAILABLE:`${r.entry.openingFeesBtc.toFixed(5)} BTC`}</td>

@@ -4,6 +4,7 @@ import {challengeOf,type ChallengeObservation} from "../strike-challenge.ts";
 import {calculateDeliveryFee,calculateOptionFee,STANDARD_INVERSE_BTC_OPTION_FEE} from "../accounting.ts";
 import {breakEven,expiryPayoff,intrinsicBtc,payoffExtrema,type ExpiryPayoffInput} from "../expiry-payoff.ts";
 import type {OptionType} from "../backtester.ts";
+import {normalizeExecutionScenarioStatus,type ExecutionScenarioStatus} from "../execution-scenario.ts";
 
 /**
  * Canonical research bundle -> normalized spread-width structures.
@@ -29,7 +30,7 @@ import type {OptionType} from "../backtester.ts";
  */
 
 export type ExecutionScenario="maker"|"taker";
-export type ExecutionScenarioStatus="evaluated"|"not_evaluated";
+export type {ExecutionScenarioStatus} from "../execution-scenario.ts";
 export type UnavailableReason=string;
 
 /** A figure plus, when it is missing, the reason it is missing. */
@@ -131,6 +132,7 @@ export interface WidthStructure {
  readonly executionScenario:ExecutionScenario|null;
  readonly executionScenarioStatus:ExecutionScenarioStatus|null;
  readonly executionScenarioReason:string|null;
+ readonly executionScenarioLegacyUndifferentiated:boolean;
  readonly direction:"long"|"short"|null;
  readonly optionType:OptionType|null;
  readonly structureType:string|null;
@@ -165,7 +167,7 @@ const num=(v:unknown):number|null=>typeof v==="number"&&Number.isFinite(v)?v:nul
 const ms=(v:unknown):number|null=>{const s=str(v);if(!s)return null;const t=Date.parse(s);return Number.isFinite(t)?t:null};
 const nested=(v:unknown,...keys:string[]):unknown=>keys.reduce<unknown>((acc,key)=>acc&&typeof acc==="object"&&!Array.isArray(acc)?(acc as Record<string,unknown>)[key]:undefined,v);
 const scenarioOf=(v:unknown):ExecutionScenario|null=>{const s=str(v);return s==="maker"||s==="taker"?s:null};
-const scenarioStatusOf=(v:unknown):ExecutionScenarioStatus|null=>{const s=str(v);return s==="evaluated"||s==="not_evaluated"?s:null};
+const scenarioStatusOf=normalizeExecutionScenarioStatus;
 const optionTypeOf=(v:unknown):OptionType|null=>{const s=str(v);return s==="C"||s==="P"?s:null};
 const DAY=864e5;
 
@@ -382,6 +384,7 @@ export function normalizeWidthStructures(dataset:AnalysisDataset):readonly Width
   return {
    eventId,candidateId,structureExecutionId:str(row.structure_execution_id)??`${candidateId}~${scenario??"unknown"}`,
    executionScenario:scenario,executionScenarioStatus:scenarioStatus,executionScenarioReason:str(row.execution_scenario_reason),
+   executionScenarioLegacyUndifferentiated:row.execution_scenario_legacy_undifferentiated===true,
    direction,optionType,structureType:str(row.structure_type),
    expiryTimestampMs,actualDteDays,structureEntryMs,quantity,entryIndex,matchKey,
    identity,entry,payoff,protection,capital,challenge,adverse,

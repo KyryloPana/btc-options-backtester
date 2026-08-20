@@ -3,10 +3,11 @@ import {normalizeMrEvents,type ResolutionOutcome} from "../underlying-resolution
 // Adverse-path evidence is a shared canonical primitive: Short-Strike answers
 // the same question and must answer it identically, so both import one copy.
 import {adversePath,type AdversePathObservation} from "../adverse-path.ts";
+import {normalizeExecutionScenarioStatus,type ExecutionScenarioStatus} from "../execution-scenario.ts";
 export {type AdversePathObservation,type PathEvidenceStatus} from "../adverse-path.ts";
 
 /**
- * Canonical research bundle 2.2.0 -> normalized Duration/DTE structures.
+ * Canonical research bundle 2.3.0 -> normalized Duration/DTE structures.
  *
  * This module joins `candidates.jsonl` (selected structures), `availability.jsonl`
  * (the full generated denominator, selected and unselected), `outcomes.jsonl`
@@ -33,7 +34,7 @@ export {type AdversePathObservation,type PathEvidenceStatus} from "../adverse-pa
  * Execution scenario: candidates.jsonl carries one row per (structure,
  * execution scenario) pair, sharing candidate_id as the stable structural
  * identity. `execution_scenario` ("maker"|"taker") and `execution_scenario_status`
- * ("evaluated"|"not_evaluated") are read verbatim -- maker and taker are two
+ * ("evaluated"|"unavailable"|"not_evaluated") are read verbatim -- maker and taker are two
  * genuinely, independently evaluated scenarios, never one label standing in
  * for both. A not_evaluated row keeps every execution-INDEPENDENT structural
  * fact but has null for every execution-DEPENDENT field, since the canonical
@@ -49,7 +50,7 @@ export {type AdversePathObservation,type PathEvidenceStatus} from "../adverse-pa
 
 export type EntryQuality="green"|"yellow"|"red";
 export type ExecutionScenario="maker"|"taker";
-export type ExecutionScenarioStatus="evaluated"|"not_evaluated";
+export type {ExecutionScenarioStatus} from "../execution-scenario.ts";
 
 /**
  * Candidate-relative outcome buckets. These describe what happened WHILE THIS
@@ -99,8 +100,10 @@ export interface DteCandidate {
  readonly structureType:string|null;
  readonly executionScenario:ExecutionScenario|null;
  readonly executionScenarioStatus:ExecutionScenarioStatus|null;
- /** Why this scenario is not_evaluated; null when evaluated or status is unknown. */
+ /** Canonical reason for unavailable/not-evaluated status; null when absent. */
  readonly executionScenarioReason:string|null;
+ /** True for migrated single-scenario evidence, which is not an independent maker/taker observation. */
+ readonly executionScenarioLegacyUndifferentiated:boolean;
 
  /* ---- structural identity, for matched comparisons (execution-independent) ---- */
  readonly strikeMethod:string|null;
@@ -216,7 +219,7 @@ const DAY=864e5;
 const QUALITIES=new Set(["green","yellow","red"]);
 const quality=(v:unknown):EntryQuality|null=>{const s=str(v);return s&&QUALITIES.has(s)?s as EntryQuality:null};
 const scenarioOf=(v:unknown):ExecutionScenario|null=>{const s=str(v);return s==="maker"||s==="taker"?s:null};
-const scenarioStatusOf=(v:unknown):ExecutionScenarioStatus|null=>{const s=str(v);return s==="evaluated"||s==="not_evaluated"?s:null};
+const scenarioStatusOf=normalizeExecutionScenarioStatus;
 const nested=(v:unknown,key:string):unknown=>v&&typeof v==="object"&&!Array.isArray(v)?(v as Record<string,unknown>)[key]:undefined;
 
 function horizonLabel(nominalDays:number):string{return `~${nominalDays}D`}
@@ -320,6 +323,7 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
   const structural={
    eventId,candidateId,structureExecutionId,horizonNominalDays:num(row.target_horizon_days),structureType:str(row.structure_type),
    executionScenario:scenario,executionScenarioStatus:scenarioStatus,executionScenarioReason:str(row.execution_scenario_reason),
+   executionScenarioLegacyUndifferentiated:row.execution_scenario_legacy_undifferentiated===true,
    strikeMethod:str(row.strike_method),widthUsd:num(nested(row.actual_strikes,"width")),optionType:str(row.option_type),
    structuralVariantKey:variantKey(row,eventId),
    entryQuality:evaluated?quality(row.entry_quality):null,
@@ -461,8 +465,9 @@ function scenarioCoverage(rows:readonly Readonly<Record<string,unknown>>[],scena
  const evaluated=forScenario.filter(r=>scenarioStatusOf(r.execution_scenario_status)==="evaluated");
  if(!evaluated.length){
   const reasons=[...new Set(forScenario.map(r=>str(r.execution_scenario_reason)).filter((x):x is string=>x!==null))];
-  return {status:"unavailable",events:0,eligibleEvents,share:null,
-   reason:`All ${forScenario.length} ${scenario} row(s) here are not_evaluated: canonical evidence did not support the scenario for any structure.${reasons.length?` Reported reason: ${reasons[0]}`:""}`};
+  const unavailable=forScenario.some(r=>scenarioStatusOf(r.execution_scenario_status)==="unavailable");
+  return {status:unavailable?"unavailable":"not_evaluated",events:0,eligibleEvents,share:null,
+   reason:`All ${forScenario.length} ${scenario} row(s) here are ${unavailable?"unavailable":"not_evaluated"}.${reasons.length?` Reported reason: ${reasons[0]}`:""}`};
  }
  const events=new Set(evaluated.map(r=>str(r.event_id)).filter((x):x is string=>x!==null)).size;
  return {status:"measured",events,eligibleEvents,share:eligibleEvents>0?events/eligibleEvents:null,reason:null};
