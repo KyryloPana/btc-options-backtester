@@ -282,9 +282,17 @@ test("matrix toggle defaults off and disclosure buttons retain accessible relati
   assert.match(page, />Hide red<\/label>/);
   assert.match(page, />Hide data-unavailable<\/label>/);
   assert.match(page, /className="expand-button" aria-expanded=\{expanded\} aria-controls=/);
-  assert.match(page, /aria-label=\{`\$\{expanded \? "Collapse" : "Expand"\} opening ledgers/);
+  assert.match(page, /aria-label=\{`\$\{expanded \? "Collapse" : "Expand"\} evidence/);
   assert.match(page, /className="expand-chevron" aria-hidden="true"/);
   assert.doesNotMatch(page, /⌄/);
+  assert.match(page, /useState<"model" \| "maker" \| "taker" \| "raw">\("model"\)/);
+  assert.match(page, /Show unavailable · \{unavailableResults.length\}/);
+  assert.match(page, /<th>Status<\/th>/);
+  assert.doesNotMatch(page, /<th>Exact contracts<\/th>/);
+  assert.doesNotMatch(page, /<summary>Evidence<\/summary>/);
+  for (const heading of ["Exact contracts", "Model valuation"]) assert.match(page, new RegExp(`<h4>${heading}</h4>`));
+  assert.match(page, /executionBlock\("Maker opportunity",maker,true\)/);
+  assert.match(page, /executionBlock\("Taker execution",taker\)/);
 });
 
 test("chart modes keep USD PnL and BTC contract series separate", () => {
