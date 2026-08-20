@@ -120,7 +120,23 @@ export function validateResearchSelectionStore(value:unknown):{ok:true;store:Res
 }
 
 export function emptyResearchSelectionStore(datasetId:string,now=new Date().toISOString()):ResearchSelectionStore{return{schemaVersion:RESEARCH_SELECTION_SCHEMA_VERSION,datasetId,updatedAtUtc:now,events:[]};}
-export function reconcileSelectionIds(saved:Iterable<string>,toggles:ReadonlyMap<string,boolean>){const next=new Set(saved);for(const[id,selected]of toggles){if(selected)next.add(id);else next.delete(id);}return next;}
+export interface SelectionChangeSet { toAdd:Set<string>; toRemove:Set<string>; toKeep:Set<string> }
+/** The complete selection transition. Callers must never infer it from UI toggles. */
+export function selectionChangeSet(saved:Iterable<string>,draft:Iterable<string>):SelectionChangeSet{
+ const savedSet=new Set(saved),draftSet=new Set(draft);
+ return{
+  toAdd:new Set([...draftSet].filter(id=>!savedSet.has(id))),
+  toRemove:new Set([...savedSet].filter(id=>!draftSet.has(id))),
+  toKeep:new Set([...draftSet].filter(id=>savedSet.has(id))),
+ };
+}
+export function sameSelectionIds(left:Iterable<string>,right:Iterable<string>){const a=new Set(left),b=new Set(right);return a.size===b.size&&[...a].every(id=>b.has(id));}
+/** Reconciles persisted ids against a regenerated universe without remapping identities. */
+export function reconcileGeneratedSelection(saved:Iterable<string>,currentCandidates:Iterable<string>){
+ const candidateSet=new Set(currentCandidates),visible=new Set<string>(),stale=new Set<string>();
+ for(const id of saved)(candidateSet.has(id)?visible:stale).add(id);
+ return{visible,stale};
+}
 export function canSelectResearchCandidate(status:"priced"|"unavailable",quality?:QualityFlag){void quality;return status==="priced";}
 
 export function candidateIdentity(datasetId:string,eventId:string,spread:RetrievedSpread):CandidateIdentityInput{return{venue:"deribit",datasetId,eventId,structure:spread.spreadKind,optionType:spread.optionType,expiryTimestamp:spread.expiryTimestamp??0,shortStrike:spread.resolvedSoldStrike??spread.soldStrike,longStrike:spread.resolvedBoughtStrike??spread.boughtStrike,strikeMethod:spread.buffered?"buffered":"anchor",targetHorizon:spread.targetDte};}
