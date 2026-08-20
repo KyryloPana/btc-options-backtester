@@ -1,8 +1,8 @@
 import type { BacktestEvent, Candle, QualityFlag, RetrievedSpread } from "./backtester";
 
-export const RESEARCH_SELECTION_SCHEMA_VERSION = "1.4.0" as const;
+export const RESEARCH_SELECTION_SCHEMA_VERSION = "1.5.0" as const;
 /** Every schema version this app can still read and migrate forward from. */
-export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS = ["1.0.0", "1.1.0", "1.2.0", "1.3.0"] as const;
+export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS = ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0"] as const;
 /** @deprecated kept for external callers; prefer LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS. */
 export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSION = "1.0.0" as const;
 export type Venue = "deribit" | "bybit" | "binance";
@@ -74,7 +74,8 @@ export interface SelectedStructure {
   strategyVariantId?: string;
   contractResolution?: ContractResolutionSnapshot;
   referenceValuation?: IndependentTrackSnapshot;
-  delayedExecution?: {status:"not_evaluated";reason:string};
+  /** Versioned causal delayed-entry analysis. Kept separate from immediate and reference tracks. */
+  delayedExecution?: JsonValue;
   modeledExecution?: {expected:{status:"not_evaluated";reason:string};conservative:{status:"not_evaluated";reason:string}};
   marginSnapshot: JsonValue; evidenceTradeSnapshots?: JsonValue[]; evidenceUsages?: EvidenceUsageDto[];
 }
