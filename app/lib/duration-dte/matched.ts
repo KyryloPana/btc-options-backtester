@@ -106,7 +106,7 @@ export interface MatchedExecutionRow {
 export function buildMatchedExecution(allScenarios:readonly DteCandidate[],horizons:readonly HorizonFamily[]):readonly MatchedExecutionRow[] {
  return horizons.map(horizon=>{
   const at=allScenarios.filter(c=>c.horizonNominalDays===horizon.nominalDays&&c.ineligibilityReason===null);
-  const pick=(s:ExecutionScenario)=>new Map(at.filter(c=>c.executionScenario===s&&c.executionScenarioStatus==="evaluated").map(c=>[c.candidateId,c]));
+  const pick=(s:ExecutionScenario)=>new Map(at.filter(c=>c.executionScenario===s&&c.executionScenarioStatus==="evaluated"&&!c.executionScenarioLegacyUndifferentiated).map(c=>[c.candidateId,c]));
   const maker=pick("maker"),taker=pick("taker");
   const matchedIds=[...maker.keys()].filter(id=>taker.has(id));
   const pairs=matchedIds.map(id=>[maker.get(id)!,taker.get(id)!] as const);

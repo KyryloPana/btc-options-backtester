@@ -42,6 +42,7 @@ export interface OverviewRow {
  readonly eventsN:number;
  /** Selected-scenario rows not genuinely evaluated. Never shown as 0%. */
  readonly notEvaluatedN:number;
+ readonly unavailableN:number;
  readonly actualDte:FiveNumberSummary|null;
  readonly pricedShare:number|null;
  readonly taker:ScenarioCoverage;
@@ -193,7 +194,8 @@ function overviewRow(horizon:HorizonFamily,structures:readonly DteCandidate[],sc
   horizon,
   structuresN:struct.length,
   eventsN:new Set(struct.map(c=>c.eventId)).size,
-  notEvaluatedN:rows.length-evaluated.length,
+  notEvaluatedN:rows.filter(c=>c.executionScenarioStatus==="not_evaluated").length,
+  unavailableN:rows.filter(c=>c.executionScenarioStatus==="unavailable").length,
   actualDte:fiveNumber(defined(struct.map(c=>c.actualDteDays))),
   pricedShare:share(availability.priced,availability.eligibleEvents),
   taker:availability.taker,maker:availability.maker,
@@ -362,6 +364,7 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
    "Analytical unit. Availability and thesis coverage are counted per MR EVENT x horizon family: one event contributes one observation per horizon however many width/strike variants it generated, so an event that produced six structures never outvotes an event that produced one. Economic comparisons (PnL, adverse path, capture) instead use MATCHED structural variants -- same event, same short-strike method, same width, same structure/option type, same execution scenario -- differing only in horizon/actual DTE, so a width or strike-placement difference is never attributed to duration.",
    "Execution-independent vs execution-dependent. Actual expiry, actual DTE, underlying first-resolution timing, resolution-before-expiry, DTE buffer and holding period are properties of the STRUCTURE: computed once per candidate_id and identical under Maker and Taker. Entry credit, executable coverage, credit capture, PnL, worst adverse mark and capital metrics are properties of the SCENARIO and are read only from that scenario's own canonical rows.",
    "Coverage denominators. Maker-opportunity and taker-executable coverage are each measured independently as: eligible MR events with at least one structure genuinely evaluated under that scenario, divided by eligible MR events (events that generated at least one candidate). They are never inferred from the share of candidate rows whose configured mode happened to be one value, which would report a meaningless 100%.",
+   "Legacy execution evidence. Migrated single-scenario observations remain in the dataset and are flagged as legacy undifferentiated, but are excluded from maker-versus-taker matched execution-drag comparisons because they predate independent tape-direction evaluation.",
    "Not evaluated, Unavailable and 0% are three different states and are never conflated. 'Not evaluated' means no structure carries that scenario at all. 'Unavailable' means the scenario was assessed but canonical evidence supported no structure. A 0% is displayed only when a scenario was genuinely evaluated and zero qualifying opportunities existed.",
    "Eligible population. Selected structures whose underlying MR event is itself eligible for Underlying Resolution's time-to-event analysis. Structures excluded there are excluded here and never folded into a resolved or unresolved bucket. The availability funnel is deliberately not gated on that eligibility, since it measures structure-level executability.",
    "Actual DTE is the primary duration variable throughout; the ~7D/~14D/~30D horizon families are grouping and reference bands only, never separate mini-reports.",

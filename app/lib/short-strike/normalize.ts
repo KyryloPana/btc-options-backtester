@@ -1,4 +1,5 @@
 import type {AnalysisDataset} from "../research-analysis.ts";
+import {normalizeExecutionScenarioStatus,type ExecutionScenarioStatus} from "../execution-scenario.ts";
 import {adversePath,type AdversePathObservation} from "../adverse-path.ts";
 // Touch/breach is a shared canonical primitive: Spread-Width asks the same
 // question of the same short strike, so both import one implementation.
@@ -30,7 +31,7 @@ export {type ChallengeObservation} from "../strike-challenge.ts";
 
 export type StrikeMethod="technical"|"buffered";
 export type ExecutionScenario="maker"|"taker";
-export type ExecutionScenarioStatus="evaluated"|"not_evaluated";
+export type {ExecutionScenarioStatus} from "../execution-scenario.ts";
 
 /** Why a geometric or economic figure has no value. Never collapsed into a zero. */
 export type UnavailableReason=string;
@@ -67,6 +68,7 @@ export interface ShortStrikeStructure {
  readonly executionScenario:ExecutionScenario|null;
  readonly executionScenarioStatus:ExecutionScenarioStatus|null;
  readonly executionScenarioReason:string|null;
+ readonly executionScenarioLegacyUndifferentiated:boolean;
  readonly strikeMethod:StrikeMethod|null;
  readonly rawStrikeMethod:string|null;
  readonly direction:"long"|"short"|null;
@@ -105,7 +107,7 @@ const num=(v:unknown):number|null=>typeof v==="number"&&Number.isFinite(v)?v:nul
 const ms=(v:unknown):number|null=>{const s=str(v);if(!s)return null;const t=Date.parse(s);return Number.isFinite(t)?t:null};
 const nested=(v:unknown,key:string):unknown=>v&&typeof v==="object"&&!Array.isArray(v)?(v as Record<string,unknown>)[key]:undefined;
 const scenarioOf=(v:unknown):ExecutionScenario|null=>{const s=str(v);return s==="maker"||s==="taker"?s:null};
-const scenarioStatusOf=(v:unknown):ExecutionScenarioStatus|null=>{const s=str(v);return s==="evaluated"||s==="not_evaluated"?s:null};
+const scenarioStatusOf=normalizeExecutionScenarioStatus;
 
 const DELTA_UNAVAILABLE="The canonical bundle records per-leg implied volatility but no delta on any table. Deriving one from an IV anchor would present a model output as a canonical observation, so entry delta is left Unavailable.";
 
@@ -202,6 +204,7 @@ export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly
   return {
    eventId,candidateId,structureExecutionId:str(row.structure_execution_id)??`${candidateId}~${scenario??"unknown"}`,
    executionScenario:scenario,executionScenarioStatus:scenarioStatus,executionScenarioReason:str(row.execution_scenario_reason),
+   executionScenarioLegacyUndifferentiated:row.execution_scenario_legacy_undifferentiated===true,
    strikeMethod,rawStrikeMethod,direction,optionType,structureType,widthUsd,
    expiryTimestampMs,actualDteDays,structureEntryMs,matchKey,
    geometry,challenge,

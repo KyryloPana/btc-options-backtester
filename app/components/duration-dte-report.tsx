@@ -7,6 +7,7 @@ import type {
  PnlByOutcomeRow,SynchronizationRow,
 } from "../lib/duration-dte/report";
 import type {DteCandidate,OutcomeBeforeExpiry,ScenarioCoverage} from "../lib/duration-dte/normalize";
+import {executionScenarioStatusLabel} from "../lib/execution-scenario";
 
 /**
  * Presentation only. Every number comes from the prebuilt Duration & DTE view
@@ -60,13 +61,13 @@ function HeadlineCard({label,value,detail,title}:{label:string;value:React.React
 
 function OverviewTable({rows}:{rows:readonly OverviewRow[]}){
  return <div className="table-scroll"><table className="dd-table">
-  <thead><tr><th>Horizon</th><th>Actual DTE (median / range)</th><th>Events</th><th>Structures</th><th>Not evaluated</th><th>Priced</th><th>Taker exec.</th><th>Maker opp.</th><th>Res. coverage</th><th>No res. before expiry</th><th>Median buffer</th><th>Median T50%</th><th>Capital-day return</th></tr></thead>
+  <thead><tr><th>Horizon</th><th>Actual DTE (median / range)</th><th>Events</th><th>Structures</th><th>Unavailable</th><th>Not evaluated</th><th>Priced</th><th>Taker exec.</th><th>Maker opp.</th><th>Res. coverage</th><th>No res. before expiry</th><th>Median buffer</th><th>Median T50%</th><th>Capital-day return</th></tr></thead>
   <tbody>{rows.map(r=><tr key={r.horizon.nominalDays}>
    <td>{r.horizon.label}{r.horizon.eligibleDteRange&&<small className="dd-muted"> ({r.horizon.eligibleDteRange.min}–{r.horizon.eligibleDteRange.max}d)</small>}</td>
    <td>{r.actualDte?`${d1(r.actualDte.median)}d (${d1(r.actualDte.min)}–${d1(r.actualDte.max)}d)`:NOT_ESTIMABLE}</td>
    <td title="One MR event is one observation per horizon, however many width/strike variants it generated.">{r.eventsN}</td>
    <td className="dd-muted">{r.structuresN}</td>
-   <td className={r.notEvaluatedN>0?"dd-muted":undefined}>{r.notEvaluatedN}</td>
+   <td className={r.unavailableN>0?"dd-muted":undefined}>{r.unavailableN}</td><td className={r.notEvaluatedN>0?"dd-muted":undefined}>{r.notEvaluatedN}</td>
    <td>{pct(r.pricedShare)}</td>
    <td><Coverage coverage={r.taker}/></td>
    <td><Coverage coverage={r.maker}/></td>
@@ -425,7 +426,7 @@ function EventRow({c}:{c:DteCandidate}){
   <td>{c.actualDteDays===null?UNAVAILABLE:d1(c.actualDteDays)}</td>
   <td className="dd-muted">{c.widthUsd===null?"—":c.widthUsd.toLocaleString()}</td>
   <td>{c.entryQuality??UNAVAILABLE}</td>
-  <td className={c.executionScenarioStatus==="evaluated"?undefined:"dd-muted"} title={c.executionScenarioReason??undefined}>{c.executionScenarioStatus==="evaluated"?"Evaluated":NOT_EVALUATED}</td>
+  <td className={c.executionScenarioStatus==="evaluated"?undefined:"dd-muted"} title={c.executionScenarioReason??undefined}>{executionScenarioStatusLabel(c.executionScenarioStatus)}{c.executionScenarioLegacyUndifferentiated&&<small> · legacy undifferentiated</small>}</td>
   <td>{c.postEntryResolutionDays===null?"—":d1(c.postEntryResolutionDays)}</td>
   <td>{c.outcomeBeforeExpiry?OUTCOME_LABEL[c.outcomeBeforeExpiry]:"—"}
    {c.noResolutionDetail&&<small className="dd-muted"> ({c.noResolutionDetail.replaceAll("_"," ")})</small>}</td>

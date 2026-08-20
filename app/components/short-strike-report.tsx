@@ -2,6 +2,7 @@
 import {useState} from "react";
 import type {ConditionalBucket,MatchedPair,ShortStrikeReport} from "../lib/short-strike/report";
 import type {ExecutionScenario} from "../lib/short-strike/normalize";
+import {executionScenarioStatusLabel} from "../lib/execution-scenario";
 import {ChartMarker,ChartReadout,useChartCursor} from "./chart-cursor";
 import {nearestInPlot,type PlotGeometry} from "../lib/chart-interaction";
 
@@ -180,7 +181,7 @@ export function ShortStrikeReportView({report,takerReport,view="maker",onViewCha
      const realized=p.deltas.find(d=>d.label==="Δ realized PnL")?.value??null;
      return <tr key={p.matchKey}>
       <td>{p.eventId}</td><td>{p.actualDteDays===null?"—":d1(p.actualDteDays)}</td><td>{money(p.widthUsd)}</td>
-      <td className="dd-muted">{p.executionScenario??"—"}</td>
+      <td className="dd-muted" title={p.technical.executionScenarioReason??p.buffered.executionScenarioReason??undefined}>{p.executionScenario??"—"} · {executionScenarioStatusLabel(p.technical.executionScenarioStatus)} / {executionScenarioStatusLabel(p.buffered.executionScenarioStatus)}</td>
       <td>{money(p.technical.geometry.shortStrike)}</td><td>{money(p.buffered.geometry.shortStrike)}</td>
       <td>{usd(p.extraDistanceUsd)}</td>
       <td>{usd(p.technical.grossCreditUsd)}</td><td>{usd(p.buffered.grossCreditUsd)}</td>
