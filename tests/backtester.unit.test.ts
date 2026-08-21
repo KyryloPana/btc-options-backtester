@@ -293,7 +293,9 @@ test("matrix toggle defaults off and disclosure buttons retain accessible relati
   assert.match(page, /aria-label=\{`\$\{expanded \? "Collapse" : "Expand"\} evidence/);
   assert.match(page, /className="expand-chevron" aria-hidden="true"/);
   assert.doesNotMatch(page, /⌄/);
-  assert.match(page, /useState<ResultTrack>\("reference"\)/);
+  assert.doesNotMatch(page, /ResultTrack|Viewing track|track-selector/, "candidate evidence is not controlled by global track state");
+  assert.match(page, /Immediate Maker opportunity/);
+  assert.match(page, /Modeled conservative unavailable/);
   assert.match(page, /Show data-unavailable/);
   assert.match(page, /Economically valued structures/);
   assert.match(page, /<th>Status<\/th>/);
