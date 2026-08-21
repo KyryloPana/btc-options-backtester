@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type {AnalysisDataset} from "../app/lib/research-analysis.ts";
 import {buildShortStrikeReport} from "../app/lib/short-strike/report.ts";
 import {buildSpreadWidthReport} from "../app/lib/spread-width/report.ts";
-import {buildResearchAnalyticsModel,datasetForAnalyticsTrack} from "../app/lib/research-analytics-model.ts";
+import {buildResearchAnalyticsModel,createResearchAnalyticsContext,datasetForAnalyticsTrack,resetResearchAnalyticsPerformanceCounters,researchAnalyticsPerformanceCounters} from "../app/lib/research-analytics-model.ts";
 
 const day=(n:number)=>new Date(Date.UTC(2024,0,n)).toISOString();
 const entry=(gross:number)=>({status:"priced",targetTimestamp:Date.parse(day(2)),valuationTimestamp:Date.parse(day(2)),entryTargetIndex:100,
@@ -36,4 +36,17 @@ test("Task 3 primary reports use one structural observation and reference econom
  assert.equal(width.groups[0]?.steps.length,1);
  assert.equal(width.robustness?.maker.groups[0]?.steps[0]?.economicsComparable,false);
  assert.equal(width.capital[0]?.openingMarginAvailableN,0);
+});
+
+test("one dataset owns one normalization and reuses each track projection",()=>{
+ resetResearchAnalyticsPerformanceCounters();
+ const d=data(),context=createResearchAnalyticsContext(d);
+ assert.equal(buildResearchAnalyticsModel(d),context.model);
+ const reference=context.projection("reference");
+ assert.equal(datasetForAnalyticsTrack(d,"reference"),reference);
+ assert.equal(context.projection("reference"),reference);
+ const modeled=context.projection("modeled_expected");
+ assert.equal(datasetForAnalyticsTrack(d,"modeled_expected"),modeled);
+ assert.deepEqual(researchAnalyticsPerformanceCounters(),{normalizationBuilds:1,projectionBuilds:2});
+ assert.deepEqual(context.materializedTracks,["reference","modeled_expected"]);
 });

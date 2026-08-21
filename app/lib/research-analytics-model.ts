@@ -159,6 +159,59 @@ export interface ResearchAnalyticsModel {
 }
 
 /**
+ * Dataset-scoped owner of canonical normalization and compatibility projections.
+ * AnalysisDataset is immutable for an import session, so identity is the precise
+ * invalidation boundary. Projections share all unchanged tables and are created
+ * at most once per track.
+ */
+export interface ResearchAnalyticsContext {
+  readonly dataset: AnalysisDataset;
+  readonly model: ResearchAnalyticsModel;
+  projection(track: AnalyticsTrack): AnalysisDataset;
+  readonly materializedTracks: readonly AnalyticsTrack[];
+}
+
+const contexts = new WeakMap<AnalysisDataset, ResearchAnalyticsContext>();
+let normalizationBuilds = 0;
+let projectionBuilds = 0;
+
+export function researchAnalyticsPerformanceCounters() {
+  return { normalizationBuilds, projectionBuilds } as const;
+}
+
+export function resetResearchAnalyticsPerformanceCounters() {
+  normalizationBuilds = 0;
+  projectionBuilds = 0;
+}
+
+export function createResearchAnalyticsContext(d: AnalysisDataset): ResearchAnalyticsContext {
+  const existing = contexts.get(d);
+  if (existing) return existing;
+  normalizationBuilds++;
+  const model = buildResearchAnalyticsModelUncached(d);
+  const projections = new Map<AnalyticsTrack, AnalysisDataset>();
+  const context: ResearchAnalyticsContext = {
+    dataset: d,
+    model,
+    projection(track) {
+      const cached = projections.get(track);
+      if (cached) return cached;
+      projectionBuilds++;
+      const projected = projectAnalyticsTrack(d, track, model);
+      projections.set(track, projected);
+      return projected;
+    },
+    get materializedTracks() { return [...projections.keys()]; },
+  };
+  contexts.set(d, context);
+  return context;
+}
+
+export function buildResearchAnalyticsModel(d: AnalysisDataset): ResearchAnalyticsModel {
+  return createResearchAnalyticsContext(d).model;
+}
+
+/**
  * Project one canonical analytical track back into the tabular shape consumed
  * by the older report calculators.  This is deliberately the only compatibility
  * boundary: report modules must not decode reference_valuation,
@@ -168,11 +221,11 @@ export interface ResearchAnalyticsModel {
  * projected economic/path fields come exclusively from the requested track;
  * an unavailable track is retained as an explicitly unavailable candidate.
  */
-export function datasetForAnalyticsTrack(
+function projectAnalyticsTrack(
   d: AnalysisDataset,
   requested: AnalyticsTrack,
+  model: ResearchAnalyticsModel,
 ): AnalysisDataset {
-  const model = buildResearchAnalyticsModel(d);
   const rows = d.tables.candidates ?? [];
   const candidates: Row[] = [], outcomes: Row[] = [], valuations: Row[] = [];
   for (const observation of model.observations) {
@@ -242,6 +295,10 @@ export function datasetForAnalyticsTrack(
     }
   }
   return {...d, tables: {...d.tables, candidates, outcomes, valuations}};
+}
+
+export function datasetForAnalyticsTrack(d: AnalysisDataset, requested: AnalyticsTrack): AnalysisDataset {
+  return createResearchAnalyticsContext(d).projection(requested);
 }
 
 function economics(
@@ -413,7 +470,7 @@ function canonicalSnapshotTrack(
   };
 }
 
-export function buildResearchAnalyticsModel(
+function buildResearchAnalyticsModelUncached(
   d: AnalysisDataset,
 ): ResearchAnalyticsModel {
   const t = d.tables,
