@@ -97,6 +97,8 @@ export interface ScenarioTrack {
   entryEvidence: unknown;
   openingLedger: unknown;
   valuationPath: readonly Row[];
+  /** Canonical named outcomes.  Consumers must not assume snapshot ordering. */
+  outcomes: Readonly<Record<string, Row>>;
   exitPolicy: string;
   economics: PositionEconomics;
   reason: string | null;
@@ -104,6 +106,7 @@ export interface ScenarioTrack {
 export interface AnalyticalObservation {
   id: string;
   eventId: string;
+  candidateId: string;
   strategyVariantId: string;
   structure: {
     direction: string | null;
@@ -254,7 +257,7 @@ function canonicalSnapshotTrack(
           (x) => x && typeof x === "object",
         ) as Row[])
       : [],
-    outcome = outcomeRows[0],
+    outcome = outcomeRows.find((x) => /settlement|terminal/i.test(s(x.label) ?? s(x.outcome_type) ?? "")) ?? outcomeRows[0],
     source =
       s(snapshot.source) ??
       s(entry.priceSource) ??
@@ -303,6 +306,9 @@ function canonicalSnapshotTrack(
       net: n(entry.netOpeningCashFlowBtc),
     },
     valuationPath: path,
+    outcomes: Object.fromEntries(outcomeRows.map((x, index) => [
+      (s(x.label) ?? s(x.outcome_type) ?? s(x.rule) ?? `outcome_${index}`).toLowerCase(), x,
+    ])),
     exitPolicy: s(snapshot.exitPolicy) ?? "economic valuation",
     economics: economics(
       row,
@@ -439,6 +445,9 @@ export function buildResearchAnalyticsModel(
               s(x.execution_scenario) === s(r.execution_scenario) &&
               (!s(x.analytics_track) || s(x.analytics_track) === tr),
           ),
+          outcomes: Object.fromEntries(outcomes.filter(
+            (x) => s(x.candidate_id) === s(r.candidate_id) && s(x.execution_scenario) === s(r.execution_scenario),
+          ).map((x, index) => [(s(x.outcome_type) ?? `outcome_${index}`).toLowerCase(), x])),
           exitPolicy: s(r.exit_policy) ?? "settlement",
           economics: economics(r, margin, outcome, entry),
           reason: s(r.execution_scenario_reason),
@@ -515,6 +524,7 @@ export function buildResearchAnalyticsModel(
       return {
         id,
         eventId: g.eventId,
+        candidateId: s(base.candidate_id) ?? g.variant,
         strategyVariantId: g.variant,
         structure: {
           direction: s(base.direction),

@@ -234,11 +234,11 @@ function CaptureSection({report}:{report:DurationDteReport}){
    <thead><tr><th>Horizon</th><th>Reached</th><th>Median time to capture</th><th>Before VPOC</th><th>Before invalidation</th></tr></thead>
    <tbody>{rows.map((r:CaptureThresholdRow)=>
     <tr key={r.horizon.nominalDays}><td>{r.horizon.label}</td>
-     <td title={r.dominantReason??undefined}>{r.totalN?`${r.reachedN} / ${r.totalN} (${(r.reachedN/r.totalN*100).toFixed(0)}%)`:"Raw path unavailable"}</td>
-     <td>{r.totalN===0?"Raw path unavailable":r.reachedN===0?"Not reached":days(r.medianTimeToCaptureDays)}</td><td>{pct(r.beforeVpocShare)}</td><td>{pct(r.beforeInvalidationShare)}</td>
+     <td title={r.dominantReason??undefined}>{r.totalN?`${r.reachedN} / ${r.totalN} (${(r.reachedN/r.totalN*100).toFixed(0)}%)`:"Reference path unavailable"}</td>
+     <td>{r.totalN===0?"Reference path unavailable":r.reachedN===0?"Not reached":days(r.medianTimeToCaptureDays)}</td><td>{pct(r.beforeVpocShare)}</td><td>{pct(r.beforeInvalidationShare)}</td>
     </tr>)}</tbody>
   </table></div>
-  <small className="dd-note">Denominator = eligible rows with enough scenario-local raw-VWAP path evidence to evaluate the threshold. 0/N is a valid result and reads Not reached; no evaluable path reads Raw path unavailable. Ordering shares include only determinate endpoint orderings.</small>
+  <small className="dd-note">Denominator = eligible rows with enough canonical reference valuation-path evidence to evaluate the threshold. 0/N is a valid result and reads Not reached; no evaluable reference path reads Reference path unavailable. Ordering shares include only determinate endpoint orderings.</small>
  </>;
 }
 
@@ -501,10 +501,10 @@ export function DurationDteReportView({report,view="maker",onViewChange}:{report
 
   <div className="dd-two-col">
    <section className="dd-block"><h3>5 · DTE buffer</h3><BufferStrip rows={report.dteBuffer}/></section>
-   <section className="dd-block"><h3>6 · Credit capture</h3><CaptureSection report={report}/></section>
+   <section className="dd-block"><h3>6 · Reference credit capture</h3><CaptureSection report={report}/></section>
   </div>
 
-  <section className="dd-block"><h3>7 · PnL by candidate-relative outcome</h3><PnlSection rows={report.pnlByOutcome}/></section>
+  <section className="dd-block"><h3>7 · Reference PnL by candidate-relative outcome</h3><PnlSection rows={report.pnlByOutcome}/></section>
 
   <section className="dd-block"><h3>8 · Matched DTE comparison</h3><MatchedDteSection report={report}/></section>
 
@@ -520,7 +520,7 @@ export function DurationDteReportView({report,view="maker",onViewChange}:{report
   <section className="dd-block"><h3>13 · Entry-delay sensitivity</h3><EntryDelaySection report={report}/></section>
 
   <div className="dd-two-col">
-   <section className="dd-block"><h3>14 · Adverse-path evidence</h3><AdverseDiagnosticsSection report={report}/></section>
+   <section className="dd-block"><h3>14 · Reference economic adverse path</h3><AdverseDiagnosticsSection report={report}/></section>
    <section className="dd-block"><h3>15 · Actual DTE distribution</h3><DteHistogram report={report}/></section>
   </div>
 

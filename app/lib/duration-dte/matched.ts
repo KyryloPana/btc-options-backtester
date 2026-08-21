@@ -53,7 +53,7 @@ export interface MatchedDteComparisonRow {
 export function buildMatchedDteComparison(candidates:readonly DteCandidate[],horizons:readonly HorizonFamily[]):readonly MatchedDteComparisonRow[] {
  const byHorizon=new Map<number,Map<string,DteCandidate>>();
  for(const c of candidates){
-  if(c.horizonNominalDays===null||c.ineligibilityReason!==null||c.executionScenarioStatus!=="evaluated")continue;
+  if(c.horizonNominalDays===null||c.ineligibilityReason!==null)continue;
   const slot=byHorizon.get(c.horizonNominalDays)??new Map<string,DteCandidate>();
   const existing=slot.get(c.structuralVariantKey);
   if(!existing||(c.expiryTimestampMs??Infinity)<(existing.expiryTimestampMs??Infinity))slot.set(c.structuralVariantKey,c);
@@ -110,7 +110,8 @@ export function buildMatchedExecution(allScenarios:readonly DteCandidate[],horiz
   const maker=pick("maker"),taker=pick("taker");
   const matchedIds=[...maker.keys()].filter(id=>taker.has(id));
   const pairs=matchedIds.map(id=>[maker.get(id)!,taker.get(id)!] as const);
-  const pnl=delta(pairs.map(([m,t])=>[realizedPnlOf(m),realizedPnlOf(t)] as const)),worst=delta(pairs.map(([m,t])=>[m.worstAdverseUsd,t.worstAdverseUsd] as const)),capture=delta(pairs.map(([m,t])=>[m.capture50?.reached?m.capture50.timeToCaptureDays:null,t.capture50?.reached?t.capture50.timeToCaptureDays:null] as const)),capital=delta(pairs.map(([m,t])=>[m.capitalDayReturn,t.capitalDayReturn] as const)),sync=delta(pairs.map(([m,t])=>[m.synchronizationMinutes,t.synchronizationMinutes] as const));
+  const observedPnl=(c:DteCandidate)=>c.outcomeBeforeExpiry==="vpoc_before_expiry"?c.observedPnlAtVpocUsd:c.outcomeBeforeExpiry==="invalidation_before_expiry"?c.observedPnlAtInvalidationUsd:c.outcomeBeforeExpiry==="no_resolution_before_expiry"?c.observedPnlAtSettlementUsd:null;
+  const pnl=delta(pairs.map(([m,t])=>[observedPnl(m),observedPnl(t)] as const)),worst=delta(pairs.map(([m,t])=>[m.observedAdversePath.worstAdverseUsd,t.observedAdversePath.worstAdverseUsd] as const)),capture=delta(pairs.map(([m,t])=>[m.observedCapture50?.reached?m.observedCapture50.timeToCaptureDays:null,t.observedCapture50?.reached?t.observedCapture50.timeToCaptureDays:null] as const)),capital=delta(pairs.map(([m,t])=>[m.capitalDayReturn,t.capitalDayReturn] as const)),sync=delta(pairs.map(([m,t])=>[m.synchronizationMinutes,t.synchronizationMinutes] as const));
   return {
    horizon,matchedN:pairs.length,
    makerOnlyN:[...maker.keys()].filter(id=>!taker.has(id)).length,
