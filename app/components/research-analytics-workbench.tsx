@@ -1,13 +1,166 @@
 "use client";
-import {useMemo,useState} from "react";
-import {ANALYTICS_TRACKS,buildResearchAnalyticsModel,type AnalyticsTrack} from "../lib/research-analytics-model";
-import type {AnalysisDataset} from "../lib/research-analysis";
-const label=(x:string)=>x.replaceAll("_"," "),f=(x:number|null)=>x===null?"—":Math.abs(x)<1?x.toFixed(4):x.toFixed(2);
-export function ResearchAnalyticsWorkbench({dataset}:{dataset:AnalysisDataset}){const model=useMemo(()=>buildResearchAnalyticsModel(dataset),[dataset]),[track,setTrack]=useState<AnalyticsTrack>("reference"),[excludeLow,setExcludeLow]=useState(true),[selected,setSelected]=useState<string|null>(null),summary=model.summaries.find(x=>x.track===track)!,rows=model.observations.filter(o=>{const x=o.tracks[track];return x&&(!excludeLow||x.sourceTier!=="low")}),inspection=model.observations.find(x=>x.id===selected);return <section className="analytics-workbench" aria-labelledby="normalized-analytics"><div className="section-heading"><div><p className="eyebrow">Normalized analytical unit · event × strategy variant</p><h2 id="normalized-analytics">Cohort, Execution Robustness &amp; Inspector</h2></div><em className="report-state available">{model.observations.length} observations</em></div>
-<p className="resolution-banner">Scenario tracks attach to—not multiply—the structural observation. Economic, observed, and modeled entry economics are isolated. Event counts are shown alongside every variant denominator.</p><div className="analytics-controls"><label>Valuation / execution track<select value={track} onChange={e=>setTrack(e.target.value as AnalyticsTrack)}>{ANALYTICS_TRACKS.map(x=><option key={x} value={x}>{label(x)}</option>)}</select></label><label><input type="checkbox" checked={excludeLow} onChange={e=>setExcludeLow(e.target.checked)}/> Exclude lowest-confidence tier</label></div>
-<h3>Denominator ledger</h3><div className="count-grid">{Object.entries(model.denominators).flatMap(([k,v])=>typeof v==="number"?<span key={k}><b>{v}</b>{label(k)}</span>:Object.entries(v).map(([bucket,count])=><span key={`${k}-${bucket}`}><b>{Number(count)}</b>{label(k)} · {bucket}</span>))}</div>
-<h3>{label(track)} cohort</h3><div className="count-grid"><span><b>{summary.events}</b>events</span><span><b>{summary.eligible}</b>eligible opportunities</span><span><b>{summary.entered}</b>entered trades</span><span><b>{f(summary.tradeConditional.pnl)}</b>trade-conditional mean PnL ({summary.tradeConditional.count})</span><span><b>{f(summary.opportunityNormalized.pnl)}</b>opportunity-normalized mean PnL ({summary.opportunityNormalized.count})</span><span><b>{summary.opportunityNormalized.missed}</b>missed entries</span></div><p><b>Trade conditional:</b> {summary.tradeConditional.denominator}. <b>Opportunity normalized:</b> {summary.opportunityNormalized.denominator}. <b>Excluded retrieval failures:</b> {summary.excludedRetrievalFailures}.</p><p><b>Sources:</b> {Object.entries(summary.sourceComposition).map(([k,v])=>`${k} ${v}`).join(" · ")||"none"}. <b>Quality:</b> {Object.entries(summary.tierComposition).map(([k,v])=>`${k} ${v}`).join(" · ")}.</p>
-<h3>Duration / DTE semantics</h3><p>Signal-time actual DTE drives thesis coverage. Delayed-entry actual DTE and operational holding begin at the scenario entry; a resolution before that time is labelled pre-entry and is never a normal trade. Underlying resolution is an event-only competing-outcome result and is invariant to this track control.</p>
-<h3>Execution robustness and per-position economics</h3><div className="table-wrap"><table><thead><tr><th>Observation</th><th>Track / tier</th><th>Entry DTE</th><th>Gross / net</th><th>Max loss</th><th>PnL BTC / USD</th><th>Returns (loss / open / peak)</th><th>Capital-days</th></tr></thead><tbody>{rows.map(o=>{const x=o.tracks[track]!;return <tr key={o.id} onClick={()=>setSelected(o.id)}><td><button>{o.eventId}<br/>{o.strategyVariantId}</button></td><td>{label(track)} · {x.sourceTier}<br/>{x.status}</td><td>{f(x.actualDteDays)}</td><td>{f(x.economics.grossCredit)} / {f(x.economics.netCredit)}</td><td>{f(x.economics.maximumEconomicLoss)}</td><td>{f(x.economics.pnlNative)} / {f(x.economics.pnlUsd)}</td><td>{f(x.economics.returnOnMaxLoss)} / {f(x.economics.returnOnOpeningMargin)} / {f(x.economics.returnOnPeakCapital)}</td><td>{f(x.economics.capitalDays)}<br/><small>{x.economics.denominatorReasons.join("; ")}</small></td></tr>})}</tbody></table></div>
-<h3>Underlying Resolution (track invariant)</h3><p>{model.resolution.map(x=>`${x.eventId}: ${label(x.state)}`).join(" · ")||"No event resolution rows"}. MFE/MAE uses the signal-to-first-resolution window; VPOC and invalidation are competing outcomes. Kaplan–Meier is limited to time to first resolution with unresolved events right-censored.</p>
-<h3>Event-level inspector</h3>{inspection?<pre className="analytics-inspector">{JSON.stringify(inspection,null,2)}</pre>:<p>Select an observation row to inspect structural identity, contract status, evidence, ledger, valuation path, exit policy, margin, uncertainty and exclusions.</p>}</section>}
+import { useMemo, useState } from "react";
+import {
+  ANALYTICS_TRACKS,
+  buildResearchAnalyticsModel,
+} from "../lib/research-analytics-model";
+import type { AnalysisDataset } from "../lib/research-analysis";
+
+const label = (value: string) => value.replaceAll("_", " ");
+const number = (value: number | null) =>
+  value === null
+    ? "—"
+    : Math.abs(value) < 1
+      ? value.toFixed(4)
+      : value.toFixed(2);
+
+/** Engineering and methodological audit surface. It deliberately has no report-wide track control. */
+export function ResearchAnalyticsWorkbench({
+  dataset,
+}: {
+  dataset: AnalysisDataset;
+}) {
+  const model = useMemo(() => buildResearchAnalyticsModel(dataset), [dataset]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const inspection = model.observations.find(
+    (observation) => observation.id === selected,
+  );
+  return (
+    <details
+      className="analytics-workbench workspace-section"
+      data-testid="diagnostics-audit"
+    >
+      <summary>
+        <strong>Diagnostics &amp; Audit</strong>
+        <span>
+          Denominators, coverage, confidence, missingness and provenance
+        </span>
+      </summary>
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">
+            Normalized analytical unit · event × strategy variant
+          </p>
+          <h2>Diagnostics &amp; Audit</h2>
+        </div>
+        <em className="report-state available">
+          {model.observations.length} observations
+        </em>
+      </div>
+      <p className="resolution-banner">
+        Tracks attach to—and never multiply—a structural observation. This
+        troubleshooting surface does not select a track for research reports.
+      </p>
+      <h3>Denominator ledger</h3>
+      <div className="count-grid">
+        {Object.entries(model.denominators).flatMap(([key, value]) =>
+          typeof value === "number" ? (
+            <span key={key}>
+              <b>{value}</b>
+              {label(key)}
+            </span>
+          ) : (
+            Object.entries(value).map(([bucket, count]) => (
+              <span key={`${key}-${bucket}`}>
+                <b>{Number(count)}</b>
+                {label(key)} · {bucket}
+              </span>
+            ))
+          ),
+        )}
+      </div>
+      <h3>Track/source coverage and quality composition</h3>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Track</th>
+              <th>Events / eligible / available</th>
+              <th>Sources</th>
+              <th>Confidence</th>
+              <th>Trade conditional</th>
+              <th>Opportunity normalized</th>
+            </tr>
+          </thead>
+          <tbody>
+            {model.summaries.map((summary) => (
+              <tr key={summary.track}>
+                <td>{label(summary.track)}</td>
+                <td>
+                  {summary.events} / {summary.eligible} / {summary.entered}
+                </td>
+                <td>
+                  {Object.entries(summary.sourceComposition)
+                    .map(([key, value]) => `${key} ${value}`)
+                    .join(" · ") || "none"}
+                </td>
+                <td>
+                  {Object.entries(summary.tierComposition)
+                    .map(([key, value]) => `${key} ${value}`)
+                    .join(" · ")}
+                </td>
+                <td>
+                  {number(summary.tradeConditional.pnl)} (
+                  {summary.tradeConditional.count})
+                </td>
+                <td>
+                  {number(summary.opportunityNormalized.pnl)} (
+                  {summary.opportunityNormalized.count}); missed{" "}
+                  {summary.opportunityNormalized.missed}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <h3>Observation inspector, schema/provenance and missingness</h3>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Observation</th>
+              <th>Contract status</th>
+              {ANALYTICS_TRACKS.map((track) => (
+                <th key={track}>{label(track)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {model.observations.map((observation) => (
+              <tr key={observation.id}>
+                <td>
+                  <button onClick={() => setSelected(observation.id)}>
+                    {observation.eventId}
+                    <br />
+                    {observation.strategyVariantId}
+                  </button>
+                </td>
+                <td>{observation.contractStatus}</td>
+                {ANALYTICS_TRACKS.map((track) => (
+                  <td key={track}>
+                    {observation.tracks[track]?.status ?? "unavailable"}
+                    <br />
+                    <small>
+                      {observation.tracks[track]?.reason ??
+                        observation.reasons.join("; ")}
+                    </small>
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {inspection ? (
+        <pre className="analytics-inspector">
+          {JSON.stringify(inspection, null, 2)}
+        </pre>
+      ) : (
+        <p>
+          Select an observation to inspect evidence, entry ledger, valuation
+          path, outcomes, uncertainty and missing reasons.
+        </p>
+      )}
+    </details>
+  );
+}
