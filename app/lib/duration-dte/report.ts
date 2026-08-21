@@ -14,6 +14,13 @@ import {
 import {buildResolutionSpeedReport,type ResolutionSpeedReport} from "./resolution-speed.ts";
 import {coverageFromSurvival,share,type CoveragePoint} from "./statistics.ts";
 
+/** Auditable dependency contract for every Duration metric family. */
+export const DURATION_METRIC_ROUTES={
+ structural:"event_structure",creditCapture:"reference",outcomePnl:"reference",adverseEconomicPath:"reference",matchedDte:"reference",
+ makerCoverage:"immediate_maker",takerCoverage:"immediate_taker",observedSynchronization:"immediate_maker|immediate_taker",
+ executionDrag:"immediate_maker+immediate_taker",entryDelay:"delayed_maker|delayed_taker",executionSensitivity:"modeled_expected|modeled_conservative|penalty_sensitivity",capitalTime:"margin",
+} as const;
+
 /**
  * The one coherent view model for Duration & DTE. Every card, chart and table
  * reads from this object; nothing is recomputed in a component, and no
@@ -203,7 +210,7 @@ function toStructures(all:readonly DteCandidate[]):readonly DteCandidate[]{
  return [...byId.values()];
 }
 
-function overviewRow(horizon:HorizonFamily,structures:readonly DteCandidate[],scenarioRows:readonly DteCandidate[],availability:HorizonAvailability):OverviewRow{
+function overviewRow(horizon:HorizonFamily,structures:readonly DteCandidate[],scenarioRows:readonly DteCandidate[],availability:HorizonAvailability,referenceRows:readonly DteCandidate[]=scenarioRows):OverviewRow{
  const struct=atHorizon(eligible(structures),horizon.nominalDays);
  const rows=atHorizon(eligible(scenarioRows),horizon.nominalDays),evaluated=evaluatedOnly(rows);
  const determinate=struct.filter(c=>c.resolvedBeforeExpiry!==null);
@@ -219,7 +226,7 @@ function overviewRow(horizon:HorizonFamily,structures:readonly DteCandidate[],sc
   resolutionCoverageShare:share(determinate.filter(c=>c.resolvedBeforeExpiry===true).length,determinate.length),
   noResolutionBeforeExpiryShare:share(determinate.filter(c=>c.outcomeBeforeExpiry==="no_resolution_before_expiry").length,determinate.length),
   medianDteBufferDays:median(defined(struct.map(c=>c.dteBufferDays))),
-  medianTimeToCapture50Days:median(defined(evaluated.map(c=>c.capture50?.reached?c.capture50.timeToCaptureDays:null))),
+  medianTimeToCapture50Days:median(defined(atHorizon(eligible(referenceRows),horizon.nominalDays).map(c=>c.capture50?.reached?c.capture50.timeToCaptureDays:null))),
   medianCapitalDayReturn:median(defined(evaluated.map(c=>c.capitalDayReturn))),
  };
 }
@@ -254,7 +261,7 @@ function holdingPeriodRow(horizon:HorizonFamily,structures:readonly DteCandidate
 }
 
 function captureRow(horizon:HorizonFamily,scenarioRows:readonly DteCandidate[],threshold:25|50|70):CaptureThresholdRow{
- const selected=evaluatedOnly(atHorizon(eligible(scenarioRows),horizon.nominalDays));
+ const selected=atHorizon(eligible(scenarioRows),horizon.nominalDays);
  const captures=selected.map(c=>threshold===25?c.capture25:threshold===50?c.capture50:c.capture70).filter((x):x is CaptureObservation=>x!==null);
  const evaluable=captures.filter(c=>c.evaluable),reached=evaluable.filter(c=>c.reached);
  const beforeVpoc=captures.filter(c=>c.beforeVpoc!==null),beforeInvalidation=captures.filter(c=>c.beforeInvalidation!==null);
@@ -283,7 +290,7 @@ const PNL_BUCKETS:readonly {outcome:OutcomeBeforeExpiry;label:string;pnl:(c:DteC
  * settlement result, never a "PnL at VPOC" row.
  */
 function pnlRow(horizon:HorizonFamily,scenarioRows:readonly DteCandidate[]):PnlByOutcomeRow{
- const selected=evaluatedOnly(atHorizon(eligible(scenarioRows),horizon.nominalDays));
+ const selected=atHorizon(eligible(scenarioRows),horizon.nominalDays);
  return {horizon,buckets:PNL_BUCKETS.map(({outcome,label,pnl,note})=>{
   const items=selected.filter(c=>c.outcomeBeforeExpiry===outcome);
   return {
@@ -338,6 +345,8 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
  const scenarioRows=allScenarios.filter(c=>c.executionScenario===scenario);
  // Execution-INDEPENDENT population: one row per structure.
  const structures=toStructures(allScenarios);
+ const qualityAllowed=(c:DteCandidate)=>!configuration.includedQualityLevels.length||(c.referenceSourceTier!==null&&configuration.includedQualityLevels.includes(c.referenceSourceTier));
+ const referenceRows=structures.filter(qualityAllowed);
  const okStructures=eligible(structures);
  const resolutionEndpoint=underlying.endpoints.find(b=>b.endpoint==="resolution")!;
  const determinate=okStructures.filter(c=>c.resolvedBeforeExpiry!==null);
@@ -374,7 +383,7 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
    medianFirstResolutionDays:resolutionEndpoint.percentiles.find(p=>p.p===0.5)?.days??null,
    medianHoldingDays:median(defined(okStructures.map(c=>c.holdingDays))),
   },
-  overview:horizons.map(h=>overviewRow(h,structures,scenarioRows,availabilityByHorizon.get(h.nominalDays)!)),
+  overview:horizons.map(h=>overviewRow(h,structures,scenarioRows,availabilityByHorizon.get(h.nominalDays)!,referenceRows)),
   availability,
   synchronization:horizons.map(h=>{
    const values=[...(availabilityByHorizon.get(h.nominalDays)?.synchronizationMinutes[scenario]??[])];
@@ -385,18 +394,18 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
   outcomeBeforeExpiry:horizons.map(h=>outcomeBeforeExpiryRow(h,structures)),
   dteBuffer:horizons.map(h=>dteBufferRow(h,structures)),
   captureByThreshold:{
-   25:horizons.map(h=>captureRow(h,scenarioRows,25)),
-   50:horizons.map(h=>captureRow(h,scenarioRows,50)),
-   70:horizons.map(h=>captureRow(h,scenarioRows,70)),
+   25:horizons.map(h=>captureRow(h,referenceRows,25)),
+   50:horizons.map(h=>captureRow(h,referenceRows,50)),
+   70:horizons.map(h=>captureRow(h,referenceRows,70)),
   },
-  pnlByOutcome:horizons.map(h=>pnlRow(h,scenarioRows)),
+  pnlByOutcome:horizons.map(h=>pnlRow(h,referenceRows)),
   holdingPeriod:horizons.map(h=>holdingPeriodRow(h,structures)),
   capitalTime:capitalTimeSummary(scenarioRows),
   operationalHolding,
-  adverseDiagnostics:adverseDiagnostics(scenarioRows),
-  matchedDte:buildMatchedDteComparison(scenarioRows,horizons),
+  adverseDiagnostics:adverseDiagnostics(referenceRows),
+  matchedDte:buildMatchedDteComparison(referenceRows,horizons),
   matchedExecution:buildMatchedExecution(allScenarios,horizons),
-  resolutionSpeed:buildResolutionSpeedReport(dataset,scenarioRows,horizons),
+  resolutionSpeed:buildResolutionSpeedReport(dataset,referenceRows,horizons),
   entryDelay:buildEntryDelayReport(dataset),
   excludedIneligible:structures.length-okStructures.length,
   methodology:[
