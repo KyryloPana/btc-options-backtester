@@ -1,6 +1,7 @@
 import type {AnalysisDataset} from "../research-analysis.ts";
 import {observedPercentiles} from "../underlying-resolution/statistics.ts";
 import {cohortOf,resolutionSpeedBoundaries,type ResolutionSpeedBoundaries,type ResolutionSpeedCohort} from "../duration-dte/resolution-speed.ts";
+import {datasetForAnalyticsTrack} from "../research-analytics-model.ts";
 import {normalizeWidthStructures,type ExecutionScenario,type WidthStructure} from "./normalize.ts";
 
 /**
@@ -136,7 +137,7 @@ export interface WidthSummary {
 }
 
 export interface SpreadWidthReport {
- readonly scenario:ExecutionScenario;
+ readonly scenario:ExecutionScenario|"reference";
  readonly structures:readonly WidthStructure[];
  readonly groups:readonly WidthGroup[];
  readonly summary:WidthSummary;
@@ -148,6 +149,7 @@ export interface SpreadWidthReport {
  readonly cohortBoundaries:ResolutionSpeedBoundaries;
  readonly unmatched:readonly {structure:WidthStructure;reason:string}[];
  readonly methodology:readonly string[];
+ readonly robustness?:Readonly<Record<ExecutionScenario,SpreadWidthReport>>;
 }
 
 const median=(values:readonly number[]):number|null=>values.length?observedPercentiles(values,[0.5])[0]??null:null;
@@ -235,9 +237,10 @@ function stepOf(narrower:WidthStructure,wider:WidthStructure):AdjacentWidthStep{
  };
 }
 
-export function buildSpreadWidthReport(dataset:AnalysisDataset,scenario:ExecutionScenario="maker"):SpreadWidthReport{
- const all=normalizeWidthStructures(dataset);
- const structures=all.filter(s=>s.executionScenario===scenario);
+export function buildSpreadWidthReport(dataset:AnalysisDataset,scenario?:ExecutionScenario):SpreadWidthReport{
+ const primary=scenario===undefined, selectedScenario=scenario??"maker";
+ const all=normalizeWidthStructures(primary?datasetForAnalyticsTrack(dataset,"reference"):dataset);
+ const structures=all.filter(s=>s.executionScenario===selectedScenario);
  const boundaries=resolutionSpeedBoundaries(dataset);
 
  const byKey=new Map<string,WidthStructure[]>();
@@ -251,7 +254,7 @@ export function buildSpreadWidthReport(dataset:AnalysisDataset,scenario:Executio
   for(const s of group.filter(s=>s.identity.actualWidthUsd===null))
    unmatched.push({structure:s,reason:"The canonical candidate has no actual strike width, so it cannot be placed on the width ladder."});
   if(ordered.length<2){
-   for(const s of ordered)unmatched.push({structure:s,reason:"No other width shares this event, expiry, short strike and execution scenario, so there is nothing to compare it against."});
+   for(const s of ordered)unmatched.push({structure:s,reason:"No other actual width shares this event, expiry, DTE, short strike and exit policy, so there is nothing to compare it against."});
    continue;
   }
   const steps:AdjacentWidthStep[]=[];
@@ -270,8 +273,8 @@ export function buildSpreadWidthReport(dataset:AnalysisDataset,scenario:Executio
  const widths=[...new Set(defined(matched.map(s=>s.identity.actualWidthUsd)))].sort((a,b)=>a-b);
  const atWidth=(w:number)=>matched.filter(s=>s.identity.actualWidthUsd===w);
 
- return {
-  scenario,structures,groups,
+ const report:SpreadWidthReport={
+  scenario:primary?"reference":selectedScenario,structures,groups,
   summary:{
    structures:structures.length,
    matchedGroups:groups.length,
@@ -300,7 +303,7 @@ export function buildSpreadWidthReport(dataset:AnalysisDataset,scenario:Executio
   unmatched,
   methodology:[
    "Scope. This report analyses PROTECTIVE WIDTH only. The short strike is held constant inside every comparison and is never re-optimized here: the short strike decides where risk begins, width decides how much tail exposure is retained and how much protection is purchased. Short-strike placement is a separate report.",
-   `Comparison unit. A matched width group holds the same MR event, actual expiry, SHORT STRIKE, execution scenario and exit policy; only the protective long differs. The short strike is part of the match key precisely so that a placement difference can never be reported as a width effect. This report is scoped to the ${scenario} scenario, and because the scenario is in the key maker and taker structures can never share a group or a statistic.`,
+   `Comparison unit. A matched width group holds the same MR event, actual expiry and DTE, SHORT STRIKE, option/structure and exit policy; only the protective long differs. Execution scenario is absent from the primary key. This report is scoped to the ${primary?"reference":selectedScenario} track; explicit observed robustness layers are filtered before grouping, so maker and taker never share a statistic.`,
    "Requested versus actual width. Historical strike availability frequently forces the protective long onto a strike other than the one requested. Every economic figure -- payoff, credit ratio, maximum loss, capital return -- is computed from the ACTUAL contracts, and structures are ordered on the ladder by actual width. The requested width is retained beside it for audit and is reported as substituted where the two differ, but it is never fed into a calculation.",
    "Inverse-option payoff. Maximum economic loss is NOT modelled as width minus credit. These are inverse BTC options: intrinsic value is (K-S)/S or (S-K)/S, settlement fees apply per leg, and the USD result depends on both the entry index and the settlement index. Every payoff, breakeven and maximum-loss figure comes from the application's authoritative expiry-payoff utility, so this report cannot disagree with the payoff shown elsewhere in the app.",
    "Entry economics use canonical per-leg premiums and the canonical fee schedule, per execution scenario: maker and taker each price their own legs and their own fees. Credit is reported against requested width, actual width and the exact maximum economic loss, since the last of those is the only denominator that reflects the real payoff.",
@@ -312,4 +315,5 @@ export function buildSpreadWidthReport(dataset:AnalysisDataset,scenario:Executio
    "Stability, not selection. Adjacent-width steps are reported pairwise inside each matched group so a plateau -- a region where neighbouring widths behave similarly -- can be seen rather than inferred from aggregate totals. No width is chosen, and no width is preferred merely for having produced the highest historical PnL.",
   ],
  };
+ return primary?{...report,robustness:{maker:buildSpreadWidthReport(dataset,"maker"),taker:buildSpreadWidthReport(dataset,"taker")}}:report;
 }

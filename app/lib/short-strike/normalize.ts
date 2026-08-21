@@ -80,7 +80,7 @@ export interface ShortStrikeStructure {
  readonly structureEntryMs:number|null;
  /**
   * Everything held constant in a matched comparison: event, actual expiry,
-  * width, structure/option type, execution scenario and exit policy. Two rows
+  * width, structure/option type and exit policy. Two rows
   * sharing this key differ ONLY in short-strike placement.
   */
  readonly matchKey:string;
@@ -198,8 +198,8 @@ export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly
   // Exit policy is uniform across a canonical bundle -- one outcome set is
   // exported for every structure -- so it is a constant in the key rather than
   // a dimension read from a field that does not exist.
-  const matchKey=[eventId,expiryTimestampMs??"unknown-expiry",widthUsd??"unknown-width",
-   structureType??"unknown-structure",optionType??"unknown-type",scenario??"unknown-scenario","canonical-exit-policy"].join("|");
+  const matchKey=[eventId,expiryTimestampMs??"unknown-expiry",actualDteDays??"unknown-dte",widthUsd??"unknown-width",
+   structureType??"unknown-structure",optionType??"unknown-type","canonical-exit-policy"].join("|");
 
   return {
    eventId,candidateId,structureExecutionId:str(row.structure_execution_id)??`${candidateId}~${scenario??"unknown"}`,

@@ -1,5 +1,6 @@
 import type {AnalysisDataset} from "../research-analysis.ts";
 import {observedPercentiles} from "../underlying-resolution/statistics.ts";
+import {datasetForAnalyticsTrack} from "../research-analytics-model.ts";
 import {normalizeShortStrikeStructures,type ExecutionScenario,type ShortStrikeStructure,type StrikeMethod} from "./normalize.ts";
 
 /**
@@ -123,7 +124,7 @@ export interface ShortStrikeSummary {
 }
 
 export interface ShortStrikeReport {
- readonly scenario:ExecutionScenario;
+ readonly scenario:ExecutionScenario|"reference";
  readonly structures:readonly ShortStrikeStructure[];
  readonly pairs:readonly MatchedPair[];
  readonly summary:ShortStrikeSummary;
@@ -133,6 +134,7 @@ export interface ShortStrikeReport {
  /** Structures excluded from pairing, with the reason, so nothing disappears silently. */
  readonly unpaired:readonly {structure:ShortStrikeStructure;reason:string}[];
  readonly methodology:readonly string[];
+ readonly robustness?:Readonly<Record<ExecutionScenario,ShortStrikeReport>>;
 }
 
 const median=(values:readonly number[]):number|null=>values.length?observedPercentiles(values,[0.5])[0]??null:null;
@@ -232,12 +234,12 @@ function conditionalRow(bucket:ConditionalBucket,pairs:readonly MatchedPair[],st
 
 const BUCKETS:readonly ConditionalBucket[]=["touched","breached","invalidated","settled_untouched"];
 
-export function buildShortStrikeReport(dataset:AnalysisDataset,scenario:ExecutionScenario="maker"):ShortStrikeReport{
- const all=normalizeShortStrikeStructures(dataset);
- const structures=all.filter(s=>s.executionScenario===scenario);
+export function buildShortStrikeReport(dataset:AnalysisDataset,scenario?:ExecutionScenario):ShortStrikeReport{
+ const primary=scenario===undefined, selectedScenario=scenario??"maker";
+ const all=normalizeShortStrikeStructures(primary?datasetForAnalyticsTrack(dataset,"reference"):dataset);
+ const structures=all.filter(s=>s.executionScenario===selectedScenario);
 
- // Pair strictly within a match key: same event, expiry, width, structure and
- // scenario. A key holding anything other than exactly one technical and one
+ // Pair strictly within the structural match key: same event, expiry, DTE, width and structure. A key holding anything other than exactly one technical and one
  // buffered structure is reported as unpaired rather than force-matched.
  const byKey=new Map<string,ShortStrikeStructure[]>();
  for(const s of structures){const list=byKey.get(s.matchKey);if(list)list.push(s);else byKey.set(s.matchKey,[s])}
@@ -246,7 +248,7 @@ export function buildShortStrikeReport(dataset:AnalysisDataset,scenario:Executio
   const technical=group.filter(s=>s.strikeMethod==="technical"),buffered=group.filter(s=>s.strikeMethod==="buffered");
   if(technical.length===1&&buffered.length===1){pairs.push(pairOf(technical[0]!,buffered[0]!));continue}
   for(const s of group)unpaired.push({structure:s,reason:
-   technical.length===0?"No technical-strike structure shares this event, expiry, width and scenario."
+   technical.length===0?"No technical-strike structure shares this event, expiry, DTE, width and exit policy."
    :buffered.length===0?"No buffered-strike structure was generated here: the canonical generator only produces one when the failed-breakout extreme sits within 100 of the rounded strike boundary."
    :"More than one structure of a placement shares this match key, so the pairing would be ambiguous."});
  }
@@ -258,8 +260,8 @@ export function buildShortStrikeReport(dataset:AnalysisDataset,scenario:Executio
  const technicalBreachShare=share(technicalBreach.filter(p=>p.technical.challenge.breached===true).length,technicalBreach.length),
   bufferedBreachShare=share(bufferedBreach.filter(p=>p.buffered.challenge.breached===true).length,bufferedBreach.length);
 
- return {
-  scenario,structures,pairs,
+ const report:ShortStrikeReport={
+  scenario:primary?"reference":selectedScenario,structures,pairs,
   summary:{
    matchedPairs:pairs.length,
    matchedEvents:new Set(pairs.map(p=>p.eventId)).size,
@@ -281,7 +283,7 @@ export function buildShortStrikeReport(dataset:AnalysisDataset,scenario:Executio
   unpaired,
   methodology:[
    "Scope. This report analyses short-strike PLACEMENT only. Spread width is held constant inside every comparison rather than studied here: placement decides where risk begins, width decides how much tail risk is retained. Width is analysed separately, and no result here is attributed to it.",
-   `Comparison unit. Every figure is a MATCHED PAIR: the same MR event, the same actual expiry (hence the same actual DTE), the same width and protective-long rule, the same structure and option type, the same execution scenario and the same exit policy. Only the short strike differs. This report is scoped to the ${scenario} scenario, and because the scenario is part of the match key a maker structure can only ever be paired against another maker structure -- maker and taker are never mixed inside a statistic.`,
+   `Comparison unit. Every figure is a MATCHED PAIR: the same MR event, the same actual expiry (hence the same actual DTE), the same width and protective-long rule, the same structure and option type, the same exit policy. Only the short strike differs. Execution scenario is absent from the primary key. This report is scoped to the ${primary?"reference":selectedScenario} track; explicit observed robustness layers are filtered before matching, so maker and taker are never mixed.`,
    "Exit policy is a constant rather than a read field: a canonical bundle exports one outcome set for every structure, so there is no exit dimension that could vary within a pair.",
    "Placement names are read from canonical strike_method, never inferred from the strike value. 'anchor' is the technical placement rounded from the failed-breakout extreme; 'buffered' is one strike step farther out. The generator only produces a buffered variant when the extreme sits within 100 of the rounded boundary, which is why many structures have no partner and are listed as unpaired rather than silently dropped.",
    "Distance sign. Every distance is signed so that POSITIVE MEANS FARTHER OUT OF THE MONEY for both directions: a bullish MR sells a put below spot, a bearish MR sells a call above it. Distances are measured from the entry spot (the candidate's own entry index where present, otherwise the event's entry price), from the failed-breakout extreme, and from the invalidation level, plus normalised by spot and by the event's range width.",
@@ -296,4 +298,5 @@ export function buildShortStrikeReport(dataset:AnalysisDataset,scenario:Executio
    "No selection. This report does not choose a strike rule. Lower loss alone does not make buffering superior, and higher average PnL alone does not make the technical strike superior: the tradeoff is credit given up against the reduction in challenged-position and tail losses that credit purchased.",
   ],
  };
+ return primary?{...report,robustness:{maker:buildShortStrikeReport(dataset,"maker"),taker:buildShortStrikeReport(dataset,"taker")}}:report;
 }
