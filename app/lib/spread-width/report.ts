@@ -254,7 +254,7 @@ export function buildSpreadWidthReport(dataset:AnalysisDataset,scenario?:Executi
   for(const s of group.filter(s=>s.identity.actualWidthUsd===null))
    unmatched.push({structure:s,reason:"The canonical candidate has no actual strike width, so it cannot be placed on the width ladder."});
   if(ordered.length<2){
-   for(const s of ordered)unmatched.push({structure:s,reason:"No other actual width shares this event, expiry, DTE, short strike and exit policy, so there is nothing to compare it against."});
+   for(const s of ordered)unmatched.push({structure:s,reason:"No other width shares this event, expiry, DTE, short strike and exit policy, so there is nothing to compare it against."});
    continue;
   }
   const steps:AdjacentWidthStep[]=[];

@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import {
   ANALYTICS_TRACKS,
   buildResearchAnalyticsModel,
+  type ResearchAnalyticsModel,
 } from "../lib/research-analytics-model";
 import type { AnalysisDataset } from "../lib/research-analysis";
 
@@ -17,10 +18,13 @@ const number = (value: number | null) =>
 /** Engineering and methodological audit surface. It deliberately has no report-wide track control. */
 export function ResearchAnalyticsWorkbench({
   dataset,
+  analytics,
 }: {
   dataset: AnalysisDataset;
+  analytics?: ResearchAnalyticsModel;
 }) {
-  const model = useMemo(() => buildResearchAnalyticsModel(dataset), [dataset]);
+  const model = useMemo(() => analytics ?? buildResearchAnalyticsModel(dataset), [analytics, dataset]);
+  const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const inspection = model.observations.find(
     (observation) => observation.id === selected,
@@ -29,6 +33,7 @@ export function ResearchAnalyticsWorkbench({
     <details
       className="analytics-workbench workspace-section"
       data-testid="diagnostics-audit"
+      onToggle={(event) => setOpen(event.currentTarget.open)}
     >
       <summary>
         <strong>Diagnostics &amp; Audit</strong>
@@ -36,6 +41,7 @@ export function ResearchAnalyticsWorkbench({
           Denominators, coverage, confidence, missingness and provenance
         </span>
       </summary>
+      {open && <div data-testid="diagnostics-materialized">
       <div className="section-heading">
         <div>
           <p className="eyebrow">
@@ -161,6 +167,7 @@ export function ResearchAnalyticsWorkbench({
           path, outcomes, uncertainty and missing reasons.
         </p>
       )}
+      </div>}
     </details>
   );
 }
