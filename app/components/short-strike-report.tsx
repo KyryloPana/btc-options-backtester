@@ -97,7 +97,7 @@ export function ShortStrikeReportView({report,takerReport,view="maker",onViewCha
  const current=Math.min(page,pages-1);
  const rows=report.pairs.slice(current*pageSize,(current+1)*pageSize);
  const compare=view==="compare";
- const scenarioLabel=report.scenario==="maker"?"maker opportunity":"taker";
+ const scenarioLabel=report.scenario==="reference"?"reference economics":report.scenario==="maker"?"maker opportunity":"taker";
 
  return <section className="workspace-section dd-report" data-testid="short-strike-report">
   <header className="dd-header">
@@ -105,7 +105,7 @@ export function ShortStrikeReportView({report,takerReport,view="maker",onViewCha
     <p className="eyebrow">Options structure analysis · short-strike placement</p>
     <h2>Short-Strike Analysis</h2>
     <p className="dd-sub">Does moving the short strike farther from the failed-breakout area reduce challenged-position and tail losses enough to justify the credit sacrificed?</p>
-    <p className="dd-note">Every comparison is a matched pair: same MR event, actual expiry and DTE, width and protective-long rule, structure type, exit policy and execution scenario — only the short strike differs. Spread width is held constant here and analysed separately. Scoped to the {scenarioLabel} scenario{compare&&takerReport?"; the compare column shows the same pairs priced under taker":""}.</p>
+    <p className="dd-note">Every primary comparison is a matched pair: same MR event, actual expiry and DTE, width and protective-long rule, structure type and exit policy — only the short strike differs. Execution scenario is not a primary match dimension. Scoped to {scenarioLabel}{compare&&takerReport?"; the compare column shows the same pairs priced under taker":""}.</p>
    </div>
    {onViewChange&&<div className="dd-tabs dd-scenario-tabs" role="tablist" aria-label="Execution view">
     {VIEWS.map(v=><button key={v.value} role="tab" aria-selected={v.value===view} className={v.value===view?"dd-tab-active":undefined} onClick={()=>onViewChange(v.value)}>{v.label}</button>)}
@@ -122,6 +122,7 @@ export function ShortStrikeReportView({report,takerReport,view="maker",onViewCha
    <Card label="Breach-rate difference" value={s.breachRateDifference===null?NOT_ESTIMABLE:`${s.breachRateDifference>0?"+":""}${(s.breachRateDifference*100).toFixed(1)} pp`} detail="buffered − technical"/>
    <Card label="Median extra distance" value={usd(s.medianExtraDistanceUsd)} detail="farther out of the money"/>
   </div>
+  {report.robustness&&<section className="dd-block"><h3>Execution Robustness</h3><p className="dd-note">Observed execution remains strict and separate from the reference result. Matched N: Maker {report.robustness.maker.pairs.filter(p=>p.economicsComparable).length}; Taker {report.robustness.taker.pairs.filter(p=>p.economicsComparable).length}. Missing tape is not replaced by reference or modeled values.</p></section>}
 
   {/* 2 · Strike geometry */}
   <section className="dd-block"><h3>1 · Strike geometry</h3>

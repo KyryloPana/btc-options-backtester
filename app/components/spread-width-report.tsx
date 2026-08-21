@@ -99,7 +99,7 @@ export function SpreadWidthReportView({report,view="maker",onViewChange}:{
  const current=Math.min(page,pages-1);
  const rows=audit.slice(current*pageSize,(current+1)*pageSize);
  const steps=report.groups.flatMap(g=>g.steps);
- const scenarioLabel=report.scenario==="maker"?"maker opportunity":"taker";
+ const scenarioLabel=report.scenario==="reference"?"reference economics":report.scenario==="maker"?"maker opportunity":"taker";
 
  return <section className="workspace-section dd-report" data-testid="spread-width-report">
   <header className="dd-header">
@@ -107,7 +107,7 @@ export function SpreadWidthReportView({report,view="maker",onViewChange}:{
     <p className="eyebrow">Options structure analysis · protective width</p>
     <h2>Spread-Width Analysis</h2>
     <p className="dd-sub">For a fixed event, expiry, short strike, execution scenario and exit policy, how much protective width best trades credit retained against tail-risk reduction, fees and capital efficiency?</p>
-    <p className="dd-note">Every comparison holds the short strike constant — placement is a separate report and is never re-optimized here. Economics use ACTUAL historical width; requested width is retained for audit only. Scoped to the {scenarioLabel} scenario. This report identifies whether a stable width region exists; it does not select one, and never prefers a width merely for the highest historical PnL.</p>
+    <p className="dd-note">Every primary comparison holds the short strike constant — placement is separate and execution scenario is not a primary match dimension. Economics use ACTUAL historical width; requested width is retained for audit only. Scoped to {scenarioLabel}. This report identifies a stable width region; it does not select one.</p>
    </div>
    {onViewChange&&<div className="dd-tabs dd-scenario-tabs" role="tablist" aria-label="Execution view">
     {VIEWS.map(v=><button key={v.value} role="tab" aria-selected={v.value===view} className={v.value===view?"dd-tab-active":undefined} onClick={()=>onViewChange(v.value)}>{v.label}</button>)}
@@ -124,6 +124,7 @@ export function SpreadWidthReportView({report,view="maker",onViewChange}:{
    <Card label="Median fee drag" value={pct(s.medianFeeDragRoundTrip)} detail="estimated round trip"/>
    <Card label="Capital data" value={`${s.openingMarginAvailableN} / ${s.matchedObservations}`} detail="opening margin available" title="Margin depends on the account model, so it is Unavailable unless the canonical margin scenario reports it."/>
   </div>
+  {report.robustness&&<section className="dd-block"><h3>Execution Robustness</h3><p className="dd-note">Observed adjacent steps remain strict and separate. Matched N: Maker {report.robustness.maker.groups.flatMap(g=>g.steps).filter(s=>s.economicsComparable).length}; Taker {report.robustness.taker.groups.flatMap(g=>g.steps).filter(s=>s.economicsComparable).length}. Reference and modeled values are never relabeled as fills.</p></section>}
 
   {/* 2 · Entry economics */}
   <section className="dd-block"><h3>1 · Entry economics by actual width</h3>

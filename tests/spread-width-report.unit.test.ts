@@ -128,12 +128,12 @@ test("MATCHING: a different short strike never joins the width ladder",()=>{
  assert.notEqual(pick("e1-otherK").matchKey,pick("e1-w2000").matchKey);
 });
 
-test("MATCHING: maker and taker never share a ladder",()=>{
+test("MATCHING: observed maker and taker remain separate ladders while scenario is absent from the structural key",()=>{
  assert.ok(report.structures.every(s=>s.executionScenario==="maker"));
  assert.ok(report.groups.every(g=>g.structures.every(s=>s.executionScenario==="maker")));
  const taker=buildSpreadWidthReport(dataset,"taker");
  assert.ok(taker.groups.every(g=>g.structures.every(s=>s.executionScenario==="taker")));
- assert.notEqual(pick("e1-w1000","maker").matchKey,pick("e1-w1000","taker").matchKey);
+ assert.equal(pick("e1-w1000","maker").matchKey,pick("e1-w1000","taker").matchKey);
 });
 
 test("MATCHING: adjacent steps are consecutive widths inside one group, not aggregate totals",()=>{

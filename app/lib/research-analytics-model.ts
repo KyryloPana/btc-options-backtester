@@ -158,6 +158,92 @@ export interface ResearchAnalyticsModel {
   warnings: readonly string[];
 }
 
+/**
+ * Project one canonical analytical track back into the tabular shape consumed
+ * by the older report calculators.  This is deliberately the only compatibility
+ * boundary: report modules must not decode reference_valuation,
+ * delayed_execution or modeled_execution themselves.
+ *
+ * Structural candidate fields always come from one strategy-variant row.  The
+ * projected economic/path fields come exclusively from the requested track;
+ * an unavailable track is retained as an explicitly unavailable candidate.
+ */
+export function datasetForAnalyticsTrack(
+  d: AnalysisDataset,
+  requested: AnalyticsTrack,
+): AnalysisDataset {
+  const model = buildResearchAnalyticsModel(d);
+  const rows = d.tables.candidates ?? [];
+  const candidates: Row[] = [], outcomes: Row[] = [], valuations: Row[] = [];
+  for (const observation of model.observations) {
+    const base = rows.find(r =>
+      s(r.event_id) === observation.eventId &&
+      (s(r.strategy_variant_id) ?? s(r.candidate_id)) === observation.strategyVariantId,
+    ) ?? rows.find(r => s(r.candidate_id) === observation.candidateId);
+    if (!base) continue;
+    const track = observation.tracks[requested];
+    const entry = rec(track?.entryEvidence);
+    const sold = rec(entry.sold), bought = rec(entry.bought);
+    const scenario = requested === "immediate_taker" || requested === "delayed_taker" ? "taker" : "maker";
+    const available = track?.status === "available";
+    candidates.push({
+      ...base,
+      candidate_id: observation.candidateId,
+      strategy_variant_id: observation.strategyVariantId,
+      structure_execution_id: `${observation.candidateId}~${requested}`,
+      analytics_track: requested,
+      execution_scenario: scenario,
+      execution_scenario_status: available ? "evaluated" : "unavailable",
+      execution_scenario_reason: track?.reason ?? `${requested} unavailable`,
+      structure_entry_timestamp_utc: track?.entryTime === null || track?.entryTime === undefined ? null : new Date(track.entryTime).toISOString(),
+      entry_index_price: n(entry.entryTargetIndex) ?? n(entry.targetIndex) ?? n(base.entry_index_price),
+      entry_legs: available ? {
+        short: { price_native: n(sold.priceBtcPerContract) ?? n(sold.price_native) },
+        long: { price_native: n(bought.priceBtcPerContract) ?? n(bought.price_native) },
+      } : null,
+      gross_credit_debit_native: available ? track.economics.grossCredit : null,
+      opening_fees_native: available ? track.economics.entryFees : null,
+      net_opening_cash_flow_native: available ? track.economics.netCredit : null,
+    });
+    if (!track) continue;
+    for (const [name, value] of Object.entries(track.outcomes)) {
+      const x = rec(value);
+      outcomes.push({
+        ...x,
+        candidate_id: observation.candidateId,
+        execution_scenario: scenario,
+        outcome_type: s(x.outcome_type) ?? s(x.label)?.toLowerCase() ?? name,
+        status: available ? "priced" : "unavailable",
+        trigger_status: s(x.trigger_status) ?? "reached",
+        decision_available_timestamp_utc: s(x.decision_available_timestamp_utc) ?? s(x.decisionTimestamp) ?? s(x.valuationTimestamp),
+        valuation_timestamp_utc: s(x.valuation_timestamp_utc) ?? s(x.valuationTimestamp),
+        raw_status: available ? "priced" : "unavailable",
+        iv_normalized_status: available ? "priced" : "unavailable",
+        net_pnl_native: n(x.net_pnl_native) ?? n(x.estimatedNetPnlBtc),
+        net_pnl_usd: n(x.net_pnl_usd) ?? n(x.estimatedNetPnlUsd),
+        raw_net_pnl_native: n(x.net_pnl_native) ?? n(x.estimatedNetPnlBtc),
+        raw_net_pnl_usd: n(x.net_pnl_usd) ?? n(x.estimatedNetPnlUsd),
+        iv_normalized_net_pnl_native: n(x.net_pnl_native) ?? n(x.estimatedNetPnlBtc),
+        iv_normalized_net_pnl_usd: n(x.net_pnl_usd) ?? n(x.estimatedNetPnlUsd),
+      });
+    }
+    for (const value of track.valuationPath) {
+      const x = rec(value);
+      valuations.push({
+        ...x,
+        candidate_id: observation.candidateId,
+        execution_scenario: scenario,
+        pricing_track: requested === "reference" ? "reference" : requested,
+        valuation_status: "priced",
+        timestamp_utc: s(x.timestamp_utc) ?? (n(x.timestamp) === null ? null : new Date(n(x.timestamp)!).toISOString()),
+        net_pnl_native: n(x.net_pnl_native) ?? n(x.estimatedNetPnlBtc),
+        net_pnl_usd: n(x.net_pnl_usd) ?? n(x.estimatedNetPnlUsd),
+      });
+    }
+  }
+  return {...d, tables: {...d.tables, candidates, outcomes, valuations}};
+}
+
 function economics(
   r: Row,
   margin: Row | undefined,

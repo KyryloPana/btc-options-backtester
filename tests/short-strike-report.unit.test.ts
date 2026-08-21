@@ -150,15 +150,15 @@ test("MATCHING: a structure with no partner at its width is excluded, not force-
  assert.match(orphan.reason,/no buffered-strike structure/i);
 });
 
-test("MATCHING: maker and taker are never mixed inside a pair or a statistic",()=>{
+test("MATCHING: observed maker and taker remain strict robustness layers while scenario is absent from the structural key",()=>{
  assert.ok(report.pairs.every(p=>p.technical.executionScenario==="maker"&&p.buffered.executionScenario==="maker"));
  assert.ok(report.structures.every(s=>s.executionScenario==="maker"));
  const taker=buildShortStrikeReport(dataset,"taker");
  assert.ok(taker.pairs.every(p=>p.technical.executionScenario==="taker"&&p.buffered.executionScenario==="taker"));
  assert.equal(taker.pairs.length,1,"only e1 has both placements under taker");
- // The scenario is part of the match key, so a maker row can never pair with a taker row.
+ // Scenario is deliberately absent from the primary structural key; explicit observed layers still filter before pairing.
  assert.ok(!pick("e1-anchor","maker").matchKey.includes("taker"));
- assert.notEqual(pick("e1-anchor","maker").matchKey,pick("e1-anchor","taker").matchKey);
+ assert.equal(pick("e1-anchor","maker").matchKey,pick("e1-anchor","taker").matchKey);
 });
 
 test("MATCHING: canonical strike_method is read, never inferred from the strike value",()=>{

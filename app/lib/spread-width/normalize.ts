@@ -141,7 +141,7 @@ export interface WidthStructure {
  readonly structureEntryMs:number|null;
  readonly quantity:number|null;
  readonly entryIndex:number|null;
- /** Event, expiry, SHORT STRIKE, scenario and exit policy. Only width differs within a key. */
+ /** Event, expiry, DTE, SHORT STRIKE, option/structure and exit policy. Only width differs. */
  readonly matchKey:string;
 
  readonly identity:WidthIdentity;
@@ -378,8 +378,8 @@ export function normalizeWidthStructures(dataset:AnalysisDataset):readonly Width
 
   // The short strike is part of the key: comparing widths across different
   // short strikes would attribute a placement difference to width.
-  const matchKey=[eventId,expiryTimestampMs??"unknown-expiry",shortStrike??"unknown-short",
-   str(row.structure_type)??"unknown-structure",optionType??"unknown-type",scenario??"unknown-scenario","canonical-exit-policy"].join("|");
+  const matchKey=[eventId,expiryTimestampMs??"unknown-expiry",actualDteDays??"unknown-dte",shortStrike??"unknown-short",
+   str(row.structure_type)??"unknown-structure",optionType??"unknown-type","canonical-exit-policy"].join("|");
 
   return {
    eventId,candidateId,structureExecutionId:str(row.structure_execution_id)??`${candidateId}~${scenario??"unknown"}`,
