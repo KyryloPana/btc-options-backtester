@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { priceInverseOption } from "./inverse-option-pricing.ts";
 
 export const CAUSAL_VALUATION_VERSION = "causal-inverse-surface/1.0.0";
@@ -35,7 +34,8 @@ export function valueContract(target:ContractTarget,input:{anchors:SurfaceAnchor
  if(input.dvol&&input.dvol.timestamp<=target.timestamp&&validIv(input.dvol.volatilityDecimal)){if(input.prior&&input.prior.trainingCutoff>target.timestamp)return unavailable("future-trained-prior-rejected");const slope=input.prior?.logMoneynessSlope??0,iv=Math.max(.05,Math.min(3,input.dvol.volatilityDecimal*(1+slope*k(target.strike,target.forwardPrice??target.indexPrice))));return result(target,iv,"dvol-smile-prior",[],"proxy",["dvol-level-prior-not-contract-iv",input.prior?`prior:${input.prior.fingerprint}`:"flat-shape-assumption"],"D");}
  return unavailable(input.dvol?"extrapolation-outside-bounds":"no-volatility-level-input");
 }
-export function createSmilePrior(trainingCutoff:number,calibratedAt:number,slope:number){const payload=`${trainingCutoff}|${calibratedAt}|${slope}|${CAUSAL_VALUATION_VERSION}`;return{trainingCutoff,calibratedAt,fingerprint:createHash("sha256").update(payload).digest("hex").slice(0,16),logMoneynessSlope:slope};}
+export function deterministicFingerprint(payload:string){let a=0x811c9dc5,b=0x9e3779b9;for(let i=0;i<payload.length;i++){a=Math.imul(a^payload.charCodeAt(i),0x01000193)>>>0;b=Math.imul(b+payload.charCodeAt(i),0x85ebca6b)>>>0;}return a.toString(16).padStart(8,"0")+b.toString(16).padStart(8,"0");}
+export function createSmilePrior(trainingCutoff:number,calibratedAt:number,slope:number){const payload=`${trainingCutoff}|${calibratedAt}|${slope}|${CAUSAL_VALUATION_VERSION}`;return{trainingCutoff,calibratedAt,fingerprint:deterministicFingerprint(payload),logMoneynessSlope:slope};}
 
 export interface ExecutionScenarios {fair_value:number;modeled_expected_execution?:number;modeled_conservative_execution:number;assumptionSensitivity?:Array<{penaltyBps:number;credit:number}>;calibrationSampleSize:number;expectedEstimatorPromoted:boolean}
 export function executionScenarios(fairCredit:number,overlapPenaltiesBps:number[],minimum=30):ExecutionScenarios{const clean=overlapPenaltiesBps.filter(x=>Number.isFinite(x)&&x>=0),apply=(bps:number)=>fairCredit-Math.abs(fairCredit)*bps/1e4;if(clean.length<minimum)return{fair_value:fairCredit,modeled_conservative_execution:apply(500),assumptionSensitivity:[50,100,250,500].map(penaltyBps=>({penaltyBps,credit:apply(penaltyBps)})),calibrationSampleSize:clean.length,expectedEstimatorPromoted:false};const sorted=[...clean].sort((a,b)=>a-b),median=sorted[Math.floor(sorted.length/2)],tail=sorted[Math.floor(sorted.length*.9)];return{fair_value:fairCredit,modeled_expected_execution:apply(median),modeled_conservative_execution:apply(Math.max(median,tail)),calibrationSampleSize:clean.length,expectedEstimatorPromoted:true};}
