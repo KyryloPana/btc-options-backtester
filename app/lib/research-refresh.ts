@@ -2,9 +2,9 @@ import { canonicalJson, type JsonValue, type ResearchSelectionStore, type Select
 import { buildExecutionCalibrationRecords, buildModeledExecution } from "./modeled-execution.ts";
 
 export const CURRENT_RESEARCH_ENGINE_VERSIONS={
- immediateExecution:"immediate-scenario-v1",referenceValuation:"causal-reference-v1",
- delayedExecution:"causal-delayed-v1",modeledExecution:"modeled-execution-v2",
- settlementAccounting:"inverse-settlement-v1",margin:"deribit-margin-v1",
+ immediateExecution:"immediate-scenario-v2",referenceValuation:"causal-reference-v1",
+ delayedExecution:"causal-delayed-v2",modeledExecution:"modeled-execution-v2",
+ settlementAccounting:"inverse-settlement-v2",margin:"deribit-margin-v1",
 } as const;
 export type DerivedLayer=keyof typeof CURRENT_RESEARCH_ENGINE_VERSIONS;
 export type RefreshScope={kind:"structure";eventId:string;candidateId:string}|{kind:"event";eventId:string}|{kind:"all"};
