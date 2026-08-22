@@ -33,7 +33,9 @@ export interface ReproducibilitySnapshot {
   historicalEvidenceWindows: JsonValue; synchronizationThresholds: JsonValue; qualityThresholds: JsonValue; feeAssumptions: JsonValue;
   settlementRules: JsonValue; valuationInterval: string; modelAssumptions: JsonValue; generatedAtUtc: string;
 }
-export interface GenerationSnapshot { generatedAtUtc: string; configuration: ReproducibilitySnapshot; candidates: GenerationCandidateSnapshot[]; underlyingHourlyPath: Candle[] }
+/** Persisted, genuine Deribit futures evidence. Index/spot candles are deliberately not accepted here. */
+export interface FuturesMarketSnapshot {instrument:string;instrumentKind:"perpetual"|"dated_future";source:"deribit";reference:Array<{timestamp:number;price:number;indexPrice?:number}>;trades?:Array<{tradeId:string;timestamp:number;price:number;amountUsd:number;direction:"buy"|"sell"}>;funding?:Array<{timestamp:number;rate:number}>;feeRate?:number;}
+export interface GenerationSnapshot { generatedAtUtc: string; configuration: ReproducibilitySnapshot; candidates: GenerationCandidateSnapshot[]; underlyingHourlyPath: Candle[]; futuresMarket?:FuturesMarketSnapshot }
 export interface EvidenceTradeDto { evidenceId:string; venue:Venue; instrument:string|null; tradeId:string|null; timestamp:number|null; direction:string|null; price:number|null; amount:number|null; indexPrice:number|null; ivApiPercent:number|null; ivDecimal:number|null; blockTradeId:string|null; rfqId:string|null; }
 export interface EvidenceUsageDto { evidenceId:string; candidateId:string; role:string; valuationTimestamp:number|null; pricingTrack:string|null; leg:string|null; executionScenario:"maker"|"taker"|null; }
 export type ExecutionScenarioEvaluationStatus = "evaluated" | "unavailable" | "not_evaluated";
