@@ -3,6 +3,7 @@ import { basename, resolve } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
 import { emptyResearchSelectionStore, migrateResearchSelectionStore, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore } from "../app/lib/research-selections.ts";
+import { recomputeSelectedResearch, type RefreshScope, type ResearchRecomputeEngine } from "../app/lib/research-refresh.ts";
 
 const PREFIX="/__local/research-selections",CAPABILITIES="/__local/persistence-capabilities",SAFE_ID=/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 // A store that does not exist yet still needs a stable version for the GET ->
@@ -17,6 +18,17 @@ export class ResearchSelectionService{
   async read(id:string){try{const raw=await readFile(this.path(id),"utf8");let parsed:unknown;try{parsed=JSON.parse(raw)}catch{throw Object.assign(new Error("Persisted research selection JSON is malformed; repair or remove the file before saving."),{status:422})}let migrated:ResearchSelectionStore;try{migrated=migrateResearchSelectionStore(parsed)}catch(error){throw Object.assign(new Error("Persisted research selection file failed schema validation; it was not modified."),{status:422,details:error instanceof Error?error.message:error})}if(migrated.datasetId!==id)throw Object.assign(new Error("Selection dataset identity does not match its filename."),{status:422});return migrated;}catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return emptyResearchSelectionStore(id,EMPTY_STORE_VERSION);throw error;}}
   async save(id:string,value:unknown){const checked=validateResearchSelectionStore(value);if(!checked.ok)throw Object.assign(new Error("Research selection validation failed."),{status:400,details:checked.errors});if(checked.store.datasetId!==id)throw Object.assign(new Error("Selection dataset identity cannot be changed while saving."),{status:400});try{await this.read(id)}catch(error){throw error}const saved={...checked.store,updatedAtUtc:new Date().toISOString()};await this.atomicWrite(saved);return saved;}
   async upsertEvent(id:string,eventId:string,event:unknown,expectedUpdatedAt?:string|null){if(!event||typeof event!=="object")throw Object.assign(new Error("Research selection event must be a JSON object."),{status:400});if((event as ResearchSelectionEvent).eventId!==eventId)throw Object.assign(new Error("Request event ID must match the event payload."),{status:400});const current=await this.read(id);if(expectedUpdatedAt&&current.updatedAtUtc!==expectedUpdatedAt)throw Object.assign(new Error("Research selections changed on disk; reload before saving this event."),{status:409});const draft:ResearchSelectionStore={...current,events:[...current.events.filter(e=>e.eventId!==eventId),event as ResearchSelectionEvent].sort((a,b)=>a.eventId.localeCompare(b.eventId)),updatedAtUtc:new Date().toISOString()};const checked=validateResearchSelectionStore(draft);if(!checked.ok)throw Object.assign(new Error("Research selection event validation failed."),{status:400,details:checked.errors});await this.atomicWrite(checked.store);return checked.store;}
+  /** Explicit one-structure, one-event, or all refresh; persistence happens once, only after every engine call and validation succeeds. */
+  async recompute(id:string,scope:RefreshScope,engine:ResearchRecomputeEngine,expectedUpdatedAt?:string|null,onProgress?:(done:number,total:number)=>void){
+   const current=await this.read(id);
+   if(expectedUpdatedAt&&current.updatedAtUtc!==expectedUpdatedAt)throw Object.assign(new Error("Research selections changed on disk; reload before refreshing."),{status:409});
+   const total=current.events.flatMap(e=>e.selectedStructures.map(s=>({eventId:e.eventId,candidateId:s.candidateId}))).filter(s=>scope.kind==="all"||scope.kind==="event"&&scope.eventId===s.eventId||scope.kind==="structure"&&scope.eventId===s.eventId&&scope.candidateId===s.candidateId).length;
+   let done=0;onProgress?.(done,total);
+   const wrapped:ResearchRecomputeEngine=async input=>{const output=await engine(input);onProgress?.(++done,total);return output};
+   const result=await recomputeSelectedResearch(current,scope,wrapped);
+   const checked=validateResearchSelectionStore(result.store);if(!checked.ok)throw Object.assign(new Error("Recomputed research selection store failed validation; previous state was preserved."),{status:422,details:checked.errors});
+   await this.atomicWrite(checked.store);return{store:checked.store,refreshed:result.refreshed};
+  }
   /**
    * Removes an event and everything the store owns for it. Every canonical
    * bundle table is derived from `events` at export time, so dropping the
