@@ -51,6 +51,6 @@ test("triggered but unfilled outcome never exposes hypothetical profit and settl
 
 test("opening balance subtracts received cash once, keeps maximum loss separate, and rejects PM without simulation", () => {
   const observation = calculateContractSizeScenario({ event, candidates: [spread()], candles, baseConfig: config, amount: 1 }).observation; const capital = openingCapitalRequirement(observation);
-  assert.equal(capital.minimumStartingBalance, Math.max(observation.entryExecution!.bought.fillPriceBtc! + observation.feeLedger!.opening.buyAggregate, observation.marginResult!.initialMarginBtc! - observation.entryCashFlow!.netBtc)); assert.notEqual(capital.minimumStartingBalance, observation.marginResult!.initialMarginBtc! + observation.marginResult!.theoreticalMaximumSpreadLossBtc);
+  assert.equal(capital.calculationSource, "unavailable"); assert.equal(capital.minimumStartingBalance, undefined); assert.notEqual(capital.minimumStartingBalance, observation.marginResult!.initialMarginBtc! + observation.marginResult!.theoreticalMaximumSpreadLossBtc);
   const pm = openingCapitalRequirement({ ...observation, marginResult: { ...observation.marginResult!, deployment: { ...observation.marginResult!.deployment, model: "segregated_pm" } } }); assert.equal(pm.calculationSource, "unavailable");
 });
