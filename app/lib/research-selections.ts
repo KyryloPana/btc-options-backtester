@@ -1,8 +1,8 @@
 import type { BacktestEvent, Candle, QualityFlag, RetrievedSpread } from "./backtester";
 
-export const RESEARCH_SELECTION_SCHEMA_VERSION = "1.6.0" as const;
+export const RESEARCH_SELECTION_SCHEMA_VERSION = "1.7.0" as const;
 /** Every schema version this app can still read and migrate forward from. */
-export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS = ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0"] as const;
+export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS = ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0"] as const;
 /** @deprecated kept for external callers; prefer LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS. */
 export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSION = "1.0.0" as const;
 export type Venue = "deribit" | "bybit" | "binance";
@@ -64,6 +64,12 @@ export interface ExecutionScenarioSnapshot {
   valuationWindowMigration?: { originatingSchema:string; removedCount:number; beforeEntryCount:number; afterExpiryCount:number };
 }
 export interface SelectedStructure {
+  /**
+   * Structural selection (immutable during research refresh): selectionId,
+   * eventId, candidateId, strategyVariantId, venue, selectedAtUtc, quantity,
+   * candidateSnapshot and contractResolution. Everything below is derived and
+   * may be atomically replaced by an explicitly requested engine recompute.
+   */
   selectionId: string; eventId: string; candidateId: string; venue: Venue; selectedAtUtc: string; quantity: number;
   candidateSnapshot: JsonValue;
   /** Maker opportunity and taker execution, evaluated independently against the same structure. Neither is derived from the other. */
@@ -78,7 +84,10 @@ export interface SelectedStructure {
   referenceValuation?: IndependentTrackSnapshot;
   /** Versioned causal delayed-entry analysis. Kept separate from immediate and reference tracks. */
   delayedExecution?: JsonValue;
-  modeledExecution?: {expected:{status:"not_evaluated";reason:string};conservative:{status:"not_evaluated";reason:string}};
+  modeledExecution?: JsonValue;
+  /** Engine provenance for recomputable outputs; absence on legacy data is a stale diagnostic, never evidence of evaluation. */
+  derivedVersions?: Partial<Record<"immediateExecution"|"referenceValuation"|"delayedExecution"|"modeledExecution"|"settlementAccounting"|"margin",string>>;
+  derivedRefreshedAtUtc?: string;
   marginSnapshot: JsonValue; evidenceTradeSnapshots?: JsonValue[]; evidenceUsages?: EvidenceUsageDto[];
 }
 export interface ResearchSelectionEvent { eventId: string; sourceRun: JsonValue; generationSnapshot: GenerationSnapshot; selectedStructures: SelectedStructure[]; evidenceCatalog?: EvidenceTradeDto[] }
