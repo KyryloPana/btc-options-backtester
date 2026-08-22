@@ -4,7 +4,7 @@ import { buildExecutionCalibrationRecords, buildModeledExecution } from "./model
 export const CURRENT_RESEARCH_ENGINE_VERSIONS={
  immediateExecution:"immediate-scenario-v2",referenceValuation:"causal-reference-v1",
  delayedExecution:"causal-delayed-v2",modeledExecution:"modeled-execution-v2",
- settlementAccounting:"inverse-settlement-v2",margin:"deribit-margin-v1",
+ settlementAccounting:"inverse-settlement-v2",margin:"deribit-standard-margin-v2",
 } as const;
 export type DerivedLayer=keyof typeof CURRENT_RESEARCH_ENGINE_VERSIONS;
 export type RefreshScope={kind:"structure";eventId:string;candidateId:string}|{kind:"event";eventId:string}|{kind:"all"};
