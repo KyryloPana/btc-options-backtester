@@ -21,7 +21,7 @@ test("UI orchestration boundary produces executed Event A solely from post-order
   assert.equal(observation.eventOutcome, "executed");
   assert.ok(Math.abs(observation.entryCashFlow!.grossBtc - .03) < 1e-12);
   assert.ok(Math.abs(observation.executedNetPnl!.btc - .0238) < 1e-12, observation.netPnl?.identity);
-  assert.equal(observation.marginResult?.state, "ok");
+  assert.equal(observation.marginResult?.state, "unavailable");
   assert.equal(observation.candidateAttempts.length, 2);
   assert.equal(observation.candidateAttempts.filter(a => a.executable).length, 1);
 });
@@ -87,7 +87,7 @@ test("diagnostic path shares actual fill opening basis despite materially differ
 });
 
 test("all declared margin models are runnable without SM substitution", () => {
-  for (const model of ["segregated_sm", "cross_sm"] as const) { const o = runEventBacktest({ event: event(model), candidates: [spread(model)], candles, config: { ...config, marginModel: model } }); assert.equal(o.marginResult?.requestedModel, model); assert.equal(o.marginResult?.deployment.marginSource, "formula-estimate"); }
+  for (const model of ["segregated_sm", "cross_sm"] as const) { const o = runEventBacktest({ event: event(model), candidates: [spread(model)], candles, config: { ...config, marginModel: model } }); assert.equal(o.marginResult?.requestedModel, model); assert.equal(o.marginResult?.deployment.marginSource, "historical-formula-reconstruction"); }
   for (const model of ["segregated_pm", "cross_pm"] as const) { const unavailable = runEventBacktest({ event: event(`${model}-none`), candidates: [spread(`${model}-none`)], candles, config: { ...config, marginModel: model } }); assert.equal(unavailable.marginResult?.state, "unavailable"); assert.equal(unavailable.marginResult?.requestedModel, model); assert.equal(unavailable.marginResult?.deployment.marginSource, "portfolio-simulation"); const supplied = runEventBacktest({ event: event(`${model}-yes`), candidates: [spread(`${model}-yes`)], candles, config: { ...config, marginModel: model, portfolioMarginEvidence: { response: { margin_model: model, initial_margin: .1, maintenance_margin: .05 }, accountState: { historical: true }, simulationTimestamp: 1500 } } }); assert.equal(supplied.marginResult?.state, "ok"); assert.equal(supplied.marginResult?.evidenceModel, model); assert.equal(supplied.marginResult?.simulationTimestamp, 1500); }
 });
 
@@ -112,7 +112,7 @@ test("structured validation detects independent chronology, amount, cash-flow, f
 test("end-to-end fixture exports one reconciled observation and rejects duplication", async () => {
   const { buildAndRunObservationRequests, validateObservationLedger } = await import("../app/lib/observation-ledger.ts");
   const observations = buildAndRunObservationRequests(event("e2e"), [spread("e2e-primary"), { ...spread("e2e-alt"), expiryRank: 2, selectedForTest: true }], candles, () => config);
-  assert.equal(observations.length, 1); const o = observations[0]; assert.ok(Math.abs(o.entryCashFlow!.grossBtc - .03) < 1e-12); assert.ok(Math.abs(o.executedNetPnl!.btc - .0238) < 1e-12); assert.equal(o.marginResult?.state, "ok"); assert.ok(o.valuationPath?.some(p => p.pointRole === "diagnostic-mark"));
+  assert.equal(observations.length, 1); const o = observations[0]; assert.ok(Math.abs(o.entryCashFlow!.grossBtc - .03) < 1e-12); assert.ok(Math.abs(o.executedNetPnl!.btc - .0238) < 1e-12); assert.equal(o.marginResult?.state, "unavailable"); assert.ok(o.valuationPath?.some(p => p.pointRole === "diagnostic-mark"));
   const exported = buildObservationExport(observations, config, [event("e2e")]); assert.equal(exported.valid, true); assert.deepEqual(exported.aggregateGroups, aggregateObservations(observations));
   assert.equal(validateObservationLedger([...observations, structuredClone(o)]).valid, false);
 });

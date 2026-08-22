@@ -68,10 +68,10 @@ test("maximum loss remains separate from versioned SM outputs and missing causal
   const missing = estimateStandardOptionMargin({ side: "short", optionType: "C", amount: 1, strike: 60_000, observationTimestamp: 1, theoreticalMaximumSpreadLossBtc: 0.02 });
   assert.equal(missing.state, "unavailable");
   assert.equal(missing.initialMarginBtc, undefined);
-  const result = estimateStandardOptionMargin({ side: "short", optionType: "C", amount: 1, strike: 60_000, indexPrice: 50_000, markPriceBtc: 0.01, observationTimestamp: 2, theoreticalMaximumSpreadLossBtc: 0.02 });
+  const result = estimateStandardOptionMargin({ side: "short", optionType: "C", amount: 1, strike: 60_000, indexPrice: 50_000, markPriceBtc: 0.01, observationTimestamp: Date.parse("2024-01-01T00:00:00Z"), theoreticalMaximumSpreadLossBtc: 0.02 });
   assert.equal(result.deployment.model, "segregated_sm");
   assert.equal(result.deployment.collateralCurrency, "BTC");
-  assert.equal(result.deployment.marginSource, "formula-estimate");
+  assert.equal(result.deployment.marginSource, "historical-formula-reconstruction");
   assert.notEqual(result.theoreticalMaximumSpreadLossBtc, result.initialMarginBtc);
 });
 
