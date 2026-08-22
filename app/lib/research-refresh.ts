@@ -1,5 +1,6 @@
 import { canonicalJson, compactResearchSelectionEvent, type JsonValue, type ResearchSelectionStore, type SelectedStructure } from "./research-selections.ts";
 import { buildExecutionCalibrationRecords, buildModeledExecution } from "./modeled-execution.ts";
+import { buildResearchMarginSnapshot, LEGACY_MARGIN_NOT_COMPUTED_REASON } from "./research-margin.ts";
 
 export const CURRENT_RESEARCH_ENGINE_VERSIONS={
  immediateExecution:"immediate-scenario-v2",referenceValuation:"causal-reference-v1",
@@ -18,7 +19,7 @@ export interface DerivedResearchOutput {
 export type ResearchRecomputeEngine=(input:Readonly<{eventId:string;sourceRun:JsonValue;generationSnapshot:ResearchSelectionStore["events"][number]["generationSnapshot"];structure:Readonly<SelectedStructure>}>)=>Promise<DerivedResearchOutput>;
 
 const object=(v:unknown):Record<string,unknown>=>v!==null&&typeof v==="object"&&!Array.isArray(v)?v as Record<string,unknown>:{};
-const placeholder=(v:unknown)=>{const o=object(v),reason=String(o.reason??"").toLowerCase();return o.status==="not_evaluated"&&(/placeholder|not supported by this generated run|no .* execution was performed|feature did not exist|not implemented/.test(reason));};
+const placeholder=(v:unknown)=>{const o=object(v),raw=String(o.reason??""),reason=raw.toLowerCase();return raw===LEGACY_MARGIN_NOT_COMPUTED_REASON||o.reasonCode==="margin_not_recomputed"||o.status==="not_evaluated"&&(/placeholder|not supported by this generated run|no .* execution was performed|feature did not exist|not implemented/.test(reason));};
 
 export interface DerivedStaleness {stale:boolean;layers:Partial<Record<DerivedLayer,string[]>>}
 /** Deterministic diagnostics distinguish an engine-attempted unavailable result from a never-run placeholder. */
@@ -52,7 +53,7 @@ export async function recomputeSelectedResearch(store:ResearchSelectionStore,sco
   if(!selected(scope,event.eventId,structure.candidateId)){structures.push(structure);continue;}
   const output=await engine({eventId:event.eventId,sourceRun:event.sourceRun,generationSnapshot:event.generationSnapshot,structure});
   const referenceValuation=output.referenceValuation;
-  structures.push({...structure,executionScenarios:output.executionScenarios,referenceValuation,delayedExecution:canonicalJson(output.delayedExecution),modeledExecution:buildModeledExecution(referenceValuation,calibration),marginSnapshot:canonicalJson(output.marginSnapshot),evidenceTradeSnapshots:output.evidenceTradeSnapshots?.map(canonicalJson),evidenceUsages:output.evidenceUsages,statusLayers:canonicalJson(output.statusLayers),derivedVersions:{...output.versions,modeledExecution:CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution},derivedRefreshedAtUtc:now});refreshed++;
+  const recomputedStructure={...structure,referenceValuation};structures.push({...structure,executionScenarios:output.executionScenarios,referenceValuation,delayedExecution:canonicalJson(output.delayedExecution),modeledExecution:buildModeledExecution(referenceValuation,calibration),marginSnapshot:buildResearchMarginSnapshot(recomputedStructure),evidenceTradeSnapshots:output.evidenceTradeSnapshots?.map(canonicalJson),evidenceUsages:output.evidenceUsages,statusLayers:canonicalJson(output.statusLayers),derivedVersions:{...output.versions,modeledExecution:CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution},derivedRefreshedAtUtc:now});refreshed++;
  }events.push({...event,selectedStructures:structures});}
  if(scope.kind!=="all"&&refreshed===0)throw new Error("No saved selected structure matched the requested refresh scope.");
  return{store:{...store,updatedAtUtc:now,events:events.map(compactResearchSelectionEvent)},refreshed};
