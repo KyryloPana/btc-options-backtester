@@ -1,4 +1,4 @@
-import { canonicalJson, type JsonValue, type ResearchSelectionStore, type SelectedStructure } from "./research-selections.ts";
+import { canonicalJson, compactResearchSelectionEvent, type JsonValue, type ResearchSelectionStore, type SelectedStructure } from "./research-selections.ts";
 import { buildExecutionCalibrationRecords, buildModeledExecution } from "./modeled-execution.ts";
 
 export const CURRENT_RESEARCH_ENGINE_VERSIONS={
@@ -55,5 +55,5 @@ export async function recomputeSelectedResearch(store:ResearchSelectionStore,sco
   structures.push({...structure,executionScenarios:output.executionScenarios,referenceValuation,delayedExecution:canonicalJson(output.delayedExecution),modeledExecution:buildModeledExecution(referenceValuation,calibration),marginSnapshot:canonicalJson(output.marginSnapshot),evidenceTradeSnapshots:output.evidenceTradeSnapshots?.map(canonicalJson),evidenceUsages:output.evidenceUsages,statusLayers:canonicalJson(output.statusLayers),derivedVersions:{...output.versions,modeledExecution:CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution},derivedRefreshedAtUtc:now});refreshed++;
  }events.push({...event,selectedStructures:structures});}
  if(scope.kind!=="all"&&refreshed===0)throw new Error("No saved selected structure matched the requested refresh scope.");
- return{store:{...store,updatedAtUtc:now,events},refreshed};
+ return{store:{...store,updatedAtUtc:now,events:events.map(compactResearchSelectionEvent)},refreshed};
 }

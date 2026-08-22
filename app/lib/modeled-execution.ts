@@ -49,3 +49,11 @@ export function buildModeledExecution(referenceValue:unknown,calibrationRows:Exe
  const grid=[0,50,100,250,500].map(penaltyBps=>({penaltyBps,label:penaltyBps===0?"fair reference":`${penaltyBps}bp assumption`,track:modeledTrack(reference,penaltyBps,taker,"declared_assumption")}));
  return {expected,conservative,penaltySensitivity:{status:"evaluated",reason:null,source:"modeled_execution_sensitivity",modelVersion:MODELED_EXECUTION_VERSION,calibrationCount:taker.count,calibration:taker,assumptionGrid:true,grid,provenance:{historicalExecution:false,description:"Deterministic assumptions, not observed bid/ask or fills."}}} as unknown as JsonValue;
 }
+
+/** Rehydrates persisted modeled tracks from the one canonical reference mark path. */
+export function reconstructModeledExecution(referenceValue:unknown,persistedValue:unknown):JsonValue{
+ const reference=rec(referenceValue),persisted=rec(persistedValue),referencePath=Array.isArray(reference.valuationPathSnapshot)?reference.valuationPathSnapshot.map(rec):[];
+ const track=(value:unknown)=>{const saved=rec(value);if(saved.status!=="evaluated"||Array.isArray(saved.valuationPathSnapshot))return saved as unknown as JsonValue;const entry=rec(saved.entrySnapshot),net=num(entry.netOpeningCashFlowBtc);const valuationPathSnapshot=referencePath.map(point=>{const close=num(point.closingSpreadValueBtc)??num(point.grossCloseBtc),fee=num(point.closingFeesBtc)??0;return{...point,valuationSource:"reference-mark",observed:false,...(net===undefined||close===undefined?{}:{estimatedNetPnlBtc:net+close-fee})};});return{...saved,valuationPathSnapshot} as unknown as JsonValue;};
+ const sensitivity=rec(persisted.penaltySensitivity),grid=Array.isArray(sensitivity.grid)?sensitivity.grid.map(row=>{const r=rec(row);return{...r,track:track(r.track)}}):[];
+ return{...persisted,expected:track(persisted.expected),conservative:track(persisted.conservative),penaltySensitivity:{...sensitivity,grid}} as unknown as JsonValue;
+}
