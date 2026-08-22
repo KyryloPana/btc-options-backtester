@@ -6,6 +6,7 @@ import {
   type ResearchAnalyticsModel,
 } from "../lib/research-analytics-model";
 import type { AnalysisDataset } from "../lib/research-analysis";
+import { buildAcceptanceSummary } from "../lib/acceptance-summary";
 
 const label = (value: string) => value.replaceAll("_", " ");
 const number = (value: number | null) =>
@@ -29,6 +30,7 @@ export function ResearchAnalyticsWorkbench({
   const inspection = model.observations.find(
     (observation) => observation.id === selected,
   );
+  const exportAcceptance=()=>{const blob=new Blob([JSON.stringify(buildAcceptanceSummary(dataset),null,2)+"\n"],{type:"application/json"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=`acceptance-summary-${String(dataset.run.dataset_id??"research")}.json`;a.click();URL.revokeObjectURL(url)};
   return (
     <details
       className="analytics-workbench workspace-section"
@@ -48,6 +50,7 @@ export function ResearchAnalyticsWorkbench({
             Normalized analytical unit · event × strategy variant
           </p>
           <h2>Diagnostics &amp; Audit</h2>
+          <button className="secondary-button" onClick={exportAcceptance}>Export acceptance summary</button>
         </div>
         <em className="report-state available">
           {model.observations.length} observations
