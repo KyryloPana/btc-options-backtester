@@ -6,7 +6,9 @@ import {buildResearchMarginSnapshot} from "../app/lib/research-margin.ts";
 import {resolveEventTiming} from "../app/lib/event-timing.ts";
 import {buildEventFuturesBaseline} from "../app/lib/futures-baseline.ts";
 import {BUILD_PROVENANCE_UNAVAILABLE,buildProvenanceStatus,resolveApplicationBuild,resolveBuildProvenance} from "../app/lib/build-provenance.ts";
-import {CONFIGURATION_IDENTITY_VERSION,canonicalConfigurationRepresentation,configurationDifferences,diagnoseMethodologyStaleness,effectiveConfigurationHash} from "../app/lib/configuration-identity.ts";
+import {CONFIGURATION_IDENTITY_VERSION,ORDER_SIGNIFICANT_CONFIGURATION_PATHS,canonicalConfigurationRepresentation,configurationDifferences,diagnoseMethodologyStaleness,effectiveConfigurationHash} from "../app/lib/configuration-identity.ts";
+import {EXECUTION_TIMING_METADATA,IMMEDIATE_FILL_SEARCH_WINDOWS_MS} from "../app/lib/execution-policy.ts";
+import {RESEARCH_WINDOWS_MINUTES} from "../app/lib/research-valuation.ts";
 import {config,now,referenceOnlyFixture,store} from "./fixtures/research-selection-store.ts";
 import {BARS,ENTRY,HOUR,barClose,barOpen,futuresEvent,futuresMarket,perpetualBars,underlyingPath} from "./fixtures/futures-market.ts";
 
@@ -529,4 +531,47 @@ test("PART 7 / versioning: a previous-schema bundle is rejected, never reinterpr
   const stale={...built.files,"run.json":built.files["run.json"].replace('"3.4.0"',`"${previous}"`)};
   assert.equal(validateResearchBundle(stale).ok,false,`${previous} carried different maximum-loss semantics and must not be read as current`);
  }
+});
+
+// ---------------------------------------------------------------------------
+// Configuration identity: sequences versus sets
+// ---------------------------------------------------------------------------
+
+test("PART 6: a declared escalation sequence is order-sensitive and changes the identity",()=>{
+ // immediateFillSearchWindowsMs records the progressive entry-evidence search
+ // that estimateResearchSpread runs with first-match-wins semantics, so the
+ // same SET in a different order is a different research method.
+ const forward={...config,synchronizationThresholds:{...EXECUTION_TIMING_METADATA}};
+ const reversed={...config,synchronizationThresholds:{...EXECUTION_TIMING_METADATA,immediateFillSearchWindowsMs:[...IMMEDIATE_FILL_SEARCH_WINDOWS_MS].reverse()}};
+ assert.notEqual(effectiveConfigurationHash(reversed),effectiveConfigurationHash(forward),"a reordered search escalation is a different methodology");
+ assert.deepEqual(configurationDifferences(forward,reversed),["synchronizationThresholds"]);
+ assert.deepEqual((canonicalConfigurationRepresentation(forward).synchronizationThresholds as Record<string,unknown>).immediateFillSearchWindowsMs,
+  [...IMMEDIATE_FILL_SEARCH_WINDOWS_MS],"the declared order survives canonicalization verbatim");
+ // Two events differing only in that order are refused as a mixed bundle.
+ const mixed=structuredClone(store);
+ mixed.events[0]!.generationSnapshot.configuration=forward as typeof config;
+ mixed.events[1]!.generationSnapshot.configuration=reversed as typeof config;
+ assert.throws(()=>buildResearchBundle(mixed,now),/Incompatible research methodologies[\s\S]*synchronizationThresholds/);
+});
+
+test("PART 6: canonicalization is not disabled for the rest of that field, nor for set-like arrays",()=>{
+ const forward={...config,synchronizationThresholds:{...EXECUTION_TIMING_METADATA}};
+ // Object keys inside the same field are still order-insensitive.
+ const rekeyed={...config,synchronizationThresholds:Object.fromEntries(Object.entries(EXECUTION_TIMING_METADATA).reverse())};
+ assert.equal(effectiveConfigurationHash(rekeyed),effectiveConfigurationHash(forward),"only the sequence is order-significant, not the field");
+ // pricingTracks is checkbox membership, never iterated with priority.
+ assert.equal(effectiveConfigurationHash({...forward,pricingTracks:["iv","vwap"]}),effectiveConfigurationHash({...forward,pricingTracks:["vwap","iv"]}));
+ // entryMinutes is built from a Set: a record of which windows produced prices.
+ const windows=(entryMinutes:number[])=>({...forward,historicalEvidenceWindows:{entryMinutes}});
+ assert.equal(effectiveConfigurationHash(windows([120,30,60])),effectiveConfigurationHash(windows([30,60,120])));
+ // A genuine membership change is still caught.
+ assert.notEqual(effectiveConfigurationHash(windows([30,60])),effectiveConfigurationHash(windows([30,60,120])));
+});
+
+test("the declared search escalation matches the engine that implements it",()=>{
+ // If these drift, the persisted methodology would describe a search order the
+ // valuation engine does not actually run.
+ assert.deepEqual(IMMEDIATE_FILL_SEARCH_WINDOWS_MS,RESEARCH_WINDOWS_MINUTES.map(minutes=>minutes*60_000));
+ assert.deepEqual([...RESEARCH_WINDOWS_MINUTES],[30,60,120],"tightest window first; only it can earn a green flag");
+ assert.ok(ORDER_SIGNIFICANT_CONFIGURATION_PATHS.includes("synchronizationThresholds.immediateFillSearchWindowsMs"));
 });

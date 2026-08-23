@@ -34,23 +34,47 @@ export const EXCLUDED_FROM_CONFIGURATION_IDENTITY: Readonly<Record<string, strin
   applicationBuild: "Build provenance is tracked separately; a rebuild does not change the research method.",
 });
 
+/**
+ * Scalar arrays whose ORDER is itself methodology, addressed by dotted path
+ * from the methodology field. These are declared sequences, not sets, so
+ * sorting them would let two genuinely different methodologies hash alike.
+ *
+ * `synchronizationThresholds.immediateFillSearchWindowsMs` records the
+ * progressive entry-evidence escalation that `estimateResearchSpread`
+ * implements with first-match-wins semantics (`RESEARCH_WINDOWS_MINUTES`):
+ * the first window that finds qualifying tape produces the entry price, and
+ * only the tightest window can earn a green quality flag. Declaring
+ * [120m, 60m, 30m] instead of [30m, 60m, 120m] is the same SET but a
+ * different research method and must not share an identity.
+ */
+export const ORDER_SIGNIFICANT_CONFIGURATION_PATHS: readonly string[] = [
+  "synchronizationThresholds.immediateFillSearchWindowsMs",
+];
+
 const isPlainObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const isScalar = (value: unknown) => value === null || ["string", "number", "boolean"].includes(typeof value);
 
 /**
- * Stable, order-insensitive rendering. Object keys are sorted, and arrays whose
- * members are all scalars are sorted too: in this schema those are set-like
- * (`pricingTracks`, horizon lists), so their order is an accident. Arrays
- * containing objects keep their order, because there the position may be
- * meaningful.
+ * Stable rendering. Object keys are sorted everywhere. Arrays whose members are
+ * all scalars are sorted too — in this schema those are set-like
+ * (`pricingTracks` is checkbox order; `historicalEvidenceWindows.entryMinutes`
+ * is built from a Set) — EXCEPT at a path listed in
+ * `ORDER_SIGNIFICANT_CONFIGURATION_PATHS`, where the order is the methodology.
+ * Arrays containing objects always keep their order, because there the position
+ * may be meaningful.
+ *
+ * `path` is the dotted address from the methodology field; descending into an
+ * array's members does not extend it, so a sequence is addressed by the field
+ * that holds it rather than by index.
  */
-export function canonicalConfigurationValue(value: unknown): unknown {
+export function canonicalConfigurationValue(value: unknown, path = ""): unknown {
   if (Array.isArray(value)) {
-    const members = value.map(canonicalConfigurationValue);
-    return members.every(isScalar) ? [...members].sort((a, b) => String(a).localeCompare(String(b))) : members;
+    const members = value.map(member => canonicalConfigurationValue(member, path));
+    const ordered = ORDER_SIGNIFICANT_CONFIGURATION_PATHS.includes(path);
+    return members.every(isScalar) && !ordered ? [...members].sort((a, b) => String(a).localeCompare(String(b))) : members;
   }
   if (isPlainObject(value)) {
-    return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalConfigurationValue(value[key])]));
+    return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalConfigurationValue(value[key], path ? `${path}.${key}` : key)]));
   }
   return value;
 }
@@ -58,7 +82,7 @@ export function canonicalConfigurationValue(value: unknown): unknown {
 /** The exact methodology-only representation the hash is taken over. */
 export function canonicalConfigurationRepresentation(configuration: unknown): Record<string, unknown> {
   const source = isPlainObject(configuration) ? configuration : {};
-  return Object.fromEntries(METHODOLOGY_FIELDS.map(field => [field, canonicalConfigurationValue(source[field] ?? null)]));
+  return Object.fromEntries(METHODOLOGY_FIELDS.map(field => [field, canonicalConfigurationValue(source[field] ?? null, field)]));
 }
 
 /**
