@@ -2,11 +2,13 @@ import { assessCandidateAnalyticalTracks, canonicalJson, migrateResearchSelectio
 import { reconcileCandidateSpread } from "./semantic-spread.ts";
 import { buildEventFuturesBaseline, FUTURES_ENGINE_VERSION } from "./futures-baseline.ts";
 import { canonicalMarginReason } from "./research-margin.ts";
+import { CANONICAL_TRACKS, describeCanonicalTracks, legVolatility } from "./research-tracks.ts";
+import { breakEven, payoffExtrema, type ExpiryPayoffInput } from "./expiry-payoff.ts";
 
-export const RESEARCH_BUNDLE_SCHEMA_VERSION="3.2.0" as const;
+export const RESEARCH_BUNDLE_SCHEMA_VERSION="3.3.0" as const;
 /** Bundle schema versions this app can still import (see importResearchBundle). */
-export const LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS=["1.0.0","2.0.0","2.1.0","2.2.0","2.3.0","3.0.0","3.1.0"] as const;
-export const RESEARCH_BUNDLE_FILES=["run.json","events.jsonl","underlying_path.jsonl","candidates.jsonl","valuations.jsonl","outcomes.jsonl","availability.jsonl","margin_scenarios.jsonl","evidence_trades.jsonl","futures_comparisons.jsonl","futures_path.jsonl"] as const;
+export const LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS=["1.0.0","2.0.0","2.1.0","2.2.0","2.3.0","3.0.0","3.1.0","3.2.0"] as const;
+export const RESEARCH_BUNDLE_FILES=["run.json","events.jsonl","underlying_path.jsonl","structure_economics.jsonl","candidates.jsonl","valuations.jsonl","outcomes.jsonl","availability.jsonl","margin_scenarios.jsonl","evidence_trades.jsonl","futures_comparisons.jsonl","futures_path.jsonl"] as const;
 export const REQUIRED_OUTCOMES=["vpoc","invalidation","credit_capture_25","credit_capture_50","credit_capture_70","fixed_3d","fixed_5d","fixed_7d","settlement"] as const;
 export const RESEARCH_REASON_CODES=["entry_priced","entry_unavailable","direct_vwap","model_reconstructed","quality_green","quality_yellow","quality_red","quality_unavailable","valuation_priced","pricing_track_unavailable","outside_executable_window","raw_source_evidence","executable_evidence","missing_target_index","missing_pricing_track","outcome_priced","outcome_not_reached","outcome_after_expiry","outcome_ambiguous_sequence","outcome_reached_but_unpriced","candidate_priced","candidate_unavailable","verified_historical_margin_model_unavailable","margin_no_canonical_valuation_path","margin_missing_index","margin_missing_short_mark","margin_missing_long_mark","margin_historical_rule_unverified","margin_deployment_unsupported","margin_not_recomputed","futures_instrument_unavailable","unsupported_futures_instrument","futures_reference_series_unavailable","matched_endpoint_unavailable","observed_futures_execution_unavailable","funding_unavailable","futures_margin_unavailable"] as const;
 export type ResearchReasonCode=(typeof RESEARCH_REASON_CODES)[number];
@@ -50,6 +52,84 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
   * other scenario.
   */
  const invalidScenarioKeys=new Set<string>();
+/**
+ * ONE scenario-independent economic record per candidate_id.
+ *
+ * This is the record that says the structure EXISTS economically. Execution
+ * rows overlay it; they never decide whether it exists. It is emitted once per
+ * candidate_id -- not once for maker and again for taker -- so a downstream
+ * consumer counts each structure exactly once.
+ *
+ * Maximum economic loss is computed from the authoritative inverse-option
+ * payoff, with its units, reference index and method stated alongside it. It is
+ * never presented as an unconditional BTC number, and the protective long's
+ * premium plus fees is never called "margin" or "required balance": those are
+ * account quantities and live in margin_scenarios.jsonl.
+ */
+ const structureEconomics:Row[]=selected.map(({e,s})=>{
+  const c=obj(s.candidateSnapshot),reference=obj((s.referenceValuation??null) as JsonValue),refEntry=obj(reference.entrySnapshot);
+  const modeledConservative=obj(obj((s.modeledExecution??null) as JsonValue).conservative),modeledEntry=obj(modeledConservative.entrySnapshot);
+  const generated=e.generationSnapshot.candidates.find(x=>x.candidateId===s.candidateId);
+  const expiry=num(c.expiryTimestamp),optionTypeRaw=c.optionType,optionType=typeof optionTypeRaw==="string"&&optionTypeRaw.trim()?optionTypeRaw:null;
+  const shortStrike=num(c.shortStrike),longStrike=num(c.longStrike);
+  const quantity=num(s.quantity),index=num(refEntry.entryTargetIndex)??num(refEntry.targetIndex);
+  const shortPremium=num(obj(refEntry.sold).priceBtcPerContract),longPremium=num(obj(refEntry.bought).priceBtcPerContract);
+  const grossReference=num(refEntry.grossSpreadBtc),feesReference=num(refEntry.openingFeesBtc),netReference=num(refEntry.netOpeningCashFlowBtc);
+  const referenceEntryTs=num(refEntry.valuationTimestamp)??num(refEntry.targetTimestamp);
+  const actualWidth=num(c.actualWidth)??(shortStrike!==null&&longStrike!==null?Math.abs(shortStrike-longStrike):null);
+  const requestedWidth=num(generated?.requestedStrikes?.width??null);
+  // The exact inverse payoff, or an explicit unavailability -- never width minus credit.
+  let maxLoss:{btc:number|null;usd:number|null;breakeven:number|null;reason:string|null}={btc:null,usd:null,breakeven:null,reason:"Reference entry economics are incomplete, so the exact inverse payoff cannot be evaluated."};
+  if(optionType&&(optionType==="C"||optionType==="P")&&shortStrike!==null&&longStrike!==null&&shortPremium!==null&&longPremium!==null&&index!==null&&index>0&&quantity!==null&&quantity>0&&feesReference!==null&&feesReference>=0&&expiry!==null){
+   const input:ExpiryPayoffInput={optionType,shortStrike,longStrike,shortEntryPremiumBtc:shortPremium,longEntryPremiumBtc:longPremium,entryIndex:index,amount:quantity,openingFeesBtc:feesReference,expiryTimestamp:expiry};
+   try{
+    const usd=payoffExtrema(input,"usd-cash-flow"),btc=payoffExtrema(input,"btc-settlement"),be=breakEven(input,"usd-cash-flow");
+    maxLoss={btc:btc.maximumLoss,usd:usd.maximumLoss,breakeven:be?be.index:null,reason:null};
+   }catch(error){maxLoss={btc:null,usd:null,breakeven:null,reason:`The canonical strikes and premiums do not form a valid credit spread: ${error instanceof Error?error.message:String(error)}`}}
+  }
+  return row({
+   run_id:runId,source_run_id:sourceIds.get(e.eventId),venue:s.venue,event_id:e.eventId,candidate_id:s.candidateId,
+   strategy_variant_id:s.strategyVariantId??s.candidateId,structure_type:c.structure??c.spreadKind??null,option_type:optionType,
+   target_horizon_days:c.targetDte??null,
+   requested_expiry_timestamp_utc:null,actual_expiry_timestamp_utc:isoMs(expiry,`structure ${s.candidateId} expiry`),
+   expiry_timestamp_utc:isoMs(expiry,`structure ${s.candidateId} expiry`),
+   reference_entry_timestamp_utc:isoMs(referenceEntryTs,`structure ${s.candidateId} reference entry`),
+   actual_dte_hours:expiry!==null&&referenceEntryTs!==null?(expiry-referenceEntryTs)/36e5:null,
+   actual_dte_days:expiry!==null&&referenceEntryTs!==null?(expiry-referenceEntryTs)/864e5:null,
+   requested_short_strike:num(generated?.requestedStrikes?.short??null),actual_short_strike:shortStrike,
+   requested_long_strike:num(generated?.requestedStrikes?.long??null),actual_long_strike:longStrike,
+   requested_width:requestedWidth,actual_width:actualWidth,
+   width_substituted:requestedWidth!==null&&actualWidth!==null&&requestedWidth!==actualWidth,
+   short_instrument:obj(c.instruments).short??null,long_instrument:obj(c.instruments).long??null,
+   quantity,reference_underlying_index:index,
+   gross_reference_entry_credit_native:grossReference,reference_opening_fees_native:feesReference,
+   net_reference_opening_cash_flow_native:netReference,
+   modeled_conservative_gross_native:modeledConservative.status==="evaluated"?num(modeledEntry.grossSpreadBtc):null,
+   modeled_conservative_net_native:modeledConservative.status==="evaluated"?num(modeledEntry.netOpeningCashFlowBtc):null,
+   modeled_conservative_status:typeof modeledConservative.status==="string"?modeledConservative.status:"not_evaluated",
+   breakeven_index:maxLoss.breakeven,
+   breakeven_method:maxLoss.breakeven===null?null:"numerical bisection over the canonical inverse net payoff",
+   maximum_economic_loss_native:maxLoss.btc,maximum_economic_loss_usd:maxLoss.usd,
+   maximum_economic_loss_units:{native:"BTC",quote:"USD"},
+   maximum_economic_loss_reference_index:index,
+   maximum_economic_loss_method:maxLoss.btc===null?null:"exact inverse-option expiry payoff over strike and tail settlement indices, including per-leg delivery fees",
+   maximum_economic_loss_assumption:maxLoss.btc===null?null:"USD figures convert the native BTC payoff at the stated reference index; the BTC maximum loss is not unconditional and varies with the settlement index.",
+   maximum_economic_loss_unavailable_reason:maxLoss.reason,
+   credit_per_actual_width:netReference!==null&&actualWidth!==null&&actualWidth>0&&index!==null?netReference*index/actualWidth:null,
+   credit_per_maximum_economic_loss:netReference!==null&&maxLoss.usd!==null&&maxLoss.usd!==0&&index!==null?netReference*index/Math.abs(maxLoss.usd):null,
+   // Every contracted track carries an explicit status here, so a consumer can
+   // tell "unsupported for this structure, and why" from "absent from the file".
+   tracks:describeCanonicalTracks(s as unknown as Record<string,unknown>).map(t=>({
+    track:t.track,status:t.status,reason_code:t.reasonCode,reason:t.reason,
+    entry_basis:t.entryBasis,entry_timestamp_utc:iso(t.entryTimestampMs),
+    valuation_basis:t.valuationBasis,execution_evidence:t.executionEvidence,
+    valuation_source:t.valuationSource,engine_version:t.engineVersion,
+    execution_scenario:t.executionScenario,provenance:t.provenance,
+   })),
+   ...economic,
+  });
+ });
+
  const candidates:Row[]=selected.flatMap(({e,s})=>(["maker","taker"] as const).map(mode=>{
   const scenario=s.executionScenarios[mode],initiallyEvaluated=scenario.status==="evaluated";let evaluated=initiallyEvaluated,forcedUnavailableReason:string|null=null;
   const c=obj(s.candidateSnapshot),entry=evaluated?obj(scenario.entrySnapshot):{},expiry=num(c.expiryTimestamp),short=obj(entry.sold),long=obj(entry.bought),index=num(entry.entryTargetIndex);
@@ -89,10 +169,95 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
  let omittedValuationsBeforeEntry=0,omittedValuationsAfterExpiry=0;
  const valuations:Row[]=selected.flatMap(({e,s})=>(["maker","taker"] as const).flatMap(mode=>{
   if(s.executionScenarios[mode].status!=="evaluated"||invalidScenarioKeys.has(`${s.candidateId}~${mode}`))return[];
-  return s.executionScenarios[mode].valuationPathSnapshot.flatMap((p0,index)=>{const p=obj(p0),timestamp=num(p.timestamp),tracks:[[string,JsonValue],[string,JsonValue]]=[["raw_vwap",p.rawEstimate??null],["iv_normalized",p.modelEstimate??p.ivNormalizedEstimate??null]];const entrySnapshot=obj(s.executionScenarios[mode].entrySnapshot),entry=num(entrySnapshot.valuationTimestamp)??num(entrySnapshot.targetTimestamp),expiry=num(obj(s.candidateSnapshot).expiryTimestamp);if(timestamp!==null&&entry!==null&&timestamp<entry){omittedValuationsBeforeEntry++;return[]}if(timestamp!==null&&expiry!==null&&timestamp>expiry){omittedValuationsAfterExpiry++;return[]}return tracks.map(([track,estimate0])=>{const estimate=obj(estimate0),priced=p.status==="priced"&&estimate0!==null,raw=track==="raw_vwap",short=obj(estimate.sold),long=obj(estimate.bought),target=num(p.targetIndex),fees=priced?(raw?p.rawClosingFeesBtc:p.closingFeesBtc)??estimate.openingFeesBtc??null:null,pnl=priced?(raw?p.rawEstimatedNetPnlBtc:p.estimatedNetPnlBtc)??null:null,closingPer=raw?p.rawClosingSpreadValueBtcPerContract:p.closingSpreadValueBtcPerContract,closing=raw?p.rawClosingSpreadValueBtc:p.closingSpreadValueBtc;return row({run_id:runId,source_run_id:sourceIds.get(e.eventId),event_id:e.eventId,candidate_id:s.candidateId,execution_scenario:mode,valuation_id:`${s.venue}~valuation~${hash([s.candidateId,mode,timestamp,track])}`,venue:s.venue,...economic,timestamp_utc:isoMs(timestamp,`valuation ${s.candidateId} ${mode}`),window_role:"executable_observation",elapsed_hours:index*4,remaining_dte:null,pricing_track:track,target_underlying_index:target,index_resolution_source:obj(p.indexResolution).sourceCandleTimestamp??null,index_resolution_method:obj(p.indexResolution).lookupMethod??null,short_leg:{close_action:"buy",price_native:short.priceBtcPerContract??p.shortModelPriceBtc??null,iv_decimal:p.shortIvDecimal??obj(short.model).anchorIvDecimal??null,iv_source:p.soldIvSource??p.ivSource??null,evidence_timestamps:short.supportingTimestamps??[],trade_count:num(short.supportingTradeCount)??(Array.isArray(short.supportingTrades)?short.supportingTrades.length:null),traded_amount:short.observedAmount??null,nearest_gap_minutes:short.nearestGapMinutes??null},long_leg:{close_action:"sell",price_native:long.priceBtcPerContract??p.longModelPriceBtc??null,iv_decimal:p.longIvDecimal??obj(long.model).anchorIvDecimal??null,iv_source:p.longIvSource??p.ivSource??null,evidence_timestamps:long.supportingTimestamps??[],trade_count:num(long.supportingTradeCount)??(Array.isArray(long.supportingTrades)?long.supportingTrades.length:null),traded_amount:long.observedAmount??null,nearest_gap_minutes:long.nearestGapMinutes??null},local_iv_source:p.ivSource??null,quality:estimate.estimateQuality??p.estimateQuality??"unavailable",reason_codes:priced?["valuation_priced",qualityCode(estimate.estimateQuality??p.estimateQuality)]:["pricing_track_unavailable"],quality_reason:estimate.qualityReason??null,closing_spread_value_per_contract_native:priced?closingPer??null:null,scaled_closing_cash_flow_native:priced?closing??null:null,gross_pnl_native:pnl,closing_fees_native:fees,net_pnl_native:pnl,net_pnl_usd:pnl!==null&&target!==null?Number(pnl)*target:null,credit_capture_percentage:null,valuation_status:priced?"priced":"unavailable",missing_field_codes:priced?[]:[missingFieldCode(p.missingField)],unavailable_reason_codes:priced?[]:["pricing_track_unavailable"],unavailable_reason:priced?null:(raw?p.rawUnavailableReason:p.unavailableReason)??null,point_role:index===0?"entry":"scheduled_4h"})})});
+  return s.executionScenarios[mode].valuationPathSnapshot.flatMap((p0,index)=>{const p=obj(p0),timestamp=num(p.timestamp),tracks:[[string,JsonValue],[string,JsonValue]]=[["raw_vwap",p.rawEstimate??null],["iv_normalized",p.modelEstimate??p.ivNormalizedEstimate??null]];const entrySnapshot=obj(s.executionScenarios[mode].entrySnapshot),entry=num(entrySnapshot.valuationTimestamp)??num(entrySnapshot.targetTimestamp),expiry=num(obj(s.candidateSnapshot).expiryTimestamp);if(timestamp!==null&&entry!==null&&timestamp<entry){omittedValuationsBeforeEntry++;return[]}if(timestamp!==null&&expiry!==null&&timestamp>expiry){omittedValuationsAfterExpiry++;return[]}return tracks.map(([track,estimate0])=>{const estimate=obj(estimate0),priced=p.status==="priced"&&estimate0!==null,raw=track==="raw_vwap",short=obj(estimate.sold),long=obj(estimate.bought),target=num(p.targetIndex),fees=priced?(raw?p.rawClosingFeesBtc:p.closingFeesBtc)??estimate.openingFeesBtc??null:null,pnl=priced?(raw?p.rawEstimatedNetPnlBtc:p.estimatedNetPnlBtc)??null:null,closingPer=raw?p.rawClosingSpreadValueBtcPerContract:p.closingSpreadValueBtcPerContract,closing=raw?p.rawClosingSpreadValueBtc:p.closingSpreadValueBtc;return row({run_id:runId,source_run_id:sourceIds.get(e.eventId),event_id:e.eventId,candidate_id:s.candidateId,execution_scenario:mode,analytics_track:mode==="maker"?"strict_maker":"strict_taker",valuation_id:`${s.venue}~valuation~${hash([s.candidateId,mode,timestamp,track])}`,venue:s.venue,...economic,timestamp_utc:isoMs(timestamp,`valuation ${s.candidateId} ${mode}`),window_role:"executable_observation",elapsed_hours:index*4,remaining_dte:null,pricing_track:track,target_underlying_index:target,index_resolution_source:obj(p.indexResolution).sourceCandleTimestamp??null,index_resolution_method:obj(p.indexResolution).lookupMethod??null,short_leg:{close_action:"buy",price_native:short.priceBtcPerContract??p.shortModelPriceBtc??null,iv_decimal:p.shortIvDecimal??obj(short.model).anchorIvDecimal??null,iv_source:p.soldIvSource??p.ivSource??null,evidence_timestamps:short.supportingTimestamps??[],trade_count:num(short.supportingTradeCount)??(Array.isArray(short.supportingTrades)?short.supportingTrades.length:null),traded_amount:short.observedAmount??null,nearest_gap_minutes:short.nearestGapMinutes??null},long_leg:{close_action:"sell",price_native:long.priceBtcPerContract??p.longModelPriceBtc??null,iv_decimal:p.longIvDecimal??obj(long.model).anchorIvDecimal??null,iv_source:p.longIvSource??p.ivSource??null,evidence_timestamps:long.supportingTimestamps??[],trade_count:num(long.supportingTradeCount)??(Array.isArray(long.supportingTrades)?long.supportingTrades.length:null),traded_amount:long.observedAmount??null,nearest_gap_minutes:long.nearestGapMinutes??null},local_iv_source:p.ivSource??null,quality:estimate.estimateQuality??p.estimateQuality??"unavailable",reason_codes:priced?["valuation_priced",qualityCode(estimate.estimateQuality??p.estimateQuality)]:["pricing_track_unavailable"],quality_reason:estimate.qualityReason??null,closing_spread_value_per_contract_native:priced?closingPer??null:null,scaled_closing_cash_flow_native:priced?closing??null:null,gross_pnl_native:pnl,closing_fees_native:fees,net_pnl_native:pnl,net_pnl_usd:pnl!==null&&target!==null?Number(pnl)*target:null,credit_capture_percentage:null,valuation_status:priced?"priced":"unavailable",missing_field_codes:priced?[]:[missingFieldCode(p.missingField)],unavailable_reason_codes:priced?[]:["pricing_track_unavailable"],unavailable_reason:priced?null:(raw?p.rawUnavailableReason:p.unavailableReason)??null,point_role:index===0?"entry":"scheduled_4h"})})});
  }));
  /** One row per (structure, execution scenario, required outcome type). Never evaluated -> zero rows for that scenario, not fabricated rows. */
- const outcomes:Row[]=selected.flatMap(({e,s})=>(["maker","taker"] as const).flatMap(mode=>{const scenario=s.executionScenarios[mode];if(scenario.status!=="evaluated"||invalidScenarioKeys.has(`${s.candidateId}~${mode}`))return[];const by=new Map(scenario.outcomeSnapshots.map(o=>[outcomeKey(String(obj(o).label??"")),obj(o)]));const entrySnapshot=obj(scenario.entrySnapshot);return REQUIRED_OUTCOMES.map(kind=>{const o=by.get(kind),trigger=triggerStatus(o),pnl=o?num(o.estimatedNetPnlBtc)??num(o.estimatedNetPnl):null,index=o?num(o.conversionIndex)??num(o.targetIndex):null;const oo=obj(o??null),decision=num(oo.decisionTimestamp),valuation=num(oo.valuationTimestamp),expiry=num(obj(s.candidateSnapshot).expiryTimestamp),entry=num(entrySnapshot.valuationTimestamp)??num(entrySnapshot.targetTimestamp),inWindow=valuation!==null&&entry!==null&&expiry!==null&&valuation>=entry&&valuation<=expiry;return row({run_id:runId,source_run_id:sourceIds.get(e.eventId),event_id:e.eventId,candidate_id:s.candidateId,execution_scenario:mode,outcome_id:`${s.venue}~outcome~${hash([s.candidateId,mode,kind])}`,venue:s.venue,outcome_type:kind,status:trigger==="reached"?"evaluated":"unavailable",trigger_status:trigger,outcome_target_timestamp_utc:o?isoMs(decision,`outcome target ${s.candidateId} ${mode}`):null,trigger_timestamp_utc:inWindow?isoMs(decision,`outcome trigger ${s.candidateId} ${mode}`):null,decision_available_timestamp_utc:inWindow?isoMs(decision,`outcome decision ${s.candidateId} ${mode}`):null,valuation_timestamp_utc:inWindow?isoMs(valuation,`outcome valuation ${s.candidateId} ${mode}`):null,window_role:inWindow?"executable_observation":"outside_executable_window",before_expiry:trigger!=="after_expiry",before_invalidation:null,holding_hours:null,raw_status:trigger!=="reached"?"not_applicable":o?.rawEstimate!=null||kind==="settlement"?"priced":"unavailable",iv_normalized_status:trigger!=="reached"?"not_applicable":o?.modelEstimate!=null||kind==="settlement"?"priced":"unavailable",raw_net_pnl_native:o?.rawEstimate!=null||kind==="settlement"?pnl:null,raw_net_pnl_usd:(o?.rawEstimate!=null||kind==="settlement")&&pnl!==null&&index!==null?pnl*index:null,iv_normalized_net_pnl_native:o?.modelEstimate!=null||kind==="settlement"?pnl:null,iv_normalized_net_pnl_usd:(o?.modelEstimate!=null||kind==="settlement")&&pnl!==null&&index!==null?pnl*index:null,net_pnl_native:null,net_pnl_usd:null,closing_fees_native:o?o.feesBtc??null:null,quality:o?.estimateQuality??"unavailable",reason_codes:[trigger==="reached"?(pnl===null?"outcome_reached_but_unpriced":"outcome_priced"):trigger==="not_reached"?"outcome_not_reached":trigger==="after_expiry"?"outcome_after_expiry":"outcome_ambiguous_sequence"],evidence_reason:o?.evidenceReason??null})});}));
+ const outcomes:Row[]=selected.flatMap(({e,s})=>(["maker","taker"] as const).flatMap(mode=>{const scenario=s.executionScenarios[mode];if(scenario.status!=="evaluated"||invalidScenarioKeys.has(`${s.candidateId}~${mode}`))return[];const by=new Map(scenario.outcomeSnapshots.map(o=>[outcomeKey(String(obj(o).label??"")),obj(o)]));const entrySnapshot=obj(scenario.entrySnapshot);return REQUIRED_OUTCOMES.map(kind=>{const o=by.get(kind),trigger=triggerStatus(o),pnl=o?num(o.estimatedNetPnlBtc)??num(o.estimatedNetPnl):null,index=o?num(o.conversionIndex)??num(o.targetIndex):null;const oo=obj(o??null),decision=num(oo.decisionTimestamp),valuation=num(oo.valuationTimestamp),expiry=num(obj(s.candidateSnapshot).expiryTimestamp),entry=num(entrySnapshot.valuationTimestamp)??num(entrySnapshot.targetTimestamp),inWindow=valuation!==null&&entry!==null&&expiry!==null&&valuation>=entry&&valuation<=expiry;return row({run_id:runId,source_run_id:sourceIds.get(e.eventId),event_id:e.eventId,candidate_id:s.candidateId,execution_scenario:mode,analytics_track:mode==="maker"?"strict_maker":"strict_taker",outcome_id:`${s.venue}~outcome~${hash([s.candidateId,mode,kind])}`,venue:s.venue,outcome_type:kind,status:trigger==="reached"?"evaluated":"unavailable",trigger_status:trigger,outcome_target_timestamp_utc:o?isoMs(decision,`outcome target ${s.candidateId} ${mode}`):null,trigger_timestamp_utc:inWindow?isoMs(decision,`outcome trigger ${s.candidateId} ${mode}`):null,decision_available_timestamp_utc:inWindow?isoMs(decision,`outcome decision ${s.candidateId} ${mode}`):null,valuation_timestamp_utc:inWindow?isoMs(valuation,`outcome valuation ${s.candidateId} ${mode}`):null,window_role:inWindow?"executable_observation":"outside_executable_window",before_expiry:trigger!=="after_expiry",before_invalidation:null,holding_hours:null,raw_status:trigger!=="reached"?"not_applicable":o?.rawEstimate!=null||kind==="settlement"?"priced":"unavailable",iv_normalized_status:trigger!=="reached"?"not_applicable":o?.modelEstimate!=null||kind==="settlement"?"priced":"unavailable",raw_net_pnl_native:o?.rawEstimate!=null||kind==="settlement"?pnl:null,raw_net_pnl_usd:(o?.rawEstimate!=null||kind==="settlement")&&pnl!==null&&index!==null?pnl*index:null,iv_normalized_net_pnl_native:o?.modelEstimate!=null||kind==="settlement"?pnl:null,iv_normalized_net_pnl_usd:(o?.modelEstimate!=null||kind==="settlement")&&pnl!==null&&index!==null?pnl*index:null,net_pnl_native:null,net_pnl_usd:null,closing_fees_native:o?o.feesBtc??null:null,quality:o?.estimateQuality??"unavailable",reason_codes:[trigger==="reached"?(pnl===null?"outcome_reached_but_unpriced":"outcome_priced"):trigger==="not_reached"?"outcome_not_reached":trigger==="after_expiry"?"outcome_after_expiry":"outcome_ambiguous_sequence"],evidence_reason:o?.evidenceReason??null})});}));
+/**
+ * Economic rows for the tracks that are NOT strict immediate execution.
+ *
+ * This is the fix for the execution gate. The immediate builders above emit
+ * nothing when a scenario is unevaluated, so a structurally resolved candidate
+ * with a good reference valuation used to export zero economic rows. These
+ * tracks are derived from their own engines' persisted snapshots and are
+ * therefore present regardless of whether any fill evidence exists.
+ *
+ * Timestamps are the producing engine's own: a delayed track keeps its real
+ * delayed opening timestamp and is never backdated to the reference entry.
+ * Points outside [track entry, expiry] are dropped rather than clamped.
+ */
+ const independentValuations:Row[]=[],independentOutcomes:Row[]=[];
+ for(const {e,s} of selected){
+  const expiry=num(obj(s.candidateSnapshot).expiryTimestamp);
+  for(const t of describeCanonicalTracks(s as unknown as Record<string,unknown>)){
+   if(t.status!=="available"||t.track==="strict_maker"||t.track==="strict_taker")continue;
+   const trackMeta={analytics_track:t.track,track_status:t.status,track_reason_code:t.reasonCode,
+    entry_basis:t.entryBasis,entry_timestamp_utc:iso(t.entryTimestampMs),valuation_basis:t.valuationBasis,
+    execution_evidence:t.executionEvidence,valuation_source:t.valuationSource,
+    provenance:t.provenance,engine_version:t.engineVersion};
+   for(const [index,point0] of t.valuationPath.entries()){
+    const p=obj(point0),timestamp=num(p.timestamp);
+    // Causality: never before the track's own entry, never after expiry.
+    if(timestamp!==null&&t.entryTimestampMs!==null&&timestamp<t.entryTimestampMs){omittedValuationsBeforeEntry++;continue}
+    if(timestamp!==null&&expiry!==null&&timestamp>expiry){omittedValuationsAfterExpiry++;continue}
+    const estimate=obj(p.rawEstimate??p.modelEstimate??p.ivNormalizedEstimate??null);
+    const short=obj(estimate.sold),long=obj(estimate.bought),target=num(p.targetIndex);
+    const pnl=num(p.estimatedNetPnlBtc);
+    const shortIv=legVolatility(short,p.shortIvDecimal,p.soldIvSource??p.ivSource);
+    const longIv=legVolatility(long,p.longIvDecimal,p.longIvSource??p.ivSource);
+    independentValuations.push(row({run_id:runId,source_run_id:sourceIds.get(e.eventId),event_id:e.eventId,
+     candidate_id:s.candidateId,execution_scenario:t.executionScenario,...trackMeta,
+     valuation_id:`${s.venue}~valuation~${hash([s.candidateId,t.track,timestamp])}`,venue:s.venue,...economic,
+     timestamp_utc:isoMs(timestamp,`valuation ${s.candidateId} ${t.track}`),
+     window_role:"executable_observation",elapsed_hours:index*4,remaining_dte:null,
+     pricing_track:t.track,target_underlying_index:target,
+     index_resolution_source:obj(p.indexResolution).sourceCandleTimestamp??null,
+     index_resolution_method:obj(p.indexResolution).lookupMethod??null,
+     valuation_status:pnl===null?"unavailable":"priced",
+     net_pnl_native:pnl,net_pnl_usd:pnl!==null&&target!==null?pnl*target:null,
+     // Per-leg IV preserved in normalized form for a future volatility module.
+     // No spread-level IV is synthesised, and none of this affects execution quality.
+     short_leg_volatility:{iv_decimal:shortIv.ivDecimal,iv_api_percentage:shortIv.ivApiPercent,iv_units:shortIv.ivUnits,
+      iv_source:shortIv.ivSource,iv_source_timestamp_utc:iso(shortIv.ivSourceTimestampMs),observation:shortIv.observation,
+      anchor_index:shortIv.anchorIndex,target_index:shortIv.targetIndex,dte_days:shortIv.dteDays},
+     long_leg_volatility:{iv_decimal:longIv.ivDecimal,iv_api_percentage:longIv.ivApiPercent,iv_units:longIv.ivUnits,
+      iv_source:longIv.ivSource,iv_source_timestamp_utc:iso(longIv.ivSourceTimestampMs),observation:longIv.observation,
+      anchor_index:longIv.anchorIndex,target_index:longIv.targetIndex,dte_days:longIv.dteDays},
+     reason_codes:pnl===null?["pricing_track_unavailable"]:["valuation_priced"]}));
+   }
+   // A track whose own outcome engine produced nothing has no outcomes to
+   // export. Emitting the required set anyway would fabricate structure and
+   // mislabel absence as an ambiguous trigger. This is an honest absence, not
+   // the execution gate: reference outcomes appear whenever the reference
+   // engine produced them, regardless of any fill evidence.
+   if(!t.outcomeSnapshots.length)continue;
+   const by=new Map(t.outcomeSnapshots.map(o=>[outcomeKey(String(obj(o).label??"")),obj(o)]));
+   for(const kind of REQUIRED_OUTCOMES){
+    const o=by.get(kind),trigger=triggerStatus(o);
+    const pnl=o?num(o.estimatedNetPnlBtc)??num(o.estimatedNetPnl):null;
+    const index=o?num(o.conversionIndex)??num(o.targetIndex):null;
+    const oo=obj(o??null),decision=num(oo.decisionTimestamp),valuation=num(oo.valuationTimestamp);
+    const inWindow=valuation!==null&&t.entryTimestampMs!==null&&expiry!==null&&valuation>=t.entryTimestampMs&&valuation<=expiry;
+    independentOutcomes.push(row({run_id:runId,source_run_id:sourceIds.get(e.eventId),event_id:e.eventId,
+     candidate_id:s.candidateId,execution_scenario:t.executionScenario,...trackMeta,
+     outcome_id:`${s.venue}~outcome~${hash([s.candidateId,t.track,kind])}`,venue:s.venue,outcome_type:kind,
+     status:trigger==="reached"?"evaluated":"unavailable",trigger_status:trigger,
+     outcome_target_timestamp_utc:o?isoMs(decision,`outcome target ${s.candidateId} ${t.track}`):null,
+     trigger_timestamp_utc:inWindow?isoMs(decision,`outcome trigger ${s.candidateId} ${t.track}`):null,
+     decision_available_timestamp_utc:inWindow?isoMs(decision,`outcome decision ${s.candidateId} ${t.track}`):null,
+     valuation_timestamp_utc:inWindow?isoMs(valuation,`outcome valuation ${s.candidateId} ${t.track}`):null,
+     window_role:inWindow?"executable_observation":"outside_executable_window",
+     before_expiry:trigger!=="after_expiry",before_invalidation:null,holding_hours:null,
+     net_pnl_native:trigger==="reached"?pnl:null,
+     net_pnl_usd:trigger==="reached"&&pnl!==null&&index!==null?pnl*index:null,
+     closing_fees_native:o?o.feesBtc??null:null,quality:o?.estimateQuality??"unavailable",
+     reason_codes:[trigger==="reached"?(pnl===null?"outcome_reached_but_unpriced":"outcome_priced")
+      :trigger==="not_reached"?"outcome_not_reached":trigger==="after_expiry"?"outcome_after_expiry":"outcome_ambiguous_sequence"],
+     evidence_reason:o?.evidenceReason??null}));
+   }
+  }
+ }
+
  const availability:Row[]=store.events.flatMap(e=>e.generationSnapshot.candidates.map(c=>{const selectedStructure=e.selectedStructures.find(s=>s.candidateId===c.candidateId);return row({run_id:runId,source_run_id:sourceIds.get(e.eventId),event_id:e.eventId,availability_id:`${c.candidateId}~generation~${hash([c.requestedStrikes,c.targetHorizon,c.strikeMethod])}`,candidate_id:c.candidateId,strategy_variant_id:selectedStructure?.strategyVariantId??c.candidateId,venue:c.venue,is_selected:Boolean(selectedStructure),contract_resolution:selectedStructure?.contractResolution??null,reference_valuation:selectedStructure?.referenceValuation??null,delayed_execution:selectedStructure?.delayedExecution??null,modeled_execution:selectedStructure?.modeledExecution??null,structure_type:c.structure,target_horizon_days:c.targetHorizon,strike_method:c.strikeMethod,width:c.actualStrikes.width??c.requestedStrikes.width,requested_strikes:c.requestedStrikes,actual_strikes:c.actualStrikes,actual_expiry_timestamp_utc:iso(c.actualExpiryTimestamp),requested_expiry_timestamp_utc:null,instruments:null,status:c.status,reason_codes:[c.status==="priced"?"candidate_priced":"candidate_unavailable"],availability_reasons:c.availabilityReasons,entry_quality:c.entryQuality,retrieval_status:selectedStructure?.contractResolution?.status??"metadata_unavailable",generation_configuration:e.generationSnapshot.configuration})})).sort((a,b)=>String(a.candidate_id).localeCompare(String(b.candidate_id))||String(a.availability_id).localeCompare(String(b.availability_id)));
  const margins=selected.map(({e,s})=>{const m=obj(s.marginSnapshot),available=m.status==="available"||m.state==="ok",deployment=obj(m.deployment),openingIm=num(m.openingInitialMarginBtc)??num(m.initialMarginBtc),openingMm=num(m.openingMaintenanceMarginBtc)??num(m.maintenanceMarginBtc),peakIm=num(m.peakInitialMarginBtc),peakMm=num(m.peakMaintenanceMarginBtc);return row({run_id:runId,source_run_id:sourceIds.get(e.eventId),event_id:e.eventId,candidate_id:s.candidateId,margin_scenario_id:`${s.venue}~margin~${hash(s.candidateId)}`,venue:s.venue,margin_status:available?"available":"unavailable",margin_model:deployment.model??null,method_version:m.engineVersion??m.ruleVersion??null,rule_version:m.ruleVersion??null,provenance:m.provenance??null,account_configuration:deployment.accountAssumption??null,collateral_currency:deployment.collateralCurrency??"BTC",settlement_currency:"BTC",incremental_initial_margin:available?openingIm:null,incremental_maintenance_margin:available?openingMm:null,peak_initial_margin:available?peakIm:null,peak_maintenance_margin:available?peakMm:null,peak_timestamp_utc:available?iso(num(m.peakInitialTimestamp)??num(m.observationTimestamp)):null,capital_days_margin:available?num(m.capitalDaysMarginBtc):null,maximum_loss_usd:null,maximum_loss_native:num(m.theoreticalMaximumSpreadLossBtc),reference_index:num(m.indexPrice),calculation_method:available?(m.method??m.evidenceModel??"historical Standard Margin reconstruction"):null,data_quality:available?"historical_formula_reconstruction":"unavailable",reason_codes:available?[]:[String(m.reasonCode??canonicalMarginReason(m.reason??m.unavailabilityReason))],unavailable_reason:available?null:String(m.reason??m.unavailabilityReason??"Verified historical margin reconstruction is unavailable."),margin_inputs:{path:m.path??null,mark_price_btc:m.markPriceBtc??null} });});
  /** Each usage reference now carries execution_scenario, so provenance shows exactly which scenario a given raw trade supported -- never left ambiguous between maker and taker. */
@@ -103,7 +268,7 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
  const sourceRuns=store.events.map(e=>({source_run_id:sourceIds.get(e.eventId),venue:e.selectedStructures[0]?.venue??e.generationSnapshot.candidates[0]?.venue??"deribit",event_id:e.eventId,configuration:e.generationSnapshot.configuration,generation_timestamp_utc:e.generationSnapshot.generatedAtUtc}));
  const migratedValuationWindowDiagnostics=selected.flatMap(({e,s})=>(["maker","taker"] as const).flatMap(executionScenario=>{const diagnostic=s.executionScenarios[executionScenario].valuationWindowMigration;return diagnostic?[{event_id:e.eventId,candidate_id:s.candidateId,execution_scenario:executionScenario,...diagnostic}]:[]}));
  const run=row({schema_version:RESEARCH_BUNDLE_SCHEMA_VERSION,futures_engine_version:FUTURES_ENGINE_VERSION,valuation_window_diagnostics:{migrated:migratedValuationWindowDiagnostics,builder_omitted_before_entry:omittedValuationsBeforeEntry,builder_omitted_after_expiry:omittedValuationsAfterExpiry},run_id:runId,generated_at_utc:generatedAtUtc,dataset_id:store.datasetId,dataset_version_updated_at:datasetUpdatedAt??store.updatedAtUtc,application_commit_build_id:[...new Set(sourceRuns.map(x=>x.configuration.applicationBuild).filter(Boolean))],pricing_engine_versions:[...new Set(sourceRuns.map(x=>x.configuration.pricingEngineVersion))],quality_rules_versions:[...new Set(sourceRuns.map(x=>x.configuration.qualityRulesVersion))],valuation_methodology_version:"simple-model-reconstruction/1.0.0",valuation_intervals:[...new Set(sourceRuns.map(x=>x.configuration.valuationInterval))],timezone:"UTC",included_pricing_tracks:["raw_vwap","iv_normalized"],included_execution_scenarios:["maker","taker"],dte_windows:sourceRuns.map(x=>x.configuration.dteWindows),expiry_selection_modes:[...new Set(sourceRuns.map(x=>x.configuration.expirySelectionMode))],evidence_windows:sourceRuns.map(x=>x.configuration.historicalEvidenceWindows),synchronization_thresholds:sourceRuns.map(x=>x.configuration.synchronizationThresholds),quality_thresholds:sourceRuns.map(x=>x.configuration.qualityThresholds),model_assumptions:sourceRuns.map(x=>x.configuration.modelAssumptions),fee_assumptions:sourceRuns.map(x=>x.configuration.feeAssumptions),settlement_rules:sourceRuns.map(x=>x.configuration.settlementRules),trade_dataset_mr_event_count:null,persisted_research_event_count:events.length,events_with_generated_candidates_count:new Set(availability.map(x=>x.event_id)).size,events_with_selected_candidates_count:new Set(candidates.map(x=>x.event_id)).size,events_with_stored_underlying_paths_count:new Set(paths.map(x=>x.event_id)).size,selected_structure_count:new Set(candidates.map(x=>x.candidate_id)).size,selected_structure_execution_row_count:candidates.length,generated_denominator_count:availability.length,venues:[...new Set(store.events.flatMap(e=>e.generationSnapshot.candidates.map(c=>c.venue))) ],venue_configuration:{deribit:economic,bybit:null,binance:null},source_runs:sourceRuns,table_availability:{underlying_path:paths.length?"available":"unavailable",margin_scenarios:margins.some(m=>m.margin_status==="available")?"available":"unavailable",evidence_trades:evidence.length?"available":"unavailable",futures_comparisons:futures.some(f=>f.availability==="available")?"available":"unavailable",futures_path:futuresPath.length?"available":"unavailable"}});
- const files=Object.fromEntries(RESEARCH_BUNDLE_FILES.map(name=>[name,name==="run.json"?JSON.stringify(run)+"\n":lines(({"events.jsonl":events,"underlying_path.jsonl":paths,"candidates.jsonl":candidates,"valuations.jsonl":valuations,"outcomes.jsonl":outcomes,"availability.jsonl":availability,"margin_scenarios.jsonl":margins,"evidence_trades.jsonl":evidence,"futures_comparisons.jsonl":futures,"futures_path.jsonl":futuresPath})[name]??[])])) as ResearchBundle["files"];
+ const files=Object.fromEntries(RESEARCH_BUNDLE_FILES.map(name=>[name,name==="run.json"?JSON.stringify(run)+"\n":lines(({"events.jsonl":events,"underlying_path.jsonl":paths,"structure_economics.jsonl":structureEconomics,"candidates.jsonl":candidates,"valuations.jsonl":[...valuations,...independentValuations],"outcomes.jsonl":[...outcomes,...independentOutcomes],"availability.jsonl":availability,"margin_scenarios.jsonl":margins,"evidence_trades.jsonl":evidence,"futures_comparisons.jsonl":futures,"futures_path.jsonl":futuresPath})[name]??[])])) as ResearchBundle["files"];
  const validation=validateResearchBundle(files);if(!validation.ok)throw new Error(summarizeResearchBundleErrors(validation.errors).summary);return{files,run};
 }
 
@@ -119,6 +284,18 @@ export function validateResearchBundle(files:Partial<Record<string,string>>):{ok
  // structure_execution_id is the genuine per-row key there instead.
  const collect=(name:string,key:string)=>{const seen=new Set<JsonValue>();for(const r of rows(name)){if(r[key]==null)errors.push(`${name} has a missing ${key}.`);else seen.add(r[key])}return seen};
  const eventIds=ids("events.jsonl","event_id"),candidateIds=collect("candidates.jsonl","candidate_id"),structureExecutionIds=ids("candidates.jsonl","structure_execution_id"),availabilityIds=collect("availability.jsonl","candidate_id"),availabilityRowIds=ids("availability.jsonl","availability_id");void structureExecutionIds;void availabilityRowIds;ids("valuations.jsonl","valuation_id");ids("outcomes.jsonl","outcome_id");ids("margin_scenarios.jsonl","margin_scenario_id");ids("evidence_trades.jsonl","evidence_id");ids("futures_comparisons.jsonl","comparison_id");
+ // Exactly one scenario-independent economic record per structure. Two rows for
+ // one candidate_id would mean the record had been duplicated per execution
+ // scenario, which is the architecture this table exists to prevent.
+ const economicsIds=ids("structure_economics.jsonl","candidate_id");
+ for(const id of candidateIds)if(!economicsIds.has(id))errors.push(`Candidate ${String(id)} has no scenario-independent structure-economics record.`);
+ for(const id of economicsIds)if(!candidateIds.has(id))errors.push(`Structure-economics record ${String(id)} has no candidate row.`);
+ for(const r of rows("structure_economics.jsonl")){
+  const tracks=Array.isArray(r.tracks)?r.tracks:null;
+  if(!tracks)  {errors.push(`Structure-economics record ${String(r.candidate_id)} is missing its analytical track statuses.`);continue}
+  const named=new Set(tracks.map(t=>String(obj(t as JsonValue).track)));
+  for(const track of CANONICAL_TRACKS)if(!named.has(track))errors.push(`Structure-economics record ${String(r.candidate_id)} omits the status of track ${track}.`);
+ }
  for(const r of rows("candidates.jsonl"))if(r.execution_scenario!=="maker"&&r.execution_scenario!=="taker")errors.push(`Candidate ${String(r.candidate_id)} has an invalid execution_scenario: ${String(r.execution_scenario)}.`);
  const runId=run.run_id,sourceRuns=new Set((Array.isArray(run.source_runs)?run.source_runs:[]).map(x=>obj(x).source_run_id));for(const [name,table] of parsed)for(const r of table){if(r.run_id!==runId)errors.push(`${name} has incompatible run_id.`);if(!sourceRuns.has(r.source_run_id))errors.push(`${name} has unknown or flattened source_run_id.`)}
  for(const r of rows("candidates.jsonl")){if(!eventIds.has(r.event_id))errors.push(`Candidate ${r.candidate_id} has a broken event foreign key.`);if(r.is_selected!==true)errors.push(`Candidate ${r.candidate_id} was not explicitly selected.`);if(!availabilityIds.has(r.candidate_id))errors.push(`Selected candidate ${r.candidate_id} is absent from availability.`)}
