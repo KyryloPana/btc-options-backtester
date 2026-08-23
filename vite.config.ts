@@ -5,6 +5,7 @@ import type { Plugin } from "vite";
 import { defineConfig, loadEnv } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { deribitHistoryApiPlugin } from "./scripts/deribit-history-api";
+import { deribitPerpetualApiPlugin, PERPETUAL_FUNDING_HOST } from "./scripts/deribit-perpetual-history";
 import { tradeDatasetApiPlugin } from "./scripts/trade-dataset-service";
 import { researchSelectionApiPlugin } from "./scripts/research-selection-service";
 import { researchBundleApiPlugin } from "./scripts/research-bundle-service";
@@ -109,6 +110,12 @@ export default defineConfig(async ({ mode }) => {
       deribitHistoryApiPlugin({
         baseUrl: localEnv.DERIBIT_HISTORY_API_URL || process.env.DERIBIT_HISTORY_API_URL || "https://history.deribit.com/api/v2/public",
         cachePath: resolve(process.cwd(), ".local-cache", "deribit-instruments.json"),
+      }),
+      // Deribit's history mirror does not serve funding, so funding is read from
+      // the main public host; both are overridable without touching code.
+      deribitPerpetualApiPlugin({
+        historyBaseUrl: localEnv.DERIBIT_HISTORY_API_URL || process.env.DERIBIT_HISTORY_API_URL || "https://history.deribit.com/api/v2/public",
+        fundingBaseUrl: localEnv.DERIBIT_FUNDING_API_URL || process.env.DERIBIT_FUNDING_API_URL || PERPETUAL_FUNDING_HOST,
       }),
       sites(),
       cloudflare({

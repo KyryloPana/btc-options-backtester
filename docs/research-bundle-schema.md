@@ -1,6 +1,6 @@
 # Research Bundle Schema
 
-Schema **3.2.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and `events.jsonl`, `underlying_path.jsonl`, `candidates.jsonl`, `valuations.jsonl`, `outcomes.jsonl`, `availability.jsonl`, `margin_scenarios.jsonl`, `evidence_trades.jsonl`, `futures_comparisons.jsonl`, and `futures_path.jsonl`. Empty tables remain empty files and availability is stated in `run.json`.
+Schema **3.3.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and `events.jsonl`, `underlying_path.jsonl`, `candidates.jsonl`, `valuations.jsonl`, `outcomes.jsonl`, `availability.jsonl`, `margin_scenarios.jsonl`, `evidence_trades.jsonl`, `structure_economics.jsonl`, `futures_comparisons.jsonl`, and `futures_path.jsonl`. Empty tables remain empty files and availability is stated in `run.json`.
 
 **`candidates.jsonl` = selected performance numerator; `availability.jsonl` = complete generated denominator.** Reports calculate coverage from availability and recompute extrema from valuations, never UI summaries.
 
@@ -17,7 +17,8 @@ Schema **3.2.0** is a versioned, venue-aware interchange format. Every ZIP conta
 | `availability.jsonl` | `availability_id` | Complete generated denominator row. Multiple requested widths/policies may resolve to the same structural `candidate_id`; each row retains `requested_strikes` and `actual_strikes`. |
 | `margin_scenarios.jsonl` | `margin_scenario_id` | Joins selected structural `candidate_id`. |
 | `evidence_trades.jsonl` | `evidence_id` | Raw trade catalog with usage references that include `execution_scenario`. |
-| `futures_comparisons.jsonl` | `comparison_id` | Explicit futures comparison availability. |
+| `futures_comparisons.jsonl` | `comparison_id` | One canonical Deribit BTC-PERPETUAL baseline per `event_id` -- never one per option structure. Carries per-unit economics (`gross_pnl_usd_per_unit`, `fees_usd_per_unit`, `funding_usd_per_unit`, `risk_to_invalidation_usd_per_unit`) plus every observation endpoint's own status. |
+| `futures_path.jsonl` | event/comparison/time row | Causal perpetual OHLC observations between the reference entry and the exit endpoint. Absent bars are absent; nothing is forward-filled and the index/spot path is never substituted. |
 
 `candidate_id` remains the structural foreign key. `availability_id` is the stable generation-attempt denominator key, introduced in 2.3.0 so two requested variants that collapse onto the same actual contracts remain inspectable without colliding. It is derived from the structural identity plus requested strikes, target horizon, and strike method, not array order; an exact repeated attempt is rejected upstream. Selected structures reconcile when at least one availability row for the same `candidate_id` is marked `is_selected:true`; they are not silently remapped.
 
@@ -27,7 +28,15 @@ Entry evidence is filtered and assembled independently for maker and taker. Imme
 
 The generation snapshot is the foreign-key authority for saved selections. Regeneration preserves a selection only when its structural `candidate_id` still exists. A genuinely removed structure remains visibly stale, is never remapped or deleted automatically, and blocks both a new “successful” save and canonical export until the user removes/reselects it or restores its producing generation configuration.
 
-Consumers validate the schema version, primary keys, foreign keys, venues, statuses, reason codes, finite numbers, entry economics, and source-run compatibility first. Unknown versions are rejected. Schema changes require a new version and explicit migration. Historical margin and futures data are unavailable rather than fabricated. Export reads only persisted snapshots and never refetches an exchange.
+Consumers validate the schema version, primary keys, foreign keys, venues, statuses, reason codes, finite numbers, entry economics, and source-run compatibility first. Unknown versions are rejected. Schema changes require a new version and explicit migration. Historical margin is unavailable rather than fabricated. Export reads only persisted snapshots and never refetches an exchange.
+
+### Futures baseline semantics
+
+The perpetual baseline is a benchmark, not a ranking. It uses the same MR event, direction, and causal decision timestamps as the options layer -- both read `resolveEventTiming`, so a VPOC exit is taken at the touch candle's *close*, never backdated to the touch. When VPOC and invalidation cannot be ordered at the underlying path's precision the row reports `sequence_status:"ambiguous"` and `exit_ordering_status:"ambiguous"` rather than picking one.
+
+Prices come from `get_tradingview_chart_data` on `BTC-PERPETUAL`; commissions from `get_instrument`; funding from `get_funding_rate_history` on the main public host, which the history mirror does not serve. Funding is summed from `interest_1h` over the hours actually held and priced at each hour's own perpetual bar. A single missing hour leaves `funding_status:"partial"`, `funding_usd_per_unit:null` and `net_pnl_usd_per_unit_after_funding:null`: an unknown funding bill is never a zero funding bill, and the price-and-fee baseline still stands.
+
+Per-unit economics are authoritative. `quantity` is a derived equal-dollar-risk convenience that names the structure it was scaled against in `quantity_basis`; when no such structure exists the row reports `equal_risk_sizing_status:"downstream_derivable"` and the per-unit values still stand. Futures margin, leverage, liquidation and equal-capital normalization are deliberately out of scope and stay explicitly unavailable.
 
 ## Version history
 

@@ -36,8 +36,30 @@ export function buildResearchMarginSnapshot(structure:Pick<SelectedStructure,"ca
  if(!reference||reference.status!=="valued")return unavailable("An execution-independent canonical reference valuation is required.","margin_no_canonical_valuation_path");
  const optionType=candidate.optionType,shortStrike=number(candidate.shortStrike)??number(object(candidate.actualStrikes).short),longStrike=number(candidate.longStrike)??number(object(candidate.actualStrikes).long),expiryTimestamp=number(candidate.expiryTimestamp),entryTimestamp=number(entry.valuationTimestamp)??number(entry.targetTimestamp),entryIndex=number(entry.entryTargetIndex),shortPremium=legMark(entry,"sold"),longPremium=legMark(entry,"bought"),openingFees=number(entry.openingFeesBtc);
  if(optionType!=="C"&&optionType!=="P"||shortStrike===undefined||longStrike===undefined||expiryTimestamp===undefined||entryTimestamp===undefined||entryIndex===undefined||shortPremium===undefined||longPremium===undefined||openingFees===undefined)return unavailable("Canonical reference entry economics are incomplete for maximum-loss and margin reconstruction.","verified_historical_margin_model_unavailable");
- let maximumLoss:number;try{maximumLoss=Math.abs(payoffExtrema({optionType,shortStrike,longStrike,shortEntryPremiumBtc:shortPremium,longEntryPremiumBtc:longPremium,entryIndex,amount:structure.quantity,openingFeesBtc:openingFees,expiryTimestamp},"btc-settlement").maximumLoss);}catch(error){return unavailable(error instanceof Error?error.message:String(error),"verified_historical_margin_model_unavailable");}
+ // Maximum economic loss is taken in USD, then represented in BTC at the
+ // stated reference index.
+ //
+ // The btc-settlement extremum is NOT usable here: an inverse option's
+ // intrinsic value is (K-S)/S, which diverges as the settlement index
+ // approaches zero, so the BTC extremum is a mathematical artifact of the tail
+ // sample rather than a terminal loss (it evaluates to ~1.8e8 BTC on a routine
+ // 60k/55k put spread). The USD cash-flow extremum is exact and bounded, so it
+ // is the primary figure and the BTC number is explicitly a conversion at one
+ // stated index -- never an unconditional terminal loss.
+ let maximumLossUsd:number,maximumLossBtcAtReferenceIndex:number;
+ try{
+  maximumLossUsd=Math.abs(payoffExtrema({optionType,shortStrike,longStrike,shortEntryPremiumBtc:shortPremium,longEntryPremiumBtc:longPremium,entryIndex,amount:structure.quantity,openingFeesBtc:openingFees,expiryTimestamp},"usd-cash-flow").maximumLoss);
+  maximumLossBtcAtReferenceIndex=maximumLossUsd/entryIndex;
+ }catch(error){return unavailable(error instanceof Error?error.message:String(error),"verified_historical_margin_model_unavailable");}
+ const maximumLoss=maximumLossBtcAtReferenceIndex;
+ const lossMetadata={
+  maximumEconomicLossUsd:maximumLossUsd,
+  maximumEconomicLossBtcAtReferenceIndex:maximumLossBtcAtReferenceIndex,
+  referenceIndex:entryIndex,
+  maximumLossMethod:"exact inverse vertical expiry payoff (usd-cash-flow extremum over strike and tail settlement indices, including per-leg delivery fees)",
+  maximumLossAssumption:"USD is the primary, bounded figure. The BTC number is that USD loss converted at the stated reference index; it is a representation at one index, not an unconditional terminal BTC loss, because inverse intrinsic value diverges as the settlement index approaches zero.",
+ };
  const result=reconstructStandardVerticalMargin({optionType,amount:structure.quantity,shortStrike,longStrike,expiryTimestamp,theoreticalMaximumSpreadLossBtc:maximumLoss,points:referenceMarginPoints(reference),entryTimestamp,terminalTimestamp:expiryTimestamp});
- if(result.status==="unavailable")return canonicalJson({...result,theoreticalMaximumSpreadLossBtc:maximumLoss,reasonCode:canonicalMarginReason(result.reason)});
- return canonicalJson({...result,theoreticalMaximumSpreadLossBtc:maximumLoss,referenceIndex:entryIndex});
+ if(result.status==="unavailable")return canonicalJson({...result,theoreticalMaximumSpreadLossBtc:maximumLoss,...lossMetadata,reasonCode:canonicalMarginReason(result.reason)});
+ return canonicalJson({...result,theoreticalMaximumSpreadLossBtc:maximumLoss,...lossMetadata});
 }

@@ -33,8 +33,17 @@ export interface ReproducibilitySnapshot {
   historicalEvidenceWindows: JsonValue; synchronizationThresholds: JsonValue; qualityThresholds: JsonValue; feeAssumptions: JsonValue;
   settlementRules: JsonValue; valuationInterval: string; modelAssumptions: JsonValue; generatedAtUtc: string;
 }
-/** Persisted, genuine Deribit futures evidence. Index/spot candles are deliberately not accepted here. */
-export interface FuturesMarketSnapshot {instrument:string;instrumentKind:"perpetual"|"dated_future";source:"deribit";reference:Array<{timestamp:number;price:number;indexPrice?:number}>;trades?:Array<{tradeId:string;timestamp:number;price:number;amountUsd:number;direction:"buy"|"sell"}>;funding?:Array<{timestamp:number;rate:number}>;feeRate?:number;}
+/** Authoritative perpetual contract conventions, read from the venue rather than assumed. */
+export interface FuturesInstrumentMetadata {instrumentName:string;kind:string;settlementPeriod:string;futureType?:string|null;isActive?:boolean;contractSizeUsd:number|null;tickSize:number|null;minTradeAmountUsd:number|null;makerCommission:number|null;takerCommission:number|null;priceIndex:string|null;settlementCurrency?:string|null;source:string;retrievedAtUtc:string;authoritative:true}
+/** Retrieval coverage. Missing observations are counted and named, never filled. */
+export interface FuturesSeriesCoverage {source:string;apiStatus?:string;resolutionMs:number;requestedStart:number;requestedEnd:number;expectedPoints:number;receivedPoints:number;missingPoints:number;missingTimestamps:number[];missingTimestampsTruncated?:boolean;status:"complete"|"partial"|"unavailable";forwardFilled:false}
+export interface FuturesFundingCoverage {source:string;host?:string;intervalMs:number;rateField:string;requestedStart:number;requestedEnd:number;expectedPoints:number;receivedPoints:number;missingPoints:number;missingTimestamps:number[];missingTimestampsTruncated?:boolean;status:"complete"|"partial"|"unavailable";assumedZeroWhenMissing:false}
+/**
+ * Persisted, genuine Deribit futures evidence. Index/spot candles are
+ * deliberately not accepted here. `price` is the bar close; `open` is the
+ * causal fill reference. Absent bars stay absent.
+ */
+export interface FuturesMarketSnapshot {instrument:string;instrumentKind:"perpetual"|"dated_future";source:"deribit";priceBasis?:"traded_ohlc";retrievedAtUtc?:string;retrievalVersion?:string;instrumentMetadata?:FuturesInstrumentMetadata|null;reference:Array<{timestamp:number;price:number;indexPrice?:number;open?:number;high?:number;low?:number;close?:number;volume?:number}>;referenceCoverage?:FuturesSeriesCoverage|null;trades?:Array<{tradeId:string;timestamp:number;price:number;amountUsd:number;direction:"buy"|"sell";markPrice?:number|null;indexPrice?:number|null;source?:string}>;funding?:Array<{timestamp:number;rate:number;rate8h?:number|null;indexPrice?:number|null}>;fundingCoverage?:FuturesFundingCoverage|null;feeRate?:number;retrievalErrors?:Array<{stage:string;cause:string;retryable:boolean}>;}
 export interface GenerationSnapshot { generatedAtUtc: string; configuration: ReproducibilitySnapshot; candidates: GenerationCandidateSnapshot[]; underlyingHourlyPath: Candle[]; futuresMarket?:FuturesMarketSnapshot }
 export interface EvidenceTradeDto { evidenceId:string; venue:Venue; instrument:string|null; tradeId:string|null; timestamp:number|null; direction:string|null; price:number|null; amount:number|null; indexPrice:number|null; ivApiPercent:number|null; ivDecimal:number|null; blockTradeId:string|null; rfqId:string|null; }
 export interface EvidenceUsageDto { evidenceId:string; candidateId:string; role:string; valuationTimestamp:number|null; pricingTrack:string|null; leg:string|null; executionScenario:"maker"|"taker"|null; }
