@@ -8,7 +8,7 @@ import {buildEventFuturesBaseline} from "../app/lib/futures-baseline.ts";
 import {BUILD_PROVENANCE_UNAVAILABLE,buildProvenanceStatus,resolveApplicationBuild,resolveBuildProvenance} from "../app/lib/build-provenance.ts";
 import {CONFIGURATION_IDENTITY_VERSION,ORDER_SIGNIFICANT_CONFIGURATION_PATHS,canonicalConfigurationRepresentation,configurationDifferences,diagnoseMethodologyStaleness,effectiveConfigurationHash} from "../app/lib/configuration-identity.ts";
 import {EXECUTION_TIMING_METADATA,IMMEDIATE_FILL_SEARCH_WINDOWS_MS} from "../app/lib/execution-policy.ts";
-import {RESEARCH_WINDOWS_MINUTES} from "../app/lib/research-valuation.ts";
+import {MODEL_IV_ANCHOR_MAX_AGE_MINUTES,RESEARCH_WINDOWS_MINUTES,modelHistoricalEvidenceWindows} from "../app/lib/research-valuation.ts";
 import {config,now,referenceOnlyFixture,store} from "./fixtures/research-selection-store.ts";
 import {BARS,ENTRY,HOUR,barClose,barOpen,futuresEvent,futuresMarket,perpetualBars,underlyingPath} from "./fixtures/futures-market.ts";
 
@@ -574,4 +574,31 @@ test("the declared search escalation matches the engine that implements it",()=>
  assert.deepEqual(IMMEDIATE_FILL_SEARCH_WINDOWS_MS,RESEARCH_WINDOWS_MINUTES.map(minutes=>minutes*60_000));
  assert.deepEqual([...RESEARCH_WINDOWS_MINUTES],[30,60,120],"tightest window first; only it can earn a green flag");
  assert.ok(ORDER_SIGNIFICANT_CONFIGURATION_PATHS.includes("synchronizationThresholds.immediateFillSearchWindowsMs"));
+});
+
+
+test("regenerated stale-event methodology uses the declared model horizon, independently of execution windows",()=>{
+ const currentHistorical=modelHistoricalEvidenceWindows();
+ assert.deepEqual(currentHistorical,{entryMinutes:[MODEL_IV_ANCHOR_MAX_AGE_MINUTES]});
+ assert.deepEqual(currentHistorical,{entryMinutes:[720]});
+ assert.notDeepEqual(currentHistorical,{entryMinutes:[...RESEARCH_WINDOWS_MINUTES]});
+
+ const baseline={...config,historicalEvidenceWindows:currentHistorical,synchronizationThresholds:{...EXECUTION_TIMING_METADATA}};
+ const pr98={...baseline,historicalEvidenceWindows:{entryMinutes:[...RESEARCH_WINDOWS_MINUTES]}};
+ const events=[...Array.from({length:5},(_,index)=>({eventId:`baseline-${index}`,configuration:baseline})),{eventId:"1f046e00",configuration:pr98}];
+ const before=diagnoseMethodologyStaleness(events);
+ assert.equal(before.compatible,false);
+ assert.deepEqual(before.stale.map(item=>item.eventId),["1f046e00"]);
+ assert.deepEqual(before.stale[0]!.differingFields,["historicalEvidenceWindows"]);
+
+ const regenerated=events.map(event=>event.eventId==="1f046e00"?{...event,configuration:{...event.configuration,historicalEvidenceWindows:modelHistoricalEvidenceWindows()}}:event);
+ assert.equal(diagnoseMethodologyStaleness(regenerated).compatible,true);
+
+ const changedExecution={...baseline,synchronizationThresholds:{...EXECUTION_TIMING_METADATA,immediateFillSearchWindowsMs:[30*60_000]}};
+ assert.notEqual(effectiveConfigurationHash(changedExecution),effectiveConfigurationHash(baseline));
+ assert.deepEqual(changedExecution.historicalEvidenceWindows,baseline.historicalEvidenceWindows);
+
+ const genuinelyDifferent={...baseline,historicalEvidenceWindows:{entryMinutes:[360]}};
+ assert.notEqual(effectiveConfigurationHash(genuinelyDifferent),effectiveConfigurationHash(baseline));
+ assert.equal(diagnoseMethodologyStaleness([{eventId:"current",configuration:baseline},{eventId:"different",configuration:genuinelyDifferent}]).compatible,false);
 });

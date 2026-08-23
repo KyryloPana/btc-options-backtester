@@ -8,12 +8,14 @@ import {diagnoseMethodologyStaleness} from "../app/lib/configuration-identity.ts
 import {buildResearchBundle,validateResearchBundle} from "../app/lib/research-bundle.ts";
 import {ResearchSelectionService} from "../scripts/research-selection-service.ts";
 import {store as baseStore} from "./fixtures/research-selection-store.ts";
+import {modelHistoricalEvidenceWindows} from "../app/lib/research-valuation.ts";
+import {EXECUTION_TIMING_METADATA} from "../app/lib/execution-policy.ts";
 import type {GenerationSnapshot,ResearchSelectionEvent} from "../app/lib/research-selections.ts";
 
 const newer="2026-08-23T12:00:00.000Z";
 function staleAndCurrent(empty:boolean){
  const current=structuredClone(baseStore.events[0]!.generationSnapshot);
- current.generatedAtUtc=newer;current.configuration={...current.configuration,generatedAtUtc:newer};
+ current.generatedAtUtc=newer;current.configuration={...current.configuration,generatedAtUtc:newer,historicalEvidenceWindows:modelHistoricalEvidenceWindows(),synchronizationThresholds:structuredClone(EXECUTION_TIMING_METADATA)};
  current.candidates=[{...current.candidates.at(-1)!,selected:false,status:"unavailable",availabilityReasons:["contracts unavailable in current generation"],entryQuality:null}];
  current.underlyingHourlyPath=[];delete current.futuresMarket;
  const stale=structuredClone(current);stale.generatedAtUtc="2025-01-01T00:00:00.000Z";stale.configuration={...stale.configuration,generatedAtUtc:stale.generatedAtUtc,historicalEvidenceWindows:{entryMinutes:[120]},synchronizationThresholds:{immediateFillSearchWindowsMs:[1]}};
@@ -32,6 +34,7 @@ test("zero-selection generation refresh remains an event and clears strict metho
   const saved=await service.upsertEvent(fixture.datasetId,event.eventId,{...event,generationSnapshot:current,selectedStructures:[]},initial.updatedAtUtc);
   assert.equal(saved.events[0]!.selectedStructures.length,0);assert.equal(saved.events.length,2);
   assert.equal(saved.events[0]!.generationSnapshot.generatedAtUtc,newer);
+  assert.deepEqual(saved.events[0]!.generationSnapshot.configuration.historicalEvidenceWindows,{entryMinutes:[720]},"zero-valued and zero-selected generations persist the declared model horizon");
   assert.equal(diagnoseMethodologyStaleness(saved.events.map(e=>({eventId:e.eventId,configuration:e.generationSnapshot.configuration}))).compatible,true);
  }finally{await rm(dir,{recursive:true,force:true});}
 });
