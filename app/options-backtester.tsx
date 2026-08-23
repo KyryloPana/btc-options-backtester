@@ -36,6 +36,8 @@ import { breakEven, expiryPayoff, payoffExtrema, type ExpiryPayoffInput, type Pa
 import { EXECUTION_TIMING_METADATA } from "./lib/execution-policy";
 import { compactSettlementProvenance, SETTLEMENT_ACCOUNTING_VERSION } from "./lib/settlement-provenance";
 import { candidateIdentity, canonicalJson, renameResearchSelectionEvent, compactCandidateMetadata, compactEntryEconomics, compactResearchSelectionEvent, compactMarginResult, compactOutcomeSnapshot, compactValuationPoint, eventReference, reconcileGeneratedSelection, sameSelectionIds, selectionChangeSet, stableCandidateId, stableSelectionId, validateResearchSelectionStore, type EvidenceTradeDto, type EvidenceUsageDto, type ExecutionScenarioSnapshot, type GenerationCandidateSnapshot, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure } from "./lib/research-selections";
+import type { FuturesMarketSnapshot } from "./lib/research-selections";
+import { CANONICAL_BTC_PERPETUAL } from "./lib/futures-baseline";
 import { probeLocalPersistence, researchSelectionFailure } from "./lib/local-persistence";
 import { diagnoseDerivedStaleness } from "./lib/research-refresh";
 import { buildResearchMarginSnapshot } from "./lib/research-margin";
@@ -350,6 +352,9 @@ export function OptionsBacktester() {
   const [resolveStatus, setResolveStatus] = useState("");
   const [analysisStatus, setAnalysisStatus] = useState("");
   const [analysisResults, setAnalysisResults] = useState<AnalysisResult[]>([]);
+  // Event-level perpetual benchmark evidence, retrieved alongside the option run and
+  // persisted with the generation snapshot. Never derived from the index/spot path.
+  const [futuresBaseline, setFuturesBaseline] = useState<{eventId:string;snapshot:FuturesMarketSnapshot}>();
   const [showUnavailable,setShowUnavailable]=useState(false);
   const [selectedResultId, setSelectedResultId] = useState<string>();
   const [expandedResultIds, setExpandedResultIds] = useState<string[]>([]);
@@ -480,7 +485,7 @@ export function OptionsBacktester() {
       const generatedIds=new Set(currentGeneration.map(candidate=>candidate.candidateId));
       const retainedStale=(savedEventSelection?.generationSnapshot.candidates??[]).filter(candidate=>toKeep.has(candidate.candidateId)&&!generatedIds.has(candidate.candidateId)).map(candidate=>({...candidate,selected:true}));
       const candles=analysisResults[0]?.scenarioInput.candles??savedEventSelection?.generationSnapshot.underlyingHourlyPath??[];
-      const generationSnapshot=analysisResults.length?{generatedAtUtc:now,configuration:{applicationBuild:(import.meta as ImportMeta & {env?:Record<string,string>}).env?.VITE_APP_COMMIT??null,pricingEngineVersion:"research-estimate-v1",qualityRulesVersion:"entry-liquidity-v1",feeScheduleVersion:"deribit-standard-inverse-v1",dteWindows:canonicalJson(dteTolerances),expirySelectionMode,executionMode,pricingAssumption,pricingTracks:[...pricingModes],historicalEvidenceWindows:canonicalJson({entryMinutes:[...new Set(analysisResults.flatMap(result=>result.researchEntry.status==="priced"?[result.researchEntry.evidenceWindowMinutes]:[]))]}),synchronizationThresholds:canonicalJson(EXECUTION_TIMING_METADATA),qualityThresholds:canonicalJson({source:"entry-liquidity-v1"}),feeAssumptions:canonicalJson({tier:"standard",route:comboExecution?"combo":"legs"}),settlementRules:canonicalJson({source:"deribit-delivery-price",fallback:"unavailable"}),valuationInterval:"4h",modelAssumptions:canonicalJson({model:"Black-Scholes reconstructed IV",rate:0}),generatedAtUtc:now},candidates:[...currentGeneration,...retainedStale],underlyingHourlyPath:candles}:savedEventSelection!.generationSnapshot;
+      const generationSnapshot=analysisResults.length?{generatedAtUtc:now,configuration:{applicationBuild:(import.meta as ImportMeta & {env?:Record<string,string>}).env?.VITE_APP_COMMIT??null,pricingEngineVersion:"research-estimate-v1",qualityRulesVersion:"entry-liquidity-v1",feeScheduleVersion:"deribit-standard-inverse-v1",dteWindows:canonicalJson(dteTolerances),expirySelectionMode,executionMode,pricingAssumption,pricingTracks:[...pricingModes],historicalEvidenceWindows:canonicalJson({entryMinutes:[...new Set(analysisResults.flatMap(result=>result.researchEntry.status==="priced"?[result.researchEntry.evidenceWindowMinutes]:[]))]}),synchronizationThresholds:canonicalJson(EXECUTION_TIMING_METADATA),qualityThresholds:canonicalJson({source:"entry-liquidity-v1"}),feeAssumptions:canonicalJson({tier:"standard",route:comboExecution?"combo":"legs"}),settlementRules:canonicalJson({source:"deribit-delivery-price",fallback:"unavailable"}),valuationInterval:"4h",modelAssumptions:canonicalJson({model:"Black-Scholes reconstructed IV",rate:0}),generatedAtUtc:now},candidates:[...currentGeneration,...retainedStale],underlyingHourlyPath:candles,futuresMarket:futuresBaseline?.eventId===selectedEvent.id?futuresBaseline.snapshot:savedEventSelection?.generationSnapshot.futuresMarket}:savedEventSelection!.generationSnapshot;
       const runtimeEventRecord:ResearchSelectionEvent={eventId:selectedEvent.id,sourceRun:savedEventSelection?.sourceRun??canonicalJson({event:eventReference(selectedEvent),savedAtUtc:now}),generationSnapshot,selectedStructures,evidenceCatalog:[...eventEvidenceCatalog.values()].sort((a,b)=>a.evidenceId.localeCompare(b.evidenceId))};
       const eventRecord=compactResearchSelectionEvent(runtimeEventRecord);const requestBody=JSON.stringify(eventRecord),requestBytes=new TextEncoder().encode(requestBody).byteLength;
       const response=await fetch(`/__local/research-selections/${encodeURIComponent(dataset.datasetId)}/events/${encodeURIComponent(selectedEvent.id)}`,{method:"PUT",headers:{"Content-Type":"application/json","If-Match":selectionStore.updatedAtUtc},body:requestBody});const raw=await response.json().catch(()=>({}));if(!response.ok){const context=response.status===413?`Research save failed · ${(requestBytes/1_000_000).toFixed(1)} MB request exceeds 10.0 MB local persistence limit`:response.status===409?"Conflict: reload selections and retry":response.status===400?"Validation failed":"Persistence failed";throw new Error(`${context}. ${raw.details?.map?.((e:{path:string;message:string})=>`${e.path}: ${e.message}`).join(" | ")??raw.error??"Research selections were not saved."}`)}const checked=validateResearchSelectionStore(raw.store??raw);if(!checked.ok)throw new Error("Server returned an invalid selection store.");setSelectionStore(checked.store);setDraftSelection({eventId:selectedEvent.id,ids:new Set(draftAtStart)});setSelectionStatus(`Saved ${toAdd.size} new structure${toAdd.size===1?"":"s"}, retained ${toKeep.size}, removed ${toRemove.size}.`);
@@ -636,6 +641,34 @@ export function OptionsBacktester() {
     }
   }
 
+  /**
+   * Retrieve the event's Deribit BTC perpetual evidence. A failure here never
+   * fails the option run: the baseline is simply absent, and the exporter marks
+   * it unavailable with a reason rather than substituting the index path.
+   */
+  async function loadPerpetualBaseline(entryTimestamp: number, end: number): Promise<FuturesMarketSnapshot | undefined> {
+    try {
+      const response = await fetch("/__deribit/perpetual/baseline", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instrument: CANONICAL_BTC_PERPETUAL,
+          start: entryTimestamp - 3_600_000,
+          end,
+          resolutionMinutes: 60,
+          orderTimestamp: entryTimestamp,
+          direction: selectedEvent.direction,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "Perpetual baseline retrieval failed.");
+      const snapshot = payload.snapshot as FuturesMarketSnapshot | undefined;
+      return snapshot?.reference?.length ? snapshot : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   async function refreshSourceStatus() {
     try {
       const response = await fetch("/__deribit/history/status");
@@ -735,6 +768,10 @@ export function OptionsBacktester() {
       const maxExpiry = Math.max(...expiries);
       const candleStart=entryTimestamp-3_600_000,candleEnd=maxExpiry+3_600_000;
       const candles = await fetchCandles(candleStart,candleEnd);
+      // The perpetual benchmark covers the same causal window plus the longest
+      // fixed observation endpoint, so every exported endpoint can be observed.
+      const futuresSnapshot = await loadPerpetualBaseline(entryTimestamp, Math.max(candleEnd, entryTimestamp + 7 * 86_400_000 + 3_600_000, (selectedEvent.vpocTimestamp ?? 0) + 2 * 3_600_000, (selectedEvent.exitTimestamp ?? 0) + 2 * 3_600_000));
+      setFuturesBaseline(futuresSnapshot ? { eventId: selectedEvent.id, snapshot: futuresSnapshot } : undefined);
       const observations = buildAndRunObservationRequests(
         selectedEvent,
         canonicalRetrievedSpreads,
@@ -771,7 +808,7 @@ export function OptionsBacktester() {
       setScenario(undefined);
       setScenarioCalculating(Boolean(next[0]));
       const priced=next.reduce((sum,result)=>sum+result.researchPath.filter(point=>point.status==="priced").length,0),total=next.reduce((sum,result)=>sum+result.researchPath.length,0);
-      setAnalysisStatus(`${next.length} observations · amount ${amount} · BTC candles ${candles.length} (${candles[0].openTime}…${candles.at(-1)!.closeTime}) · priced points ${priced}/${total}.`);
+      setAnalysisStatus(`${next.length} observations · amount ${amount} · BTC candles ${candles.length} (${candles[0].openTime}…${candles.at(-1)!.closeTime}) · priced points ${priced}/${total} · ${futuresSnapshot?`${CANONICAL_BTC_PERPETUAL} ${futuresSnapshot.reference.length} bars, funding ${futuresSnapshot.fundingCoverage?.status??"unavailable"}`:`${CANONICAL_BTC_PERPETUAL} baseline unavailable`}.`);
       jump("analysis");
     } catch (error) {
       setAnalysisStatus(error instanceof Error ? error.message : "The valuation run failed.");

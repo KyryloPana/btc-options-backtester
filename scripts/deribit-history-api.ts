@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
 import { buildInventory, parseDeribitTrade, type ContractTrade } from "../app/lib/backtester.ts";
+import { deribitApiRequest, type FetchLike } from "./deribit-api-client.ts";
 
 const API_PREFIX = "/__deribit/history";
 const DAY_MS = 86_400_000;
@@ -42,9 +43,7 @@ export interface DeribitCandidateManifest extends Omit<DesiredRequest, "soldStri
   deliveryPriceSource?: "deribit-get_delivery_prices";
 }
 interface ApiTrade { timestamp: number; price: number; mark_price?: number; iv?: number; instrument_name: string; index_price: number; direction: "buy" | "sell"; amount: number; trade_id?: string; trade_seq: number }
-type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function expiryLabel(timestamp: number) { return new Date(timestamp).toISOString().slice(0, 10); }
 /** Resolve both legs together so nearest-strike fallback cannot collapse a spread. */
 export function resolveOrderedPair(chain: DeribitInstrumentManifest[], soldStrike: number, boughtStrike: number) {
@@ -83,22 +82,7 @@ export class DeribitHistoryService {
   }
 
   private async api(method: string, params: Record<string, string | number | boolean>) {
-    const url = new URL(`${this.baseUrl}/${method}`);
-    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      this.requestCount += 1;
-      const response = await this.fetcher(url);
-      if (response.ok) {
-        const payload = await response.json() as { result?: unknown; error?: { message?: string } };
-        if (payload.error) throw new Error(payload.error.message ?? "Deribit API error");
-        return payload.result;
-      }
-      if (![408, 429].includes(response.status) && response.status < 500) throw new Error(`Deribit HTTP ${response.status}`);
-      if (attempt === 4) throw new Error(`Deribit HTTP ${response.status} after retries`);
-      const retry = response.headers.get("retry-after");
-      const delay = retry ? (/^\d+(?:\.\d+)?$/.test(retry) ? Number(retry) * 1000 : Math.max(Date.parse(retry) - Date.now(), 0)) : 250 * 2 ** attempt;
-      await sleep(Math.min(delay, 10_000));
-    }
+    return deribitApiRequest(this.fetcher, this.baseUrl, method, params, () => { this.requestCount += 1; });
   }
 
   private async loadCache() {
