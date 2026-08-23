@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {buildResearchBundle} from "../app/lib/research-bundle.ts";
+import {MAXIMUM_ECONOMIC_LOSS_METHOD_VERSION} from "../app/lib/maximum-economic-loss.ts";
 import {migrateResearchSelectionStore} from "../app/lib/research-selections.ts";
 import {buildResearchMarginSnapshot} from "../app/lib/research-margin.ts";
 import {estimateStandardOptionMargin,reconstructStandardVerticalMargin,STANDARD_MARGIN_ENGINE_VERSION,STANDARD_MARGIN_RULE_ID,DEFAULT_DEPLOYMENT} from "../app/lib/margin.ts";
@@ -85,7 +86,8 @@ test("DISTINCTNESS: maximum economic loss is not initial or maintenance margin",
  // They are different KINDS of quantity: loss is a payoff property, margin is
  // an account requirement, and the row says so.
  assert.equal(row.margin_measurement,"model_estimated_historical_requirement");
- assert.match(String(row.maximum_loss_method),/inverse vertical expiry payoff/i);
+ assert.match(String(row.maximum_loss_method),/inverse-option expiry payoff/i);
+ assert.equal(row.maximum_loss_method_version,MAXIMUM_ECONOMIC_LOSS_METHOD_VERSION,"the shared canonical method is named by version");
 });
 
 test("DISTINCTNESS: the protective long's cash cost is never presented as margin",()=>{
@@ -140,7 +142,7 @@ test("PATH: a missing mark is never forward-filled; the reconstruction reports u
 test("MAX LOSS: the BTC figure carries its reference index, method and assumption",()=>{
  const row=marginRow();
  assert.equal(row.reference_index,INDEX);
- assert.deepEqual(row.maximum_loss_units,{native:"BTC",quote:"USD"});
+ assert.deepEqual(row.maximum_loss_units,{native:"BTC",quote:"USD",sign_convention:"positive_magnitude"});
  assert.match(String(row.maximum_loss_assumption),/not an unconditional terminal BTC loss/i);
  // USD is the primary bounded figure; BTC is that loss at the stated index.
  const usd=Number(row.maximum_loss_usd),btc=Number(row.maximum_loss_native);

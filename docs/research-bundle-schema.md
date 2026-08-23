@@ -1,6 +1,6 @@
 # Research Bundle Schema
 
-Schema **3.3.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and `events.jsonl`, `underlying_path.jsonl`, `candidates.jsonl`, `valuations.jsonl`, `outcomes.jsonl`, `availability.jsonl`, `margin_scenarios.jsonl`, `evidence_trades.jsonl`, `structure_economics.jsonl`, `futures_comparisons.jsonl`, and `futures_path.jsonl`. Empty tables remain empty files and availability is stated in `run.json`.
+Schema **3.4.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and `events.jsonl`, `underlying_path.jsonl`, `candidates.jsonl`, `valuations.jsonl`, `outcomes.jsonl`, `availability.jsonl`, `margin_scenarios.jsonl`, `evidence_trades.jsonl`, `structure_economics.jsonl`, `futures_comparisons.jsonl`, and `futures_path.jsonl`. Empty tables remain empty files and availability is stated in `run.json`.
 
 **`candidates.jsonl` = selected performance numerator; `availability.jsonl` = complete generated denominator.** Reports calculate coverage from availability and recompute extrema from valuations, never UI summaries.
 
@@ -30,9 +30,23 @@ The generation snapshot is the foreign-key authority for saved selections. Regen
 
 Consumers validate the schema version, primary keys, foreign keys, venues, statuses, reason codes, finite numbers, entry economics, and source-run compatibility first. Unknown versions are rejected. Schema changes require a new version and explicit migration. Historical margin is unavailable rather than fabricated. Export reads only persisted snapshots and never refetches an exchange.
 
+### Canonical economics, identity and provenance (3.4.0)
+
+**One maximum economic loss.** `structure_economics.jsonl` and `margin_scenarios.jsonl` both derive it from `canonicalMaximumEconomicLoss`, so the two tables cannot disagree. It is the bounded `usd-cash-flow` extremum of the exact inverse payoff, reported as a **positive USD magnitude** (`maximum_economic_loss_units.sign_convention`), with the BTC figure being that loss converted at the stated reference index. The divergent `btc-settlement` extremum is never exported as a terminal loss. Maximum economic loss is not Initial Margin, Maintenance Margin, protective-long cost, or a required balance; nothing in `structure_economics.jsonl` may be named as margin.
+
+**One configuration identity.** `effective_configuration_hash` is taken over a canonical, methodology-only representation: object keys sorted, set-like arrays sorted, `generatedAtUtc` and `applicationBuild` excluded as provenance rather than methodology. `source_run_id` is derived from the same identity. A store whose events carry different methodology hashes is **refused** at export, naming the event IDs, the hashes and the differing fields — a stale event must be regenerated, and schema migration is never a substitute.
+
+**Build provenance.** `build_provenance_status` is derived from each source run's `application_build`, injected from Git at build time. Without Git metadata the value is the explicit sentinel `unavailable:no-build-metadata` — never a null and never an invented SHA.
+
+**Denominator.** `trade_dataset_mr_event_count` comes from the active trade dataset (`trade_dataset_mr_event_count_source`), never from the selection store and never a hardcoded historic count.
+
+**Manifest.** `table_availability` covers every canonical table and is derived from actual exported content. The validator checks it in both directions: usable rows can never read as unavailable, and no usable rows can never read as available.
+
 ### Futures baseline semantics
 
-The perpetual baseline is a benchmark, not a ranking. It uses the same MR event, direction, and causal decision timestamps as the options layer -- both read `resolveEventTiming`, so a VPOC exit is taken at the touch candle's *close*, never backdated to the touch. When VPOC and invalidation cannot be ordered at the underlying path's precision the row reports `sequence_status:"ambiguous"` and `exit_ordering_status:"ambiguous"` rather than picking one.
+The perpetual baseline is a benchmark, not a ranking. It uses the same MR event, direction, and causal decision timestamps as the options layer -- both read `resolveEventTiming`, so a VPOC exit is taken at the touch candle's *close*, never backdated to the touch. Sequence classification compares **like-for-like decision candles** — the candle each decision lands in — so neither outcome gains priority from being represented by a candle open while the other is a candle close; a touch and a breach inside one hourly candle report `sequence_status:"ambiguous"` and `exit_ordering_status:"ambiguous"` rather than one being picked.
+
+**Endpoints are independent.** `vpoc`, `invalidation` and the fixed 3D/5D/7D endpoints each carry their own `outcome` (`reached` / `not_reached` / `not_configured`), `status` and `reason_code`. An endpoint that does not resolve never erases the entry, the causal path, the other endpoints, or the per-unit risk to invalidation: an event whose VPOC target was never reached — or was never configured — stays fully analysable, with `exit_status` naming which case it is and `path_terminus_basis` recording that the path runs to the end of the retrieved series. Funding is `not_evaluated` where there is no resolved exit, which is distinct from a funding outage.
 
 Prices come from `get_tradingview_chart_data` on `BTC-PERPETUAL`; commissions from `get_instrument`; funding from `get_funding_rate_history` on the main public host, which the history mirror does not serve. Funding is summed from `interest_1h` over the hours actually held and priced at each hour's own perpetual bar. A single missing hour leaves `funding_status:"partial"`, `funding_usd_per_unit:null` and `net_pnl_usd_per_unit_after_funding:null`: an unknown funding bill is never a zero funding bill, and the price-and-fee baseline still stands.
 

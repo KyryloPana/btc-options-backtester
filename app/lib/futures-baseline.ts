@@ -51,14 +51,25 @@ function observeAtOrAfter(points:readonly Point[],decision:number,resolutionMs:n
 const fillPrice=(point:Point)=>point.open??point.price;
 const fillBasis=(point:Point)=>point.open!==null?"bar_open_at_or_after_decision":"bar_close_legacy_snapshot";
 
-interface Endpoint {policy:FuturesPolicy;trigger:number|null;decision:number|null;reason:string|null}
-function endpoints(event:ResearchSelectionEvent,order:number|null):Endpoint[]{
- const timing=resolveEventTiming({sourceRun:event.sourceRun,underlyingHourlyPath:event.generationSnapshot.underlyingHourlyPath});
- const fixed=(days:number):Endpoint["decision"]=>order===null?null:order+days*DAY_MS;
+/**
+ * `outcome` separates the two states the research explicitly needs to study
+ * apart: a target that exists and was never reached during observation, versus
+ * a target the event never configured. Neither is a reason to discard the rest
+ * of the benchmark.
+ */
+type EndpointOutcome="reached"|"not_reached"|"not_configured";
+interface Endpoint {policy:FuturesPolicy;trigger:number|null;decision:number|null;outcome:EndpointOutcome;reason:string|null}
+function endpoints(timing:ReturnType<typeof resolveEventTiming>,order:number|null):Endpoint[]{
+ const fixed=(days:number)=>order===null?null:order+days*DAY_MS;
+ const vpocOutcome:EndpointOutcome=timing.vpocDecisionTimestamp!==null?"reached":timing.vpocTargetStatus==="not_reached"?"not_reached":"not_configured";
+ const invalidationOutcome:EndpointOutcome=timing.invalidationDecisionTimestamp!==null?"reached":timing.invalidationPrice!==null?"not_reached":"not_configured";
  return [
-  {policy:"vpoc",trigger:timing.vpocTriggerTimestamp,decision:timing.vpocDecisionTimestamp,reason:timing.vpocDecisionTimestamp===null?"futures_event_vpoc_unavailable":null},
-  {policy:"invalidation",trigger:timing.invalidationTriggerTimestamp,decision:timing.invalidationDecisionTimestamp,reason:timing.invalidationDecisionTimestamp===null?"futures_event_invalidation_unavailable":null},
-  ...([["fixed_3d",3],["fixed_5d",5],["fixed_7d",7]] as const).map(([policy,days])=>({policy,trigger:fixed(days),decision:fixed(days),reason:order===null?"futures_entry_observation_unavailable":null})),
+  {policy:"vpoc",trigger:timing.vpocTriggerTimestamp,decision:timing.vpocDecisionTimestamp,outcome:vpocOutcome,
+   reason:vpocOutcome==="reached"?null:vpocOutcome==="not_reached"?"futures_vpoc_target_not_reached":"futures_event_vpoc_not_configured"},
+  {policy:"invalidation",trigger:timing.invalidationTriggerTimestamp,decision:timing.invalidationDecisionTimestamp,outcome:invalidationOutcome,
+   reason:invalidationOutcome==="reached"?null:invalidationOutcome==="not_reached"?"futures_invalidation_not_reached":"futures_event_invalidation_not_configured"},
+  ...([["fixed_3d",3],["fixed_5d",5],["fixed_7d",7]] as const).map(([policy,days])=>({policy,trigger:fixed(days),decision:fixed(days),
+   outcome:"reached" as EndpointOutcome,reason:order===null?"futures_entry_observation_unavailable":null})),
  ];
 }
 
@@ -113,7 +124,11 @@ export function buildEventFuturesBaseline(event:ResearchSelectionEvent,policy:Fu
  if(!entryObservation.point)return fail([entryObservation.reason==="futures_series_gap_at_decision"?"futures_series_gap_at_entry_decision":"futures_entry_observation_unavailable"],seriesFacts);
  const entry=entryObservation.point,entryPrice=fillPrice(entry);
 
- const resolved=endpoints(event,order).map(endpoint=>{
+ // Every endpoint is evaluated independently. One unavailable policy endpoint
+ // never erases the entry, the path, the other endpoints, or the per-unit
+ // economics that do not depend on an exit -- that is exactly the "VPOC never
+ // reached" population this research needs to keep.
+ const resolved=endpoints(timing,order).map(endpoint=>{
   if(endpoint.decision===null||endpoint.decision<entry.timestamp)
    return{...endpoint,point:null,lagMs:null,code:endpoint.reason??"matched_endpoint_unavailable"};
   const observed=observeAtOrAfter(points,endpoint.decision,resolutionMs);
@@ -122,19 +137,25 @@ export function buildEventFuturesBaseline(event:ResearchSelectionEvent,policy:Fu
  const chosen=resolved.find(e=>e.policy===policy)!;
  const endpointRows=resolved.map(e=>({policy:e.policy,trigger_timestamp_utc:iso(e.trigger),decision_timestamp_utc:iso(e.decision),
   observation_timestamp_utc:e.point?iso(e.point.timestamp):null,observation_price:e.point?fillPrice(e.point):null,
-  status:e.point?"available":"unavailable",reason_code:e.code??null})) as unknown as JsonValue;
+  outcome:e.outcome,status:e.point?"available":e.outcome==="not_reached"?"not_reached":e.outcome==="not_configured"?"not_configured":"unavailable",
+  reason_code:e.code??null})) as unknown as JsonValue;
+ const exit=chosen.point,exitPrice=exit?fillPrice(exit):null;
+ const exitStatus=exit?"available":chosen.outcome==="not_reached"?"not_reached":chosen.outcome==="not_configured"?"not_configured":"unavailable";
+ const exitCode=exit?null:chosen.code??"futures_exit_endpoint_unavailable";
+ // With no resolved exit the causal path still runs to the end of the retrieved
+ // series, so the never-resolved population stays analysable.
+ const terminus=exit??points[points.length-1];
  const endpointFacts={...seriesFacts,endpoints:endpointRows,
+  vpoc_target_status:timing.vpocTargetStatus,vpoc_target_price:timing.vpocTargetPrice,
   exit_policy:policy,exit_trigger_timestamp_utc:iso(chosen.trigger),exit_decision_timestamp_utc:iso(chosen.decision)};
- if(!chosen.point)return fail([chosen.code??"matched_endpoint_unavailable"],endpointFacts);
- const exit=chosen.point,exitPrice=fillPrice(exit);
 
  // Fees and slippage are applied exactly once per side and carry their own versions.
  const metadata=obj(market.instrumentMetadata);
  const feeRate=num(metadata.takerCommission)??num(market.feeRate);
- const feesPerUnit=feeRate===null?null:(entryPrice+exitPrice)*feeRate;
- const slippageBps=DEFAULT_FUTURES_SLIPPAGE_BPS,slippagePerUnit=(entryPrice+exitPrice)*slippageBps/10_000;
- const grossPerUnit=sign*(exitPrice-entryPrice);
- const netBeforeFundingPerUnit=feesPerUnit===null?null:grossPerUnit-feesPerUnit-slippagePerUnit;
+ const feesPerUnit=feeRate===null||exitPrice===null?null:(entryPrice+exitPrice)*feeRate;
+ const slippageBps=DEFAULT_FUTURES_SLIPPAGE_BPS,slippagePerUnit=exitPrice===null?null:(entryPrice+exitPrice)*slippageBps/10_000;
+ const grossPerUnit=exitPrice===null?null:sign*(exitPrice-entryPrice);
+ const netBeforeFundingPerUnit=feesPerUnit===null||grossPerUnit===null||slippagePerUnit===null?null:grossPerUnit-feesPerUnit-slippagePerUnit;
  const riskPerUnit=timing.invalidationPrice===null?null:Math.abs(entryPrice-timing.invalidationPrice);
 
  // Funding is summed over the hours actually held, priced at the contemporaneous
@@ -142,7 +163,7 @@ export function buildEventFuturesBaseline(event:ResearchSelectionEvent,policy:Fu
  const fundingByHour=new Map((market.funding??[]).map(f=>[f.timestamp,f]));
  const priceByTimestamp=new Map(points.map(p=>[p.timestamp,p]));
  const expectedFundingHours:number[]=[];
- for(let hour=Math.floor(entry.timestamp/HOUR_MS)*HOUR_MS+HOUR_MS;hour<=exit.timestamp;hour+=HOUR_MS)expectedFundingHours.push(hour);
+ if(exit)for(let hour=Math.floor(entry.timestamp/HOUR_MS)*HOUR_MS+HOUR_MS;hour<=exit.timestamp;hour+=HOUR_MS)expectedFundingHours.push(hour);
  let fundingPerUnit:number|null=0,observedFundingHours=0;
  for(const hour of expectedFundingHours){
   const rate=fundingByHour.get(hour),bar=priceByTimestamp.get(hour);
@@ -151,7 +172,10 @@ export function buildEventFuturesBaseline(event:ResearchSelectionEvent,policy:Fu
   if(fundingPerUnit!==null)fundingPerUnit-=sign*fillPrice(bar)*rate.rate;
  }
  const fundingCoverage=obj(market.fundingCoverage);
- const fundingStatus=market.funding===undefined?"unavailable"
+ // Funding is a property of a holding period, so with no resolved exit it is
+ // not_evaluated -- distinct from a funding outage.
+ const fundingStatus=!exit?"not_evaluated"
+  :market.funding===undefined?"unavailable"
   :expectedFundingHours.length===0?"available"
   :fundingPerUnit===null?(observedFundingHours?"partial":"unavailable"):"available";
  if(fundingStatus!=="available")fundingPerUnit=null;
@@ -168,7 +192,7 @@ export function buildEventFuturesBaseline(event:ResearchSelectionEvent,policy:Fu
  const observedTrade=(market.trades??[]).slice().sort((a,b)=>a.timestamp-b.timestamp)
   .find(t=>t.timestamp>=order&&t.direction===(timing.direction==="long"?"buy":"sell"));
 
- const path:FuturesPathRow[]=points.filter(p=>p.timestamp>=entry.timestamp&&p.timestamp<=exit.timestamp).map(p=>{
+ const path:FuturesPathRow[]=points.filter(p=>p.timestamp>=entry.timestamp&&p.timestamp<=terminus.timestamp).map(p=>{
   const rate=fundingByHour.get(p.timestamp);
   const perUnit=sign*(fillPrice(p)-entryPrice);
   return{event_id:event.eventId,comparison_id:id,instrument:market.instrument,timestamp_utc:new Date(p.timestamp).toISOString(),
@@ -180,8 +204,11 @@ export function buildEventFuturesBaseline(event:ResearchSelectionEvent,policy:Fu
  });
 
  const reasonCodes=[
+  ...(exitCode?[exitCode]:[]),
   ...(observedTrade?[]:["observed_futures_execution_unavailable"]),
-  ...(fundingStatus==="available"?(expectedFundingHours.length?[]:["futures_no_funding_interval_elapsed"]):[fundingStatus==="partial"?"funding_partial":"funding_unavailable"]),
+  ...(fundingStatus==="available"?(expectedFundingHours.length?[]:["futures_no_funding_interval_elapsed"])
+   :fundingStatus==="not_evaluated"?["funding_not_evaluated"]
+   :[fundingStatus==="partial"?"funding_partial":"funding_unavailable"]),
   ...(feeRate===null?["futures_fee_schedule_unavailable"]:[]),
   ...(String(coverage.status??"")==="partial"?["futures_reference_series_incomplete"]:[]),
   ...(entryObservation.lagMs?["futures_entry_bar_resolution_lag"]:[]),
@@ -195,11 +222,14 @@ export function buildEventFuturesBaseline(event:ResearchSelectionEvent,policy:Fu
   observed_execution_status:observedTrade?"available":"unavailable",observed_entry_price:observedTrade?.price??null,
   observed_entry_timestamp_utc:observedTrade?new Date(observedTrade.timestamp).toISOString():null,
   observed_evidence_ids:observedTrade?[observedTrade.tradeId]:[],
-  exit_timestamp_utc:iso(exit.timestamp),exit_price:exitPrice,exit_basis:fillBasis(exit),exit_lag_ms:chosen.lagMs,exit_status:"available",
+  exit_timestamp_utc:exit?iso(exit.timestamp):null,exit_price:exitPrice,exit_basis:exit?fillBasis(exit):null,exit_lag_ms:chosen.lagMs,
+  exit_status:exitStatus,exit_unavailable_reason_code:exitCode,
+  path_terminus_timestamp_utc:iso(terminus.timestamp),path_terminus_basis:exit?"exit_endpoint":"retrieved_series_end_no_resolved_exit",
   // Ambiguity is reported, never resolved by assumption: when VPOC and
   // invalidation fall in the same candle the ordering claim is withheld.
   exit_ordering_status:timing.sequenceStatus==="ambiguous"?"ambiguous":"ordered",
-  holding_hours:(exit.timestamp-entry.timestamp)/HOUR_MS,
+  holding_hours:exit?(exit.timestamp-entry.timestamp)/HOUR_MS:null,
+  observed_hours_to_path_terminus:(terminus.timestamp-entry.timestamp)/HOUR_MS,
   invalidation_price:timing.invalidationPrice,
   unit_convention:"per 1 BTC-equivalent of perpetual notional, quoted in USD",
   gross_pnl_usd_per_unit:grossPerUnit,
@@ -220,7 +250,7 @@ export function buildEventFuturesBaseline(event:ResearchSelectionEvent,policy:Fu
   equal_risk_sizing_method:"option_max_economic_loss_usd / abs(futures_entry - structural_invalidation)",
   equal_risk_sizing_status:quantity===null?"downstream_derivable":"derived",
   quantity,quantity_basis:largest?.candidateId??null,risk_budget_usd:riskBudgetUsd,
-  gross_trading_pnl_usd:quantity===null?null:grossPerUnit*quantity,
+  gross_trading_pnl_usd:quantity===null||grossPerUnit===null?null:grossPerUnit*quantity,
   entry_exit_fees_usd:quantity===null||feesPerUnit===null?null:feesPerUnit*quantity,
   funding_usd:quantity===null||fundingPerUnit===null?null:fundingPerUnit*quantity,
   net_pnl_usd_before_funding:quantity===null||netBeforeFundingPerUnit===null?null:netBeforeFundingPerUnit*quantity,

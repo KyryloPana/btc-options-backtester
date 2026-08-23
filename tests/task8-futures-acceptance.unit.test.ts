@@ -66,7 +66,11 @@ test("a hole at the exit decision is unavailable rather than carried forward",()
  const market=futuresMarket("long");
  market.reference=market.reference.filter(point=>point.timestamp!==ENTRY+7*HOUR);
  const x=buildEventFuturesBaseline(futuresEvent("long",{futuresMarket:market}));
- assert.equal(x.comparison.availability,"unavailable");
+ // The exit endpoint alone is lost; the entry, path and per-unit risk survive.
+ assert.equal(x.comparison.exit_status,"unavailable");
  assert.ok((x.comparison.reason_codes as string[]).includes("futures_series_gap_at_decision"));
- assert.equal(x.comparison.exit_price,undefined,"no price is invented for the missing bar");
+ assert.equal(x.comparison.exit_price,null,"no price is invented for the missing bar");
+ assert.equal(x.comparison.gross_pnl_usd_per_unit,null);
+ assert.equal(x.comparison.availability,"available");
+ assert.ok(x.path.length>0,"one missing bar is not a reason to drop the causal path");
 });
