@@ -1,9 +1,11 @@
 import vinext from "vinext";
+import { execFileSync } from "node:child_process";
 import { access, cp, mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Plugin } from "vite";
 import { defineConfig, loadEnv } from "vite";
 import hostingConfig from "./.openai/hosting.json";
+import { BUILD_PROVENANCE_UNAVAILABLE } from "./app/lib/build-provenance";
 import { deribitHistoryApiPlugin } from "./scripts/deribit-history-api";
 import { deribitPerpetualApiPlugin, PERPETUAL_FUNDING_HOST } from "./scripts/deribit-perpetual-history";
 import { tradeDatasetApiPlugin } from "./scripts/trade-dataset-service";
@@ -53,6 +55,20 @@ function sites(): Plugin {
   };
 }
 
+// Build provenance is read from Git here, never hardcoded. Without Git metadata
+// the value is an explicit sentinel, so a run can say it does not know which
+// code produced it rather than inventing a commit or reporting null.
+function applicationCommit(): string {
+  try {
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (!/^[0-9a-f]{7,40}$/i.test(head)) return BUILD_PROVENANCE_UNAVAILABLE;
+    const dirty = execFileSync("git", ["status", "--porcelain"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return dirty ? `${head}-dirty` : head;
+  } catch {
+    return BUILD_PROVENANCE_UNAVAILABLE;
+  }
+}
+
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";
 
@@ -94,7 +110,10 @@ export default defineConfig(async ({ mode }) => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
   const localEnv = loadEnv(mode, process.cwd(), "");
 
+  const commit = localEnv.VITE_APP_COMMIT?.trim() || process.env.VITE_APP_COMMIT?.trim() || applicationCommit();
+
   return {
+    define: { "import.meta.env.VITE_APP_COMMIT": JSON.stringify(commit) },
     server: {
       host: "0.0.0.0",
       allowedHosts: ["terminal.local"],

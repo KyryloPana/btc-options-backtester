@@ -29,26 +29,26 @@ export const instrumentMetadata=()=>({
  priceIndex:"btc_usd",settlementCurrency:"BTC",source:"deribit-get_instrument",retrievedAtUtc:"2024-01-01T00:00:00.000Z",authoritative:true as const,
 });
 
-export function futuresMarket(direction:"long"|"short",overrides:Partial<FuturesMarketSnapshot>={}):FuturesMarketSnapshot{
- const reference=perpetualBars();
+export function futuresMarket(direction:"long"|"short",overrides:Partial<FuturesMarketSnapshot>={},barCount=BARS):FuturesMarketSnapshot{
+ const reference=perpetualBars(barCount);
  return{
   instrument:"BTC-PERPETUAL",instrumentKind:"perpetual",source:"deribit",priceBasis:"traded_ohlc",
   retrievedAtUtc:"2024-01-01T00:00:00.000Z",retrievalVersion:"deribit-perpetual-retrieval-v1",
   instrumentMetadata:instrumentMetadata(),reference,
-  referenceCoverage:{source:"deribit-get_tradingview_chart_data",apiStatus:"ok",resolutionMs:HOUR,requestedStart:ENTRY,requestedEnd:ENTRY+(BARS-1)*HOUR,expectedPoints:BARS,receivedPoints:BARS,missingPoints:0,missingTimestamps:[],status:"complete",forwardFilled:false},
+  referenceCoverage:{source:"deribit-get_tradingview_chart_data",apiStatus:"ok",resolutionMs:HOUR,requestedStart:ENTRY,requestedEnd:ENTRY+(barCount-1)*HOUR,expectedPoints:barCount,receivedPoints:barCount,missingPoints:0,missingTimestamps:[],status:"complete",forwardFilled:false},
   trades:[{tradeId:"perp-trade-1",timestamp:ENTRY+1_000,price:100.25,amountUsd:1_000,direction:direction==="long"?"buy":"sell",markPrice:100.2,indexPrice:100.1,source:"deribit-get_last_trades_by_instrument_and_time"}],
-  funding:fundingRows(),
-  fundingCoverage:{source:"deribit-get_funding_rate_history",host:"https://www.deribit.com/api/v2/public",intervalMs:HOUR,rateField:"interest_1h",requestedStart:ENTRY,requestedEnd:ENTRY+(BARS-1)*HOUR,expectedPoints:BARS-1,receivedPoints:BARS-1,missingPoints:0,missingTimestamps:[],status:"complete",assumedZeroWhenMissing:false},
+  funding:fundingRows(barCount),
+  fundingCoverage:{source:"deribit-get_funding_rate_history",host:"https://www.deribit.com/api/v2/public",intervalMs:HOUR,rateField:"interest_1h",requestedStart:ENTRY,requestedEnd:ENTRY+(barCount-1)*HOUR,expectedPoints:barCount-1,receivedPoints:barCount-1,missingPoints:0,missingTimestamps:[],status:"complete",assumedZeroWhenMissing:false},
   feeRate:0.00035,retrievalErrors:[],
   ...overrides,
  };
 }
 
-export function futuresEvent(direction:"long"|"short"="long",overrides:{eventId?:string;futuresMarket?:FuturesMarketSnapshot|undefined;vpocTimestamp?:number|null;invalidationPrice?:number|null;underlyingHourlyPath?:Candle[];maximumEconomicLossUsd?:number}={}):ResearchSelectionEvent{
+export function futuresEvent(direction:"long"|"short"="long",overrides:{eventId?:string;futuresMarket?:FuturesMarketSnapshot|undefined;vpocTimestamp?:number|null;vpocPrice?:number|null;invalidationPrice?:number|null;underlyingHourlyPath?:Candle[];maximumEconomicLossUsd?:number}={}):ResearchSelectionEvent{
  const eventId=overrides.eventId??"mr-1";
  return{
   eventId,
-  sourceRun:{event:{direction,entryTimestamp:ENTRY,entryPrice:100,vpocTimestamp:overrides.vpocTimestamp===undefined?VPOC_TRIGGER:overrides.vpocTimestamp,invalidationPrice:overrides.invalidationPrice===undefined?(direction==="long"?80:120):overrides.invalidationPrice}},
+  sourceRun:{event:{direction,entryTimestamp:ENTRY,entryPrice:100,vpocTimestamp:overrides.vpocTimestamp===undefined?VPOC_TRIGGER:overrides.vpocTimestamp,vpocPrice:overrides.vpocPrice===undefined?barClose(6):overrides.vpocPrice,invalidationPrice:overrides.invalidationPrice===undefined?(direction==="long"?80:120):overrides.invalidationPrice}},
   generationSnapshot:{
    generatedAtUtc:"2024-01-01T00:00:00.000Z",
    configuration:{modelAssumptions:{}},

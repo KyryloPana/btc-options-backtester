@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {buildResearchBundle,validateResearchBundle,RESEARCH_BUNDLE_SCHEMA_VERSION} from "../app/lib/research-bundle.ts";
 import {migrateResearchSelectionStore} from "../app/lib/research-selections.ts";
 import {CANONICAL_TRACKS,describeCanonicalTracks} from "../app/lib/research-tracks.ts";
-import {store,now,ts} from "./fixtures/research-selection-store.ts";
+import {store,now,referenceOnlyFixture,ts} from "./fixtures/research-selection-store.ts";
 
 /**
  * Economic valuation and outcomes must follow the STRUCTURE, with execution
@@ -15,35 +15,6 @@ import {store,now,ts} from "./fixtures/research-selection-store.ts";
 const parse=(text:string)=>text.trim()?text.trim().split("\n").map(line=>JSON.parse(line) as Record<string,unknown>):[];
 
 /** A reference-valued structure whose immediate execution is entirely absent. */
-function referenceOnlyFixture(){
- const fixture=migrateResearchSelectionStore(structuredClone(store)) as ReturnType<typeof migrateResearchSelectionStore>;
- const event=fixture.events[0]!,s=structuredClone(event.selectedStructures[0]!) as Record<string,unknown>;
- const entry=structuredClone((s.executionScenarios as Record<string,Record<string,unknown>>).taker.entrySnapshot);
- s.contractResolution={status:"exact_resolved",reason:null,
-  short:{instrumentName:"BTC-S",creationTimestamp:ts-1,expirationTimestamp:ts+7*864e5,strike:100,optionType:"P",contractSize:1,source:"fixture",retrievedAtUtc:now,authoritative:true},
-  long:{instrumentName:"BTC-L",creationTimestamp:ts-1,expirationTimestamp:ts+7*864e5,strike:90,optionType:"P",contractSize:1,source:"fixture",retrievedAtUtc:now,authoritative:true}};
- // A genuine reference path AND outcome set, produced execution-independently.
- s.referenceValuation={status:"valued",reason:null,source:"local_iv_interpolation",entrySnapshot:entry,
-  valuationPathSnapshot:[
-   {timestamp:ts,status:"priced",targetIndex:100,estimatedNetPnlBtc:.001,estimateQuality:"green",
-    modelEstimate:{sold:{priceBtcPerContract:.01,model:{anchorIvDecimal:.55,anchorIvApiPercent:55,anchorTimestamp:ts,anchorIndex:100,targetIndex:100,dte:7}},
-     bought:{priceBtcPerContract:.004,model:{anchorIvDecimal:.61,anchorIvApiPercent:61,anchorTimestamp:ts,anchorIndex:100,targetIndex:100,dte:7}}},
-    soldIvSource:"local-observed-IV",longIvSource:"constant-entry-IV"},
-   {timestamp:ts+4*36e5,status:"priced",targetIndex:101,estimatedNetPnlBtc:.002,estimateQuality:"green"},
-  ],
-  outcomeSnapshots:[
-   {label:"VPOC",status:"estimated",decisionTimestamp:ts+2*36e5,valuationTimestamp:ts+2*36e5,estimatedNetPnlBtc:.0015,conversionIndex:101,estimateQuality:"green"},
-   {label:"Settlement",status:"estimated",decisionTimestamp:ts+7*864e5,valuationTimestamp:ts+7*864e5,estimatedNetPnlBtc:.003,conversionIndex:102,estimateQuality:"green"},
-  ],
-  provenance:{executionIndependent:true,method:"causal fixture",engineVersion:"reference/1"}};
- // Both immediate execution scenarios are genuinely unavailable.
- s.executionScenarios={
-  maker:{status:"unavailable",reason:"No maker tape.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]},
-  taker:{status:"not_evaluated",reason:"Taker was intentionally skipped.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]}};
- s.selectionProvenance="model-only-diagnostic";
- fixture.events=[{...event,selectedStructures:[s]} as typeof event,{...fixture.events[1]!,selectedStructures:[]}];
- return fixture;
-}
 
 test("DECOUPLING: a candidate with no immediate maker or taker evidence still exports its economics",()=>{
  const bundle=buildResearchBundle(referenceOnlyFixture(),now);
@@ -207,11 +178,11 @@ test("STRUCTURE: exactly one economic record per candidate ID, with requested an
 test("PAYOFF: maximum economic loss states its units, reference index and method, and is never called margin",()=>{
  const bundle=buildResearchBundle(referenceOnlyFixture(),now);
  const economics=parse(bundle.files["structure_economics.jsonl"])[0]!;
- assert.deepEqual(economics.maximum_economic_loss_units,{native:"BTC",quote:"USD"});
+ assert.deepEqual(economics.maximum_economic_loss_units,{native:"BTC",quote:"USD",sign_convention:"positive_magnitude"});
  if(economics.maximum_economic_loss_native!==null){
   assert.notEqual(economics.maximum_economic_loss_reference_index,null,"the USD conversion states its index");
   assert.match(String(economics.maximum_economic_loss_method),/inverse-option expiry payoff/i);
-  assert.match(String(economics.maximum_economic_loss_assumption),/not unconditional/i,
+  assert.match(String(economics.maximum_economic_loss_assumption),/not an unconditional terminal BTC loss/i,
    "the BTC figure is not presented as unconditional");
  }else assert.notEqual(economics.maximum_economic_loss_unavailable_reason,null,"an absent payoff says why");
  // The protective long's premium plus fees is never presented as margin.
@@ -236,11 +207,11 @@ test("VOLATILITY: per-leg IV and provenance survive export without changing exec
 });
 
 test("VERSIONING: the schema is bumped and old execution-gated bundles are not reinterpreted",()=>{
- assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION,"3.3.0");
+ assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION,"3.4.0");
  const bundle=buildResearchBundle(referenceOnlyFixture(),now);
  // A bundle claiming the previous version is rejected rather than silently
  // read as if its execution-gated rows were the new canonical economics.
- const stale={...bundle.files,"run.json":bundle.files["run.json"].replace('"3.3.0"','"3.2.0"')};
+ const stale={...bundle.files,"run.json":bundle.files["run.json"].replace('"3.4.0"','"3.3.0"')};
  assert.equal(validateResearchBundle(stale).ok,false);
  // Dropping the new table is a hard failure, not a silent downgrade.
  const withoutTable={...bundle.files,"structure_economics.jsonl":""};

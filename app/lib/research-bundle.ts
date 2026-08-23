@@ -2,16 +2,19 @@ import { assessCandidateAnalyticalTracks, canonicalJson, migrateResearchSelectio
 import { reconcileCandidateSpread } from "./semantic-spread.ts";
 import { buildEventFuturesBaseline, FUTURES_ENGINE_VERSION } from "./futures-baseline.ts";
 import { resolveEventTiming } from "./event-timing.ts";
+import { CONFIGURATION_IDENTITY_VERSION, describeMethodologyStaleness, diagnoseMethodologyStaleness, effectiveConfigurationHash, methodologyIdentity } from "./configuration-identity.ts";
+import { BUILD_PROVENANCE_UNAVAILABLE, buildProvenanceStatus } from "./build-provenance.ts";
 import { buildResearchMarginSnapshot, canonicalMarginReason, LEGACY_MARGIN_NOT_COMPUTED_REASON } from "./research-margin.ts";
 import { CANONICAL_TRACKS, describeCanonicalTracks, legVolatility } from "./research-tracks.ts";
-import { breakEven, payoffExtrema, type ExpiryPayoffInput } from "./expiry-payoff.ts";
+import type { ExpiryPayoffInput } from "./expiry-payoff.ts";
+import { MAXIMUM_ECONOMIC_LOSS_SIGN_CONVENTION, canonicalMaximumEconomicLoss, type CanonicalMaximumEconomicLoss } from "./maximum-economic-loss.ts";
 
-export const RESEARCH_BUNDLE_SCHEMA_VERSION="3.3.0" as const;
+export const RESEARCH_BUNDLE_SCHEMA_VERSION="3.4.0" as const;
 /** Bundle schema versions this app can still import (see importResearchBundle). */
-export const LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS=["1.0.0","2.0.0","2.1.0","2.2.0","2.3.0","3.0.0","3.1.0","3.2.0"] as const;
+export const LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS=["1.0.0","2.0.0","2.1.0","2.2.0","2.3.0","3.0.0","3.1.0","3.2.0","3.3.0"] as const;
 export const RESEARCH_BUNDLE_FILES=["run.json","events.jsonl","underlying_path.jsonl","structure_economics.jsonl","candidates.jsonl","valuations.jsonl","outcomes.jsonl","availability.jsonl","margin_scenarios.jsonl","evidence_trades.jsonl","futures_comparisons.jsonl","futures_path.jsonl"] as const;
 export const REQUIRED_OUTCOMES=["vpoc","invalidation","credit_capture_25","credit_capture_50","credit_capture_70","fixed_3d","fixed_5d","fixed_7d","settlement"] as const;
-export const RESEARCH_REASON_CODES=["entry_priced","entry_unavailable","direct_vwap","model_reconstructed","quality_green","quality_yellow","quality_red","quality_unavailable","valuation_priced","pricing_track_unavailable","outside_executable_window","raw_source_evidence","executable_evidence","missing_target_index","missing_pricing_track","outcome_priced","outcome_not_reached","outcome_after_expiry","outcome_ambiguous_sequence","outcome_reached_but_unpriced","candidate_priced","candidate_unavailable","verified_historical_margin_model_unavailable","margin_no_canonical_valuation_path","margin_missing_index","margin_missing_short_mark","margin_missing_long_mark","margin_historical_rule_unverified","margin_deployment_unsupported","margin_not_recomputed","futures_instrument_unavailable","unsupported_futures_instrument","futures_reference_series_unavailable","futures_reference_series_incomplete","futures_entry_observation_unavailable","futures_exit_observation_unavailable","futures_series_gap_at_entry_decision","futures_series_gap_at_decision","futures_entry_bar_resolution_lag","futures_direction_unavailable","futures_event_vpoc_unavailable","futures_event_invalidation_unavailable","futures_event_resolution_ambiguous","futures_invalidation_distance_unavailable","futures_fee_schedule_unavailable","futures_no_funding_interval_elapsed","matched_endpoint_unavailable","observed_futures_execution_unavailable","funding_unavailable","funding_partial","futures_margin_unavailable"] as const;
+export const RESEARCH_REASON_CODES=["entry_priced","entry_unavailable","direct_vwap","model_reconstructed","quality_green","quality_yellow","quality_red","quality_unavailable","valuation_priced","pricing_track_unavailable","outside_executable_window","raw_source_evidence","executable_evidence","missing_target_index","missing_pricing_track","outcome_priced","outcome_not_reached","outcome_after_expiry","outcome_ambiguous_sequence","outcome_reached_but_unpriced","candidate_priced","candidate_unavailable","verified_historical_margin_model_unavailable","margin_no_canonical_valuation_path","margin_missing_index","margin_missing_short_mark","margin_missing_long_mark","margin_historical_rule_unverified","margin_deployment_unsupported","margin_not_recomputed","futures_instrument_unavailable","unsupported_futures_instrument","futures_reference_series_unavailable","futures_reference_series_incomplete","futures_entry_observation_unavailable","futures_exit_observation_unavailable","futures_series_gap_at_entry_decision","futures_series_gap_at_decision","futures_entry_bar_resolution_lag","futures_direction_unavailable","futures_event_vpoc_unavailable","futures_event_invalidation_unavailable","futures_event_resolution_ambiguous","futures_vpoc_target_not_reached","futures_event_vpoc_not_configured","futures_invalidation_not_reached","futures_event_invalidation_not_configured","futures_exit_endpoint_unavailable","funding_not_evaluated","futures_invalidation_distance_unavailable","futures_fee_schedule_unavailable","futures_no_funding_interval_elapsed","matched_endpoint_unavailable","observed_futures_execution_unavailable","funding_unavailable","funding_partial","futures_margin_unavailable"] as const;
 export type ResearchReasonCode=(typeof RESEARCH_REASON_CODES)[number];
 const RESEARCH_REASON_CODE_SET:ReadonlySet<string>=new Set(RESEARCH_REASON_CODES);
 type Row=Record<string,JsonValue>;
@@ -32,14 +35,31 @@ const missingFieldCode=(field:JsonValue):ResearchReasonCode=>field==="targetInde
 
 export function summarizeResearchBundleErrors(errors:readonly string[],limit=3){const counts=new Map<string,number>();for(const error of errors)counts.set(error,(counts.get(error)??0)+1);const unique=[...counts].map(([message,count])=>({message,count}));const shown=unique.slice(0,limit).map(({message,count})=>`${message}${count>1?` (${count} rows)`:""}`);return{summary:`Research bundle validation failed: ${shown.join(" ")}${unique.length>limit?` ${unique.length-limit} more unique errors.`:""}`,unique,total:errors.length};}
 
-export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toISOString(),datasetUpdatedAt?:string):ResearchBundle{
+/**
+ * Optional facts the exporter cannot derive from the selection store alone.
+ * `tradeDatasetMrEventCount` is the canonical MR-event denominator and comes
+ * from the ACTIVE trade dataset -- never from the selection store, and never a
+ * hardcoded historic count.
+ */
+export interface ResearchBundleContext {tradeDatasetMrEventCount?:number|null}
+export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toISOString(),datasetUpdatedAt?:string,context:ResearchBundleContext={}):ResearchBundle{
  // migrateResearchSelectionStore validates AND normalizes any known schema
  // version (including legacy ones) to the current SelectedStructure shape, so
  // buildResearchBundle never has to special-case an old, pre-scenario store.
  let store;try{store=migrateResearchSelectionStore(value)}catch(e){throw new Error(`Invalid persisted research selections: ${e instanceof Error?e.message:String(e)}`)}
  const selected=store.events.flatMap(e=>e.selectedStructures.map(s=>({e,s}))).sort((a,b)=>a.s.candidateId.localeCompare(b.s.candidateId));
  const runId=`bundle~${store.datasetId}~${generatedAtUtc.replace(/\D/g,"")}`;
- const sourceIds=new Map(store.events.map(e=>[e.eventId,`${e.selectedStructures[0]?.venue??"deribit"}~source~${hash(e.generationSnapshot.configuration)}`]));
+ // ONE configuration identity: order-insensitive, methodology-only, and free of
+ // generation-timestamp noise. The source-run key is derived from it rather
+ // than from an order-sensitive JSON.stringify of the whole snapshot.
+ const configurationHashes=new Map(store.events.map(e=>[e.eventId,effectiveConfigurationHash(e.generationSnapshot.configuration)]));
+ const sourceIds=new Map(store.events.map(e=>[e.eventId,`${e.selectedStructures[0]?.venue??"deribit"}~source~${configurationHashes.get(e.eventId)}`]));
+ // A statistical research bundle must not silently mix methodologies. Events
+ // generated under a different methodology are stale and must be REGENERATED --
+ // never migrated by editing metadata.
+ const distinctMethodologies=[...new Set(configurationHashes.values())];
+ const methodology=diagnoseMethodologyStaleness(store.events.map(e=>({eventId:e.eventId,configuration:e.generationSnapshot.configuration})));
+ if(!methodology.compatible)throw new Error(describeMethodologyStaleness(methodology));
  const events:Row[]=store.events.sort((a,b)=>a.eventId.localeCompare(b.eventId)).map(e=>{const source=obj(e.sourceRun),event=obj(source.event??source);const timing=resolveEventTiming({sourceRun:e.sourceRun,underlyingHourlyPath:e.generationSnapshot.underlyingHourlyPath});const entry=timing.entryTimestamp,vpoc=timing.vpocTriggerTimestamp,level=timing.invalidationPrice,invalid=timing.invalidationDecisionTimestamp,observationEnd=timing.observationEndTimestamp,sequence=timing.sequenceStatus;const venue=e.selectedStructures[0]?.venue??e.generationSnapshot.candidates[0]?.venue??"deribit";return row({run_id:runId,source_run_id:sourceIds.get(e.eventId),event_id:e.eventId,venue,signal_timestamp_utc:typeof event.entryDate==="string"?isoMs(Date.parse(`${event.entryDate}T00:00:00Z`),`event ${e.eventId} entryDate`):null,entry_timestamp_utc:isoMs(entry,`event ${e.eventId} entryTimestamp`),entry_decision_available_timestamp_utc:isoMs(entry,`event ${e.eventId} entryTimestamp`),entry_precision:"hourly",direction:event.direction??null,entry_price:event.entryPrice??null,extreme_price:event.extremePrice??null,vpoc_price:event.vpocPrice??null,invalidation_price:level,range_low:event.rangeLow??null,range_high:event.rangeHigh??null,vpoc_trigger_timestamp_utc:iso(vpoc),vpoc_decision_timestamp_utc:iso(timing.vpocDecisionTimestamp),invalidation_trigger_timestamp_utc:iso(timing.invalidationTriggerTimestamp),invalidation_decision_timestamp_utc:iso(invalid),observation_end_timestamp_utc:isoMs(observationEnd,`event ${e.eventId} observation end`),censoring_status:sequence==="unresolved"?"right_censored":"resolved",sequence_status:sequence,exit_timestamp_utc:iso(num(event.exitTimestamp)),exit_price:event.exitPrice??null,duration_hours:entry!==null&&observationEnd!==null?(observationEnd-entry)/36e5:null,vpoc_distance:event.vpocPrice!=null&&event.entryPrice!=null?Number(event.vpocPrice)-Number(event.entryPrice):null,invalidation_distance:level!==null&&event.entryPrice!=null?level-Number(event.entryPrice):null})});
  const paths:Row[]=store.events.flatMap(e=>e.generationSnapshot.underlyingHourlyPath.map(c=>row({run_id:runId,source_run_id:sourceIds.get(e.eventId),event_id:e.eventId,venue:e.selectedStructures[0]?.venue??"deribit",timestamp_utc:iso(c.openTime),open:c.open,high:c.high,low:c.low,close:c.close,index_price:c.close,source:"stored-event-candle",interval:"1h",timestamp_convention:"candle-open"}))).sort((a,b)=>String(a.event_id).localeCompare(String(b.event_id))||String(a.timestamp_utc).localeCompare(String(b.timestamp_utc)));
 /**
@@ -79,14 +99,13 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
   const referenceEntryTs=num(refEntry.valuationTimestamp)??num(refEntry.targetTimestamp);
   const actualWidth=num(c.actualWidth)??(shortStrike!==null&&longStrike!==null?Math.abs(shortStrike-longStrike):null);
   const requestedWidth=num(generated?.requestedStrikes?.width??null);
-  // The exact inverse payoff, or an explicit unavailability -- never width minus credit.
-  let maxLoss:{btc:number|null;usd:number|null;breakeven:number|null;reason:string|null}={btc:null,usd:null,breakeven:null,reason:"Reference entry economics are incomplete, so the exact inverse payoff cannot be evaluated."};
+  // ONE canonical maximum-economic-loss calculation, shared with the margin
+  // layer -- never width minus credit, and never the divergent BTC-settlement
+  // tail extremum, which is a tail artifact rather than a terminal trade loss.
+  let maxLoss:CanonicalMaximumEconomicLoss={status:"unavailable",usd:null,btcAtReferenceIndex:null,referenceIndex:index,breakevenIndex:null,method:null,methodVersion:null,assumption:null,signConvention:null,reason:"Reference entry economics are incomplete, so the exact inverse payoff cannot be evaluated."};
   if(optionType&&(optionType==="C"||optionType==="P")&&shortStrike!==null&&longStrike!==null&&shortPremium!==null&&longPremium!==null&&index!==null&&index>0&&quantity!==null&&quantity>0&&feesReference!==null&&feesReference>=0&&expiry!==null){
    const input:ExpiryPayoffInput={optionType,shortStrike,longStrike,shortEntryPremiumBtc:shortPremium,longEntryPremiumBtc:longPremium,entryIndex:index,amount:quantity,openingFeesBtc:feesReference,expiryTimestamp:expiry};
-   try{
-    const usd=payoffExtrema(input,"usd-cash-flow"),btc=payoffExtrema(input,"btc-settlement"),be=breakEven(input,"usd-cash-flow");
-    maxLoss={btc:btc.maximumLoss,usd:usd.maximumLoss,breakeven:be?be.index:null,reason:null};
-   }catch(error){maxLoss={btc:null,usd:null,breakeven:null,reason:`The canonical strikes and premiums do not form a valid credit spread: ${error instanceof Error?error.message:String(error)}`}}
+   maxLoss=canonicalMaximumEconomicLoss(input);
   }
   return row({
    run_id:runId,source_run_id:sourceIds.get(e.eventId),venue:s.venue,event_id:e.eventId,candidate_id:s.candidateId,
@@ -108,16 +127,18 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
    modeled_conservative_gross_native:modeledConservative.status==="evaluated"?num(modeledEntry.grossSpreadBtc):null,
    modeled_conservative_net_native:modeledConservative.status==="evaluated"?num(modeledEntry.netOpeningCashFlowBtc):null,
    modeled_conservative_status:typeof modeledConservative.status==="string"?modeledConservative.status:"not_evaluated",
-   breakeven_index:maxLoss.breakeven,
-   breakeven_method:maxLoss.breakeven===null?null:"numerical bisection over the canonical inverse net payoff",
-   maximum_economic_loss_native:maxLoss.btc,maximum_economic_loss_usd:maxLoss.usd,
-   maximum_economic_loss_units:{native:"BTC",quote:"USD"},
-   maximum_economic_loss_reference_index:index,
-   maximum_economic_loss_method:maxLoss.btc===null?null:"exact inverse-option expiry payoff over strike and tail settlement indices, including per-leg delivery fees",
-   maximum_economic_loss_assumption:maxLoss.btc===null?null:"USD figures convert the native BTC payoff at the stated reference index; the BTC maximum loss is not unconditional and varies with the settlement index.",
+   breakeven_index:maxLoss.breakevenIndex,
+   breakeven_method:maxLoss.breakevenIndex===null?null:"numerical bisection over the canonical inverse net payoff",
+   maximum_economic_loss_status:maxLoss.status,
+   maximum_economic_loss_native:maxLoss.btcAtReferenceIndex,maximum_economic_loss_usd:maxLoss.usd,
+   maximum_economic_loss_units:{native:"BTC",quote:"USD",sign_convention:MAXIMUM_ECONOMIC_LOSS_SIGN_CONVENTION},
+   maximum_economic_loss_reference_index:maxLoss.referenceIndex??index,
+   maximum_economic_loss_method:maxLoss.method,
+   maximum_economic_loss_method_version:maxLoss.methodVersion,
+   maximum_economic_loss_assumption:maxLoss.assumption,
    maximum_economic_loss_unavailable_reason:maxLoss.reason,
    credit_per_actual_width:netReference!==null&&actualWidth!==null&&actualWidth>0&&index!==null?netReference*index/actualWidth:null,
-   credit_per_maximum_economic_loss:netReference!==null&&maxLoss.usd!==null&&maxLoss.usd!==0&&index!==null?netReference*index/Math.abs(maxLoss.usd):null,
+   credit_per_maximum_economic_loss:netReference!==null&&maxLoss.usd!==null&&maxLoss.usd!==0&&index!==null?netReference*index/maxLoss.usd:null,
    // Every contracted track carries an explicit status here, so a consumer can
    // tell "unsupported for this structure, and why" from "absent from the file".
    tracks:describeCanonicalTracks(s as unknown as Record<string,unknown>).map(t=>({
@@ -126,6 +147,11 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
     valuation_basis:t.valuationBasis,execution_evidence:t.executionEvidence,
     valuation_source:t.valuationSource,engine_version:t.engineVersion,
     execution_scenario:t.executionScenario,provenance:t.provenance,
+    // What the producing engine actually persisted. This is what lets the
+    // validator tell "the source track produced no outcomes" (honest absence)
+    // from "the exporter silently dropped outcomes that existed".
+    source_valuation_point_count:t.valuationPath.length,
+    source_outcome_snapshot_count:t.outcomeSnapshots.length,
    })),
    ...economic,
   });
@@ -276,8 +302,9 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
    ||persisted.unavailabilityReason===LEGACY_MARGIN_NOT_COMPUTED_REASON;
   const m=stale?obj(buildResearchMarginSnapshot(s)):persisted,available=m.status==="available"||m.state==="ok",deployment=obj(m.deployment),openingIm=num(m.openingInitialMarginBtc)??num(m.initialMarginBtc),openingMm=num(m.openingMaintenanceMarginBtc)??num(m.maintenanceMarginBtc),peakIm=num(m.peakInitialMarginBtc),peakMm=num(m.peakMaintenanceMarginBtc);return row({run_id:runId,source_run_id:sourceIds.get(e.eventId),event_id:e.eventId,candidate_id:s.candidateId,margin_scenario_id:`${s.venue}~margin~${hash(s.candidateId)}`,venue:s.venue,margin_status:available?"available":"unavailable",margin_model:deployment.model??null,method_version:m.engineVersion??m.ruleVersion??null,rule_version:m.ruleVersion??null,provenance:m.provenance??null,account_configuration:deployment.accountAssumption??null,collateral_currency:deployment.collateralCurrency??"BTC",settlement_currency:"BTC",incremental_initial_margin:available?openingIm:null,incremental_maintenance_margin:available?openingMm:null,peak_initial_margin:available?peakIm:null,peak_maintenance_margin:available?peakMm:null,peak_timestamp_utc:available?iso(num(m.peakInitialTimestamp)??num(m.observationTimestamp)):null,capital_days_margin:available?num(m.capitalDaysMarginBtc):null,maximum_loss_native:num(m.maximumEconomicLossBtcAtReferenceIndex)??num(m.theoreticalMaximumSpreadLossBtc),
    maximum_loss_usd:num(m.maximumEconomicLossUsd),
-   maximum_loss_units:{native:"BTC",quote:"USD"},
+   maximum_loss_units:{native:"BTC",quote:"USD",sign_convention:MAXIMUM_ECONOMIC_LOSS_SIGN_CONVENTION},
    maximum_loss_method:typeof m.maximumLossMethod==="string"?m.maximumLossMethod:null,
+   maximum_loss_method_version:typeof m.maximumLossMethodVersion==="string"?m.maximumLossMethodVersion:null,
    maximum_loss_assumption:typeof m.maximumLossAssumption==="string"?m.maximumLossAssumption:null,reference_index:num(m.referenceIndex)??num(m.indexPrice),calculation_method:available?(m.method??m.evidenceModel??"historical Standard Margin reconstruction"):null,data_quality:available?"historical_formula_reconstruction":"unavailable",reason_codes:available?[]:[String(m.reasonCode??canonicalMarginReason(m.reason??m.unavailabilityReason))],unavailable_reason:available?null:String(m.reason??m.unavailabilityReason??"Verified historical margin reconstruction is unavailable."),margin_measurement:"model_estimated_historical_requirement",
    margin_measurement_note:"Reconstructed from the versioned Deribit Standard Margin formula against causal historical marks. This is a model-estimated historical requirement, not evidence of the balance Deribit actually reserved in the historical account.",
    capital_days_basis:available?"initial_margin_btc":null,
@@ -290,9 +317,9 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
  const futuresBuilt=store.events.map(e=>buildEventFuturesBaseline(e,"vpoc"));
  const futures=futuresBuilt.map(({comparison},i)=>row({run_id:runId,source_run_id:sourceIds.get(store.events[i].eventId),venue:"deribit",...comparison}));
  const futuresPath=futuresBuilt.flatMap(({path},i)=>path.map(p=>row({run_id:runId,source_run_id:sourceIds.get(store.events[i].eventId),venue:"deribit",...p})));
- const sourceRuns=store.events.map(e=>({source_run_id:sourceIds.get(e.eventId),venue:e.selectedStructures[0]?.venue??e.generationSnapshot.candidates[0]?.venue??"deribit",event_id:e.eventId,configuration:e.generationSnapshot.configuration,generation_timestamp_utc:e.generationSnapshot.generatedAtUtc}));
+ const sourceRuns=store.events.map(e=>({source_run_id:sourceIds.get(e.eventId),venue:e.selectedStructures[0]?.venue??e.generationSnapshot.candidates[0]?.venue??"deribit",event_id:e.eventId,configuration:e.generationSnapshot.configuration,effective_configuration_hash:configurationHashes.get(e.eventId),configuration_identity_version:CONFIGURATION_IDENTITY_VERSION,application_build:e.generationSnapshot.configuration.applicationBuild??BUILD_PROVENANCE_UNAVAILABLE,generation_timestamp_utc:e.generationSnapshot.generatedAtUtc}));
  const migratedValuationWindowDiagnostics=selected.flatMap(({e,s})=>(["maker","taker"] as const).flatMap(executionScenario=>{const diagnostic=s.executionScenarios[executionScenario].valuationWindowMigration;return diagnostic?[{event_id:e.eventId,candidate_id:s.candidateId,execution_scenario:executionScenario,...diagnostic}]:[]}));
- const run=row({schema_version:RESEARCH_BUNDLE_SCHEMA_VERSION,futures_engine_version:FUTURES_ENGINE_VERSION,valuation_window_diagnostics:{migrated:migratedValuationWindowDiagnostics,builder_omitted_before_entry:omittedValuationsBeforeEntry,builder_omitted_after_expiry:omittedValuationsAfterExpiry},run_id:runId,generated_at_utc:generatedAtUtc,dataset_id:store.datasetId,dataset_version_updated_at:datasetUpdatedAt??store.updatedAtUtc,application_commit_build_id:[...new Set(sourceRuns.map(x=>x.configuration.applicationBuild).filter(Boolean))],pricing_engine_versions:[...new Set(sourceRuns.map(x=>x.configuration.pricingEngineVersion))],quality_rules_versions:[...new Set(sourceRuns.map(x=>x.configuration.qualityRulesVersion))],valuation_methodology_version:"simple-model-reconstruction/1.0.0",valuation_intervals:[...new Set(sourceRuns.map(x=>x.configuration.valuationInterval))],timezone:"UTC",included_pricing_tracks:["raw_vwap","iv_normalized"],included_execution_scenarios:["maker","taker"],dte_windows:sourceRuns.map(x=>x.configuration.dteWindows),expiry_selection_modes:[...new Set(sourceRuns.map(x=>x.configuration.expirySelectionMode))],evidence_windows:sourceRuns.map(x=>x.configuration.historicalEvidenceWindows),synchronization_thresholds:sourceRuns.map(x=>x.configuration.synchronizationThresholds),quality_thresholds:sourceRuns.map(x=>x.configuration.qualityThresholds),model_assumptions:sourceRuns.map(x=>x.configuration.modelAssumptions),fee_assumptions:sourceRuns.map(x=>x.configuration.feeAssumptions),settlement_rules:sourceRuns.map(x=>x.configuration.settlementRules),trade_dataset_mr_event_count:null,persisted_research_event_count:events.length,events_with_generated_candidates_count:new Set(availability.map(x=>x.event_id)).size,events_with_selected_candidates_count:new Set(candidates.map(x=>x.event_id)).size,events_with_stored_underlying_paths_count:new Set(paths.map(x=>x.event_id)).size,selected_structure_count:new Set(candidates.map(x=>x.candidate_id)).size,selected_structure_execution_row_count:candidates.length,generated_denominator_count:availability.length,venues:[...new Set(store.events.flatMap(e=>e.generationSnapshot.candidates.map(c=>c.venue))) ],venue_configuration:{deribit:economic,bybit:null,binance:null},source_runs:sourceRuns,table_availability:{underlying_path:paths.length?"available":"unavailable",margin_scenarios:margins.some(m=>m.margin_status==="available")?"available":"unavailable",evidence_trades:evidence.length?"available":"unavailable",futures_comparisons:futures.some(f=>f.availability==="available")?"available":"unavailable",futures_path:futuresPath.length?"available":"unavailable"}});
+ const run=row({schema_version:RESEARCH_BUNDLE_SCHEMA_VERSION,futures_engine_version:FUTURES_ENGINE_VERSION,valuation_window_diagnostics:{migrated:migratedValuationWindowDiagnostics,builder_omitted_before_entry:omittedValuationsBeforeEntry,builder_omitted_after_expiry:omittedValuationsAfterExpiry},run_id:runId,generated_at_utc:generatedAtUtc,dataset_id:store.datasetId,dataset_version_updated_at:datasetUpdatedAt??store.updatedAtUtc,application_commit_build_id:[...new Set(sourceRuns.map(x=>x.application_build))],pricing_engine_versions:[...new Set(sourceRuns.map(x=>x.configuration.pricingEngineVersion))],quality_rules_versions:[...new Set(sourceRuns.map(x=>x.configuration.qualityRulesVersion))],valuation_methodology_version:"simple-model-reconstruction/1.0.0",valuation_intervals:[...new Set(sourceRuns.map(x=>x.configuration.valuationInterval))],timezone:"UTC",included_pricing_tracks:["raw_vwap","iv_normalized"],included_execution_scenarios:["maker","taker"],dte_windows:sourceRuns.map(x=>x.configuration.dteWindows),expiry_selection_modes:[...new Set(sourceRuns.map(x=>x.configuration.expirySelectionMode))],evidence_windows:sourceRuns.map(x=>x.configuration.historicalEvidenceWindows),synchronization_thresholds:sourceRuns.map(x=>x.configuration.synchronizationThresholds),quality_thresholds:sourceRuns.map(x=>x.configuration.qualityThresholds),model_assumptions:sourceRuns.map(x=>x.configuration.modelAssumptions),fee_assumptions:sourceRuns.map(x=>x.configuration.feeAssumptions),settlement_rules:sourceRuns.map(x=>x.configuration.settlementRules),trade_dataset_mr_event_count:num(context.tradeDatasetMrEventCount??null)??null,trade_dataset_mr_event_count_source:num(context.tradeDatasetMrEventCount??null)!==null?"active_trade_dataset":"unavailable",persisted_research_event_count:events.length,events_with_generated_candidates_count:new Set(availability.map(x=>x.event_id)).size,events_with_selected_candidates_count:new Set(candidates.map(x=>x.event_id)).size,events_with_stored_underlying_paths_count:new Set(paths.map(x=>x.event_id)).size,selected_structure_count:new Set(candidates.map(x=>x.candidate_id)).size,selected_structure_execution_row_count:candidates.length,generated_denominator_count:availability.length,venues:[...new Set(store.events.flatMap(e=>e.generationSnapshot.candidates.map(c=>c.venue))) ],venue_configuration:{deribit:economic,bybit:null,binance:null},effective_configuration_hash:distinctMethodologies[0]??null,methodology_identity:methodologyIdentity(store.events[0]?.generationSnapshot.configuration??{}) as unknown as JsonValue,build_provenance_status:buildProvenanceStatus(sourceRuns.map(x=>x.application_build)),source_runs:sourceRuns,table_availability:{underlying_path:paths.length?"available":"unavailable",structure_economics:structureEconomics.some(r=>r.maximum_economic_loss_status==="available")?"available":"unavailable",candidates:candidates.length?"available":"unavailable",availability:availability.length?"available":"unavailable",valuations:[...valuations,...independentValuations].some(v=>v.valuation_status==="priced")?"available":"unavailable",outcomes:[...outcomes,...independentOutcomes].some(o=>o.status==="evaluated")?"available":"unavailable",margin_scenarios:margins.some(m=>m.margin_status==="available")?"available":"unavailable",evidence_trades:evidence.length?"available":"unavailable",futures_comparisons:futures.some(f=>f.availability==="available")?"available":"unavailable",futures_path:futuresPath.length?"available":"unavailable"}});
  const files=Object.fromEntries(RESEARCH_BUNDLE_FILES.map(name=>[name,name==="run.json"?JSON.stringify(run)+"\n":lines(({"events.jsonl":events,"underlying_path.jsonl":paths,"structure_economics.jsonl":structureEconomics,"candidates.jsonl":candidates,"valuations.jsonl":[...valuations,...independentValuations],"outcomes.jsonl":[...outcomes,...independentOutcomes],"availability.jsonl":availability,"margin_scenarios.jsonl":margins,"evidence_trades.jsonl":evidence,"futures_comparisons.jsonl":futures,"futures_path.jsonl":futuresPath})[name]??[])])) as ResearchBundle["files"];
  const validation=validateResearchBundle(files);if(!validation.ok)throw new Error(summarizeResearchBundleErrors(validation.errors).summary);return{files,run};
 }
@@ -338,6 +365,134 @@ export function validateResearchBundle(files:Partial<Record<string,string>>):{ok
  const statusEnums:Record<string,Set<string>>={"availability.jsonl":new Set(["priced","unavailable"]),"valuations.jsonl":new Set(["priced","unavailable"]),"margin_scenarios.jsonl":new Set(["available","unavailable"])};for(const [name,allowed] of Object.entries(statusEnums))for(const r of rows(name)){const key=name==="availability.jsonl"?"status":name==="valuations.jsonl"?"valuation_status":"margin_status";if(!allowed.has(String(r[key])))errors.push(`${name} has unknown ${key}: ${String(r[key])}.`)}
  for(const r of rows("margin_scenarios.jsonl")){const codes=Array.isArray(r.reason_codes)?r.reason_codes:[];if(r.margin_status==="available"&&codes.length)errors.push("margin_scenarios.jsonl available row has reason codes.");if(r.margin_status==="unavailable"&&!codes.length)errors.push("margin_scenarios.jsonl unavailable row has no canonical reason code.");}
  const reason=/^[a-z0-9][a-z0-9_-]*$/;for(const [name,table] of parsed)for(const r of table)for(const key of ["entry_reason_codes","reason_codes","unavailable_reason_codes","missing_field_codes"])if(Array.isArray(r[key]))for(const code of r[key] as JsonValue[])if(typeof code!=="string"||!reason.test(code)||!RESEARCH_REASON_CODE_SET.has(code))errors.push(`${name} ${key} has unknown reason code ${String(code)}.`);
+ // ---------------------------------------------------------------------------
+ // Final integrity rules. These extend the existing validator rather than
+ // standing beside it, so there is exactly one place a bundle is judged.
+ // ---------------------------------------------------------------------------
+ const economicsByCandidate=new Map(rows("structure_economics.jsonl").map(r=>[String(r.candidate_id),r]));
+ const nearlyEqual=(a:number,b:number)=>Math.abs(a-b)<=1e-9*Math.max(1,Math.abs(a),Math.abs(b));
+ for(const r of rows("structure_economics.jsonl")){
+  const id=String(r.candidate_id);
+  // Requested-vs-actual provenance and the actual horizon must survive export.
+  for(const key of ["requested_short_strike","requested_long_strike","requested_width","actual_short_strike","actual_long_strike","actual_width","width_substituted","expiry_timestamp_utc","reference_entry_timestamp_utc","actual_dte_hours","actual_dte_days"])
+   if(!(key in r))errors.push(`Structure economics ${id} is missing ${key}.`);
+  const units=obj(r.maximum_economic_loss_units as JsonValue);
+  if(units.sign_convention!=="positive_magnitude")errors.push(`Structure economics ${id} does not state the canonical maximum-loss sign convention.`);
+  if(r.maximum_economic_loss_status==="available"){
+   const usd=num(r.maximum_economic_loss_usd),native=num(r.maximum_economic_loss_native),index=num(r.maximum_economic_loss_reference_index);
+   if(usd===null||usd<0)errors.push(`Structure economics ${id} reports an available maximum loss that is not a positive USD magnitude.`);
+   if(index===null||index<=0)errors.push(`Structure economics ${id} states no positive reference index for its BTC maximum loss.`);
+   if(usd!==null&&index!==null&&index>0&&native!==null&&!nearlyEqual(native,usd/index))errors.push(`Structure economics ${id} BTC maximum loss is not the USD loss converted at the stated reference index.`);
+   if(!r.maximum_economic_loss_method||!r.maximum_economic_loss_method_version)errors.push(`Structure economics ${id} does not name its maximum-loss method and version.`);
+  }else if(r.maximum_economic_loss_unavailable_reason==null)errors.push(`Structure economics ${id} has no maximum loss and no reason.`);
+  // The protective long's premium plus fees is an economic cost, never an
+  // account requirement; nothing in this table may be labelled as margin.
+  for(const key of Object.keys(r))if(/margin|required_balance/i.test(key))errors.push(`Structure economics ${id} names a capital requirement (${key}); margin belongs in margin_scenarios.jsonl.`);
+ }
+ // One canonical maximum-loss calculation: the two economic tables must agree.
+ for(const m of rows("margin_scenarios.jsonl")){
+  const economics=economicsByCandidate.get(String(m.candidate_id));if(!economics)continue;
+  const marginUsd=num(m.maximum_loss_usd),economicsUsd=num(economics.maximum_economic_loss_usd);
+  if(marginUsd!==null&&economicsUsd!==null&&!nearlyEqual(marginUsd,economicsUsd))errors.push(`${String(m.candidate_id)} reports different maximum economic losses in structure_economics (${economicsUsd}) and margin_scenarios (${marginUsd}).`);
+  const marginNative=num(m.maximum_loss_native),economicsNative=num(economics.maximum_economic_loss_native);
+  if(marginNative!==null&&economicsNative!==null&&!nearlyEqual(marginNative,economicsNative))errors.push(`${String(m.candidate_id)} reports different BTC maximum-loss representations across the two economic tables.`);
+  const marginIndex=num(m.reference_index),economicsIndex=num(economics.maximum_economic_loss_reference_index);
+  if(marginIndex!==null&&economicsIndex!==null&&!nearlyEqual(marginIndex,economicsIndex))errors.push(`${String(m.candidate_id)} states different maximum-loss reference indices across the two economic tables.`);
+ }
+ // Every selected structure has a margin scenario, available or explicitly not.
+ const marginCandidates=new Set(rows("margin_scenarios.jsonl").map(r=>String(r.candidate_id)));
+ for(const id of candidateIds)if(!marginCandidates.has(String(id)))errors.push(`Selected candidate ${String(id)} has no margin scenario row.`);
+ // --- analytics tracks: rows must reflect what the producing engine persisted ---
+ const trackRows=new Map<string,Row>();
+ for(const r of rows("structure_economics.jsonl"))for(const t of (Array.isArray(r.tracks)?r.tracks:[]))trackRows.set(`${String(r.candidate_id)}~${String(obj(t as JsonValue).track)}`,obj(t as JsonValue));
+ const countBy=(name:string)=>{const counts=new Map<string,number>();for(const r of rows(name)){const key=`${String(r.candidate_id)}~${String(r.analytics_track)}`;counts.set(key,(counts.get(key)??0)+1)}return counts};
+ const valuationCounts=countBy("valuations.jsonl"),outcomeCounts=countBy("outcomes.jsonl");
+ for(const [key,t] of trackRows){
+  const valued=t.status==="valued"||t.status==="evaluated";
+  if(valued&&Number(t.source_valuation_point_count??0)>0&&!(valuationCounts.get(key)??0))errors.push(`${key} persisted ${String(t.source_valuation_point_count)} valuation points but exported none.`);
+  // Honest absence is allowed: a track whose engine produced no outcome
+  // snapshots exports none. Only a DROP of existing snapshots is an error.
+  if(Number(t.source_outcome_snapshot_count??0)>0&&!(outcomeCounts.get(key)??0))errors.push(`${key} persisted ${String(t.source_outcome_snapshot_count)} outcome snapshots but exported none.`);
+ }
+ // An outcome row may state "this labelled outcome was not reached" without a
+ // snapshot, but it can never claim an EVALUATED result the engine never produced.
+ for(const r of rows("outcomes.jsonl")){
+  const key=`${String(r.candidate_id)}~${String(r.analytics_track)}`,descriptor=trackRows.get(key);
+  if(r.status==="evaluated"&&descriptor&&Number(descriptor.source_outcome_snapshot_count??0)===0)errors.push(`${key} exports an evaluated ${String(r.outcome_type)} outcome that no persisted snapshot supports.`);
+ }
+ const seenValuation=new Set<string>();
+ for(const r of rows("valuations.jsonl")){
+  const track=String(r.analytics_track),key=`${String(r.candidate_id)}~${track}`,descriptor=trackRows.get(key);
+  if(!descriptor){errors.push(`Valuation row references undeclared analytics track ${track} for ${String(r.candidate_id)}.`);continue}
+  const identity=`${key}~${String(r.timestamp_utc)}~${String(r.pricing_track??"single")}`;
+  if(seenValuation.has(identity))errors.push(`Duplicate valuation row for ${identity}.`);else seenValuation.add(identity);
+  const at=Date.parse(String(r.timestamp_utc)),entry=Date.parse(String(descriptor.entry_timestamp_utc));
+  const expiry=Date.parse(String(economicsByCandidate.get(String(r.candidate_id))?.expiry_timestamp_utc));
+  if(Number.isFinite(at)&&Number.isFinite(entry)&&at<entry)errors.push(`${key} has a valuation at ${String(r.timestamp_utc)} before that track's own entry ${String(descriptor.entry_timestamp_utc)}.`);
+  if(Number.isFinite(at)&&Number.isFinite(expiry)&&at>expiry)errors.push(`${key} has a valuation at ${String(r.timestamp_utc)} after expiry.`);
+ }
+ // A delayed track is never backdated onto the reference entry.
+ for(const r of rows("structure_economics.jsonl")){
+  const reference=Date.parse(String(obj(trackRows.get(`${String(r.candidate_id)}~reference_fair_value`)??{}).entry_timestamp_utc));
+  for(const track of ["delayed_maker","delayed_taker"]){
+   const descriptor=trackRows.get(`${String(r.candidate_id)}~${track}`);if(!descriptor)continue;
+   const entry=Date.parse(String(descriptor.entry_timestamp_utc));
+   if(Number.isFinite(entry)&&Number.isFinite(reference)&&entry<reference)errors.push(`${String(r.candidate_id)} ${track} opens before the reference entry; a delayed fill is never backdated.`);
+  }
+ }
+ // Per-leg IV survives with its own units and observation status or not at all.
+ for(const r of rows("valuations.jsonl"))for(const leg of ["short_leg_volatility","long_leg_volatility"]){
+  const volatility=obj(r[leg] as JsonValue);if(!Object.keys(volatility).length)continue;
+  if(volatility.iv_decimal!=null&&(volatility.iv_units==null||volatility.observation==null))errors.push(`${String(r.candidate_id)} ${leg} carries an IV without its units and observation status.`);
+ }
+ // --- per event ---
+ for(const r of rows("events.jsonl")){
+  const unresolved=r.sequence_status==="unresolved";
+  if(unresolved!==(r.censoring_status==="right_censored"))errors.push(`Event ${String(r.event_id)} censoring status contradicts its sequence status.`);
+ }
+ const futuresPathByComparison=new Map<string,number>();
+ for(const r of rows("futures_path.jsonl"))futuresPathByComparison.set(String(r.comparison_id),(futuresPathByComparison.get(String(r.comparison_id))??0)+1);
+ for(const r of rows("futures_comparisons.jsonl")){
+  if(!eventIds.has(r.event_id))errors.push(`Futures comparison ${String(r.comparison_id)} has a broken event foreign key.`);
+  const endpoints=Array.isArray(r.endpoints)?r.endpoints.map(x=>obj(x as JsonValue)):[];
+  const anyEndpointAvailable=endpoints.some(e=>e.status==="available");
+  // One unavailable policy endpoint never erases the rest of the benchmark.
+  if(anyEndpointAvailable&&r.availability!=="available")errors.push(`Futures comparison ${String(r.comparison_id)} discards an observable benchmark because one endpoint is unavailable.`);
+  if(r.availability==="available"&&!(futuresPathByComparison.get(String(r.comparison_id))??0))errors.push(`Futures comparison ${String(r.comparison_id)} is available but exported no causal path.`);
+  for(const endpoint of endpoints)if(endpoint.status!=="available"&&endpoint.reason_code==null)errors.push(`Futures comparison ${String(r.comparison_id)} has an unavailable ${String(endpoint.policy)} endpoint with no reason code.`);
+ }
+ for(const r of rows("futures_path.jsonl"))if(!eventIds.has(r.event_id))errors.push(`Futures path row has a broken event foreign key: ${String(r.event_id)}.`);
+ // --- run level ---
+ const configurationHashes=new Set((Array.isArray(run.source_runs)?run.source_runs:[]).map(x=>obj(x as JsonValue).effective_configuration_hash).filter(x=>x!=null));
+ if(configurationHashes.size>1)errors.push(`Aggregate run mixes ${configurationHashes.size} research methodologies: ${[...configurationHashes].join(", ")}.`);
+ if(configurationHashes.size===1&&run.effective_configuration_hash!==[...configurationHashes][0])errors.push("run.json effective_configuration_hash disagrees with its source runs.");
+ const builds=(Array.isArray(run.source_runs)?run.source_runs:[]).map(x=>obj(x as JsonValue).application_build);
+ const expectedBuildStatus=builds.length>0&&builds.every(b=>typeof b==="string"&&b.trim()!==""&&b!=="unavailable:no-build-metadata")?"available":"unavailable";
+ if(run.build_provenance_status!==expectedBuildStatus)errors.push(`run.json build_provenance_status is ${String(run.build_provenance_status)} but its source runs are ${expectedBuildStatus}.`);
+ const datasetCount=num(run.trade_dataset_mr_event_count);
+ if(datasetCount!==null&&datasetCount<Number(run.persisted_research_event_count??0))errors.push(`The active dataset reports ${datasetCount} MR events, fewer than the ${String(run.persisted_research_event_count)} persisted research events.`);
+ if(datasetCount===null&&run.trade_dataset_mr_event_count_source!=="unavailable")errors.push("run.json claims a dataset denominator source without a denominator.");
+ // The manifest is derived from actual output in BOTH directions: usable rows
+ // can never read as unavailable, and no usable rows can never read as available.
+ const availabilityChecks:Array<[string,boolean]>=[
+  ["underlying_path",rows("underlying_path.jsonl").length>0],
+  ["structure_economics",rows("structure_economics.jsonl").some(r=>r.maximum_economic_loss_status==="available")],
+  ["candidates",rows("candidates.jsonl").length>0],
+  ["availability",rows("availability.jsonl").length>0],
+  ["valuations",rows("valuations.jsonl").some(r=>r.valuation_status==="priced")],
+  ["outcomes",rows("outcomes.jsonl").some(r=>r.status==="evaluated")],
+  ["margin_scenarios",rows("margin_scenarios.jsonl").some(r=>r.margin_status==="available")],
+  ["evidence_trades",rows("evidence_trades.jsonl").length>0],
+  ["futures_comparisons",rows("futures_comparisons.jsonl").some(r=>r.availability==="available")],
+  ["futures_path",rows("futures_path.jsonl").length>0],
+ ];
+ const manifest=obj(run.table_availability as JsonValue);
+ for(const [table,usable] of availabilityChecks){
+  const stated=manifest[table];
+  if(stated===undefined)errors.push(`run.json does not state availability for ${table}.`);
+  else if(usable&&stated!=="available")errors.push(`${table} has usable rows but the manifest says ${String(stated)}.`);
+  else if(!usable&&stated==="available")errors.push(`${table} has no usable rows but the manifest says available.`);
+ }
  // Completeness is checked per (candidate_id, execution_scenario): an
  // evaluated scenario must have both pricing tracks and every required
  // outcome; a genuinely not_evaluated scenario correctly has zero rows here
