@@ -58,7 +58,8 @@ const isScalar = (value: unknown) => value === null || ["string", "number", "boo
  * Stable rendering. Object keys are sorted everywhere. Arrays whose members are
  * all scalars are sorted too — in this schema those are set-like
  * (`pricingTracks` is checkbox order; `historicalEvidenceWindows.entryMinutes`
- * is built from a Set) — EXCEPT at a path listed in
+ * declares the set-like causal model/reconstruction evidence horizon, not the
+ * progressive immediate execution search sequence) — EXCEPT at a path listed in
  * `ORDER_SIGNIFICANT_CONFIGURATION_PATHS`, where the order is the methodology.
  * Arrays containing objects always keep their order, because there the position
  * may be meaningful.
