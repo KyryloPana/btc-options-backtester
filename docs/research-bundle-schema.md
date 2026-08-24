@@ -1,6 +1,6 @@
 # Research Bundle Schema
 
-Schema **3.5.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and `events.jsonl`, `underlying_path.jsonl`, `candidates.jsonl`, `valuations.jsonl`, `outcomes.jsonl`, `availability.jsonl`, `margin_scenarios.jsonl`, `evidence_trades.jsonl`, `structure_economics.jsonl`, `futures_comparisons.jsonl`, and `futures_path.jsonl`. Empty tables remain empty files and availability is stated in `run.json`.
+Schema **3.6.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and `events.jsonl`, `underlying_path.jsonl`, `candidates.jsonl`, `valuations.jsonl`, `outcomes.jsonl`, `availability.jsonl`, `margin_scenarios.jsonl`, `evidence_trades.jsonl`, `structure_economics.jsonl`, `futures_comparisons.jsonl`, and `futures_path.jsonl`. Empty tables remain empty files and availability is stated in `run.json`.
 
 **`candidates.jsonl` = selected performance numerator; `availability.jsonl` = complete generated denominator.** Reports calculate coverage from availability and recompute extrema from valuations, never UI summaries.
 
@@ -43,6 +43,16 @@ Settlement **delivery fees are excluded** and reported separately in `settlement
 **Denominator.** `trade_dataset_mr_event_count` comes from the active trade dataset (`trade_dataset_mr_event_count_source`), never from the selection store and never a hardcoded historic count.
 
 **Manifest.** `table_availability` covers every canonical table and is derived from actual exported content. The validator checks it in both directions: usable rows can never read as unavailable, and no usable rows can never read as available.
+
+### Canonical outcome identity (3.6.0)
+
+Outcome identity comes from ONE semantic table (`research-outcomes.ts`), not from string shape. The previous exporter lowercased and underscored labels, so `"3D"` became `"3d"` and never matched the canonical `fixed_3d`: valid persisted fixed-time outcomes were replaced by generic unavailable rows, and `holding_hours` was hardcoded `null` on every row.
+
+Rows now carry `outcome_identity_version`, `source_label`, `source_status` and `unmapped_source_labels`, and `status` is faithful to the source: an evaluated snapshot is never demoted, and an unavailable one is never promoted. Four states stay distinct -- snapshot absent, snapshot not-hit, snapshot evaluated, and an exporter mapping failure -- and only the last is a defect. A label no canonical policy maps to fails the export loudly rather than shipping a bundle quietly missing a policy the engine produced. `fixed_14d` is recognised but deliberately outside the exported set, so it is neither an error nor a claimed drop.
+
+`holding_hours` is `(effective close - that track's own actual entry) / 3_600_000`, where the effective close is the valuation timestamp, falling back to the causal decision timestamp. It is measured from the track's own entry, so a delayed track reports the interval it genuinely held for. It is `null` for unreached or unavailable outcomes, and never negative, before entry, or past expiry.
+
+Each track descriptor in `structure_economics.jsonl` carries a `source_outcomes` digest of what the producing engine persisted, so the validator compares source semantics -- status, timestamps, PnL -- against the exported rows rather than merely checking that some rows exist.
 
 ### Futures baseline semantics
 
