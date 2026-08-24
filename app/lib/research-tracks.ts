@@ -49,6 +49,10 @@ export const TRACK_REASON_CODES=[
  "immediate_execution_not_evaluated",
  "delayed_execution_unavailable",
  "delayed_execution_not_evaluated",
+ // Delayed opening evidence exists, but no causal post-entry economic path
+ // does. The canonical economic track is therefore NOT available: downstream
+ // analytics must never read "available" as a usable PnL path.
+ "delayed_entry_available_path_unavailable",
  "structure_not_resolved",
 ] as const;
 export type TrackReasonCode=(typeof TRACK_REASON_CODES)[number];
@@ -67,7 +71,13 @@ export type EntryBasis=
  |"unavailable";
 
 /** How the path's marks were produced. Never upgraded by a modeled overlay. */
-export type ValuationBasis="reference_marks"|"observed_marks"|"unavailable";
+/**
+ * `reconstructed_intrinsic_marks` is the delayed post-entry path: intrinsic
+ * spread value reconstructed from the underlying candles after the OBSERVED
+ * delayed opening. It is deliberately not `observed_marks` -- those points are
+ * not observed executable closes and must never be read as such.
+ */
+export type ValuationBasis="reference_marks"|"observed_marks"|"reconstructed_intrinsic_marks"|"unavailable";
 
 /**
  * What the track proves about executability. Reference economics prove nothing
@@ -101,6 +111,12 @@ export interface TrackDescriptor {
  readonly entrySnapshot:JsonValue;
  readonly valuationPath:readonly JsonValue[];
  readonly outcomeSnapshots:readonly JsonValue[];
+ /**
+  * Entry and path availability are reported separately so entry-only evidence
+  * is never mistaken for a complete economic track.
+  */
+ readonly entryStatus:TrackStatus;
+ readonly pathStatus:TrackStatus;
 }
 
 const obj=(v:unknown):Record<string,unknown>=>v&&typeof v==="object"&&!Array.isArray(v)?v as Record<string,unknown>:{};
@@ -117,7 +133,7 @@ function unavailable(track:CanonicalTrack,reasonCode:TrackReasonCode,reason:stri
    :executionScenario==="maker"?"observed_maker_opportunity"
    :track.startsWith("modeled")?"modeled_assumption":"none_reference_only",
   valuationSource:null,provenance,engineVersion:null,executionScenario,
-  entrySnapshot:null,valuationPath:[],outcomeSnapshots:[]};
+  entrySnapshot:null,valuationPath:[],outcomeSnapshots:[],entryStatus:"unavailable",pathStatus:"unavailable"};
 }
 
 /**
@@ -144,6 +160,7 @@ function referenceTrack(structure:Record<string,unknown>):TrackDescriptor{
   entrySnapshot:(reference.entrySnapshot??null) as JsonValue,
   valuationPath:arr(reference.valuationPathSnapshot),
   outcomeSnapshots:arr(reference.outcomeSnapshots),
+  entryStatus:"available",pathStatus:"available",
  };
 }
 
@@ -180,6 +197,7 @@ function modeledTrack(structure:Record<string,unknown>,which:"conservative"|"exp
   entrySnapshot:(modeled.entrySnapshot??null) as JsonValue,
   valuationPath:arr(reference.valuationPathSnapshot),
   outcomeSnapshots:arr(modeled.outcomeSnapshots),
+  entryStatus:"available",pathStatus:"available",
  };
 }
 
@@ -201,6 +219,7 @@ function strictTrack(structure:Record<string,unknown>,mode:"maker"|"taker"):Trac
   entrySnapshot:(scenario.entrySnapshot??null) as JsonValue,
   valuationPath:arr(scenario.valuationPathSnapshot),
   outcomeSnapshots:arr(scenario.outcomeSnapshots),
+  entryStatus:"available",pathStatus:"available",
  };
 }
 
@@ -209,24 +228,76 @@ function strictTrack(structure:Record<string,unknown>,mode:"maker"|"taker"):Trac
  * backdated to the reference entry: the delayed engine's own entry snapshot
  * supplies the timestamp and the opening economics.
  */
+/**
+ * A point counts toward a usable delayed path only when it is causally AFTER
+ * the delayed opening and carries an economic value. The delayed engine names
+ * its PnL `estimatedPnlBtc`; the reference engines name theirs
+ * `estimatedNetPnlBtc`, and both are accepted here.
+ */
+export function usableDelayedPoints(points:readonly JsonValue[],entryMs:number|null,expiryMs:number|null){
+ return points.filter(raw=>{
+  const point=obj(raw),timestamp=num(point.timestamp);
+  if(timestamp===null)return false;
+  if(entryMs!==null&&timestamp<entryMs)return false;
+  if(expiryMs!==null&&timestamp>expiryMs)return false;
+  return num(point.estimatedNetPnlBtc)!==null||num(point.estimatedPnlBtc)!==null;
+ });
+}
+
+/**
+ * The shared predicate for "this delayed snapshot carries a complete economic
+ * track". The exporter and the analytics importer both read it, so neither can
+ * report entry-only delayed evidence as usable PnL data.
+ */
+export function delayedEconomicPathAvailable(snapshot:unknown,expiryMs:number|null):boolean{
+ const delayed=obj(snapshot);
+ if(delayed.status!=="evaluated")return false;
+ const entryMs=entryTime(obj(delayed.entrySnapshot));
+ return entryMs!==null&&usableDelayedPoints(arr(delayed.valuationPathSnapshot),entryMs,expiryMs).length>0;
+}
+
+/**
+ * The canonical availability contract for a delayed economic track.
+ *
+ * `available` requires a valid delayed entry snapshot with a real opening
+ * timestamp AND at least one causal post-entry valuation point. Delayed
+ * opening evidence on its own is entry-only: it is reported with
+ * `entryStatus:"available"`, `pathStatus:"unavailable"` and the specific code
+ * `delayed_entry_available_path_unavailable`, and the overall economic-track
+ * status stays unavailable so no consumer can read it as a usable PnL path.
+ *
+ * The delayed opening timestamp is always the engine's own; it is never
+ * backdated to the reference entry.
+ */
 function delayedTrack(structure:Record<string,unknown>,mode:"maker"|"taker"):TrackDescriptor{
  const track:CanonicalTrack=mode==="maker"?"delayed_maker":"delayed_taker";
  const delayed=obj(obj(structure.delayedExecution)[mode]);
  if(delayed.status!=="evaluated")
   return unavailable(track,delayed.status==="not_evaluated"?"delayed_execution_not_evaluated":"delayed_execution_unavailable",
    str(delayed.reason)??"Delayed execution evidence is unavailable for this scenario.",mode);
- const entry=obj(delayed.entrySnapshot);
- return {
-  track,status:"available",reasonCode:"track_available",reason:null,
-  entryBasis:"observed_delayed_fill",entryTimestampMs:entryTime(entry),
-  valuationBasis:"observed_marks",
-  executionEvidence:mode==="maker"?"observed_maker_opportunity":"observed_taker_execution",
+ const entry=obj(delayed.entrySnapshot),entryMs=entryTime(entry);
+ const expiryMs=num(obj(structure.candidateSnapshot).expiryTimestamp);
+ const path=arr(delayed.valuationPathSnapshot),outcomes=arr(delayed.outcomeSnapshots);
+ const usable=usableDelayedPoints(path,entryMs,expiryMs);
+ const complete=entryMs!==null&&usable.length>0;
+ const base={
+  entryBasis:"observed_delayed_fill" as const,entryTimestampMs:entryMs,
+  valuationBasis:"reconstructed_intrinsic_marks" as const,
+  executionEvidence:(mode==="maker"?"observed_maker_opportunity":"observed_taker_execution") as ExecutionEvidenceClass,
   valuationSource:str(delayed.source),provenance:(delayed.provenance??null) as JsonValue,
   engineVersion:null,executionScenario:mode,
   entrySnapshot:(delayed.entrySnapshot??null) as JsonValue,
-  valuationPath:arr(delayed.valuationPathSnapshot),
-  outcomeSnapshots:arr(delayed.outcomeSnapshots),
+  valuationPath:path,outcomeSnapshots:outcomes,
+  entryStatus:(entryMs!==null?"available":"unavailable") as TrackStatus,
+  pathStatus:(usable.length?"available":"unavailable") as TrackStatus,
  };
+ if(complete)return {track,status:"available",reasonCode:"track_available",reason:null,...base};
+ return {track,status:"unavailable",
+  reasonCode:entryMs===null?"delayed_execution_unavailable":"delayed_entry_available_path_unavailable",
+  reason:entryMs===null
+   ?"The delayed engine reported an evaluated scenario without a delayed opening timestamp."
+   :"Delayed opening evidence exists, but no causal post-entry valuation point does, so this is entry-only evidence rather than a complete economic track.",
+  ...base};
 }
 
 /**

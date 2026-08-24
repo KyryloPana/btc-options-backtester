@@ -18,18 +18,20 @@ export const CANONICAL_OUTCOMES = [
   "vpoc", "invalidation",
   "credit_capture_25", "credit_capture_50", "credit_capture_70",
   "fixed_3d", "fixed_5d", "fixed_7d", "fixed_14d",
-  "settlement",
+  "settlement", "terminal_delayed_path",
 ] as const;
 export type CanonicalOutcome = (typeof CANONICAL_OUTCOMES)[number];
 
 /**
  * `fixed_14d` is a RECOGNISED policy that the exit-policy layer produces but
- * the canonical bundle contract does not carry. It is mapped rather than left
+ * the canonical bundle contract does not carry, and `terminal_delayed_path`
+ * marks the end of a delayed post-entry path rather than naming an exit policy
+ * at all. It is mapped rather than left
  * unknown -- a persisted "14D" snapshot is not a mystery label -- but it is
  * deliberately outside the exported set, so the exporter is not accused of
  * dropping it and no new exit rule is introduced here.
  */
-export const OUTCOMES_OUTSIDE_EXPORT_CONTRACT: readonly CanonicalOutcome[] = ["fixed_14d"];
+export const OUTCOMES_OUTSIDE_EXPORT_CONTRACT: readonly CanonicalOutcome[] = ["fixed_14d", "terminal_delayed_path"];
 
 /** Every source label this repository's engines are known to persist. */
 const LABELS: Readonly<Record<string, CanonicalOutcome>> = Object.freeze({
@@ -51,6 +53,7 @@ const LABELS: Readonly<Record<string, CanonicalOutcome>> = Object.freeze({
   "14d": "fixed_14d",
   "14d fixed": "fixed_14d",
   "settlement": "settlement",
+  "terminal delayed path": "terminal_delayed_path",
 });
 
 const CANONICAL = new Set<string>(CANONICAL_OUTCOMES);

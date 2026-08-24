@@ -54,6 +54,14 @@ Rows now carry `outcome_identity_version`, `source_label`, `source_status` and `
 
 Each track descriptor in `structure_economics.jsonl` carries a `source_outcomes` digest of what the producing engine persisted, so the validator compares source semantics -- status, timestamps, PnL -- against the exported rows rather than merely checking that some rows exist.
 
+### Delayed economic tracks
+
+`delayed_maker` / `delayed_taker` are `available` only when the snapshot is evaluated, carries a real delayed opening timestamp, AND has at least one causal post-entry valuation point. Delayed opening evidence on its own is entry-only: the descriptor reports `entry_status:"available"` with `path_status:"unavailable"` and the reason code `delayed_entry_available_path_unavailable`, and the overall track status stays `unavailable`. Downstream analytics can therefore never read `available` as a usable PnL path — `delayedEconomicPathAvailable` is the one predicate the exporter and the analytics importer both use.
+
+The delayed opening timestamp is always the engine's own and is never backdated to the signal. Points before it or after expiry are dropped, not clamped, and pre-entry resolutions (VPOC or invalidation already occurred, expiry passed, inputs absent) keep the track unavailable rather than allowing hindsight selection.
+
+Provenance stays split: `entry_basis:"observed_delayed_fill"` for the observed opening, and `valuation_basis:"reconstructed_intrinsic_marks"` for the post-entry path — those points are reconstructed intrinsic values, never observed executable closes. Reference fair value remains the primary economic baseline; delayed execution is a sensitivity cohort.
+
 ### Futures baseline semantics
 
 The perpetual baseline is a benchmark, not a ranking. It uses the same MR event, direction, and causal decision timestamps as the options layer -- both read `resolveEventTiming`, so a VPOC exit is taken at the touch candle's *close*, never backdated to the touch. Sequence classification compares **like-for-like decision candles** — the candle each decision lands in — so neither outcome gains priority from being represented by a candle open while the other is a candle close; a touch and a breach inside one hourly candle report `sequence_status:"ambiguous"` and `exit_ordering_status:"ambiguous"` rather than one being picked.

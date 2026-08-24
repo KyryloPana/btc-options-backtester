@@ -178,6 +178,9 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
    // tell "unsupported for this structure, and why" from "absent from the file".
    tracks:describeCanonicalTracks(s as unknown as Record<string,unknown>).map(t=>({
     track:t.track,status:t.status,reason_code:t.reasonCode,reason:t.reason,
+    // Entry and path availability separately, so entry-only delayed evidence is
+    // never read as a complete economic track.
+    entry_status:t.entryStatus,path_status:t.pathStatus,
     entry_basis:t.entryBasis,entry_timestamp_utc:iso(t.entryTimestampMs),
     valuation_basis:t.valuationBasis,execution_evidence:t.executionEvidence,
     valuation_source:t.valuationSource,engine_version:t.engineVersion,
@@ -264,6 +267,7 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
   for(const t of describeCanonicalTracks(s as unknown as Record<string,unknown>)){
    if(t.status!=="available"||t.track==="strict_maker"||t.track==="strict_taker")continue;
    const trackMeta={analytics_track:t.track,track_status:t.status,track_reason_code:t.reasonCode,
+    track_entry_status:t.entryStatus,track_path_status:t.pathStatus,
     entry_basis:t.entryBasis,entry_timestamp_utc:iso(t.entryTimestampMs),valuation_basis:t.valuationBasis,
     execution_evidence:t.executionEvidence,valuation_source:t.valuationSource,
     provenance:t.provenance,engine_version:t.engineVersion};
@@ -273,8 +277,13 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
     if(timestamp!==null&&t.entryTimestampMs!==null&&timestamp<t.entryTimestampMs){omittedValuationsBeforeEntry++;continue}
     if(timestamp!==null&&expiry!==null&&timestamp>expiry){omittedValuationsAfterExpiry++;continue}
     const estimate=obj(p.rawEstimate??p.modelEstimate??p.ivNormalizedEstimate??null);
-    const short=obj(estimate.sold),long=obj(estimate.bought),target=num(p.targetIndex);
-    const pnl=num(p.estimatedNetPnlBtc);
+    const short=obj(estimate.sold),long=obj(estimate.bought);
+    // The delayed engine names its post-entry point fields `estimatedPnlBtc`
+    // and `underlyingIndex`; the reference engines use `estimatedNetPnlBtc`
+    // and `targetIndex`. Reading only the latter made every delayed valuation
+    // row unavailable while the track still claimed to be available.
+    const target=num(p.targetIndex)??num(p.underlyingIndex);
+    const pnl=num(p.estimatedNetPnlBtc)??num(p.estimatedPnlBtc);
     const shortIv=legVolatility(short,p.shortIvDecimal,p.soldIvSource??p.ivSource);
     const longIv=legVolatility(long,p.longIvDecimal,p.longIvSource??p.ivSource);
     independentValuations.push(row({run_id:runId,source_run_id:sourceIds.get(e.eventId),event_id:e.eventId,
@@ -464,12 +473,23 @@ export function validateResearchBundle(files:Partial<Record<string,string>>):{ok
  for(const r of rows("structure_economics.jsonl"))for(const t of (Array.isArray(r.tracks)?r.tracks:[]))trackRows.set(`${String(r.candidate_id)}~${String(obj(t as JsonValue).track)}`,obj(t as JsonValue));
  const countBy=(name:string)=>{const counts=new Map<string,number>();for(const r of rows(name)){const key=`${String(r.candidate_id)}~${String(r.analytics_track)}`;counts.set(key,(counts.get(key)??0)+1)}return counts};
  const valuationCounts=countBy("valuations.jsonl"),outcomeCounts=countBy("outcomes.jsonl");
+ const pricedValuationCounts=new Map<string,number>();
+ for(const r of rows("valuations.jsonl"))if(r.valuation_status==="priced"){const key=`${String(r.candidate_id)}~${String(r.analytics_track)}`;pricedValuationCounts.set(key,(pricedValuationCounts.get(key)??0)+1)}
  for(const [key,t] of trackRows){
   const valued=t.status==="valued"||t.status==="evaluated";
   if(valued&&Number(t.source_valuation_point_count??0)>0&&!(valuationCounts.get(key)??0))errors.push(`${key} persisted ${String(t.source_valuation_point_count)} valuation points but exported none.`);
+  // For a DELAYED track, "available" must mean a usable economic path and never
+  // merely delayed opening evidence. Reference and modeled availability
+  // semantics are deliberately not redefined here.
+  if(t.status==="available"&&String(t.track).startsWith("delayed_")&&!pricedValuationCounts.get(key))errors.push(`${key} is available but every exported valuation row is unavailable; entry-only delayed evidence must not be reported as a complete economic track.`);
+  if(t.status==="available"&&t.path_status!=="available")errors.push(`${key} is available while its path_status is ${String(t.path_status)}.`);
   // Honest absence is allowed: a track whose engine produced no outcome
   // snapshots exports none. Only a DROP of existing snapshots is an error.
-  if(Number(t.source_outcome_snapshot_count??0)>0&&!(outcomeCounts.get(key)??0))errors.push(`${key} persisted ${String(t.source_outcome_snapshot_count)} outcome snapshots but exported none.`);
+  // Only snapshots whose canonical policy is INSIDE the exported contract can
+  // be dropped; a recognised-but-unexported marker is not a missing row.
+  const exportable=(Array.isArray(t.source_outcomes)?t.source_outcomes:[]).filter(raw=>{const o=obj(raw as JsonValue);
+   return o.outcome!=null&&!(OUTCOMES_OUTSIDE_EXPORT_CONTRACT as readonly string[]).includes(String(o.outcome))}).length;
+  if(exportable>0&&!(outcomeCounts.get(key)??0))errors.push(`${key} persisted ${exportable} exportable outcome snapshots but exported none.`);
  }
  // --- source-to-export outcome fidelity ---
  // Not merely "some rows exist": every persisted source snapshot is resolved to
