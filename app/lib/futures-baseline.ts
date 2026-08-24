@@ -184,7 +184,11 @@ export function buildEventFuturesBaseline(event:ResearchSelectionEvent,policy:Fu
  // Derived reference sizing. Per-unit values above stay authoritative; this is a
  // convenience so an equal-dollar-risk comparison is reproducible, and it names
  // the structure it was scaled against.
- const lossBasis=event.selectedStructures.map(s=>{const m=obj(s.marginSnapshot);return{candidateId:s.candidateId,usd:num(m.maximumEconomicLossUsd)??(num(m.theoreticalMaximumSpreadLossBtc)!==null?num(m.theoreticalMaximumSpreadLossBtc)!*entryPrice:null)}}).filter(x=>x.usd!==null&&x.usd>0) as Array<{candidateId:string;usd:number}>;
+ // Equal-risk sizing scales against the BOUNDED STRUCTURAL loss. It must never
+ // read a fee-inclusive tail figure: a fixed BTC delivery fee converted at a
+ // huge settlement index produced trillion-dollar risk budgets and hundreds of
+ // millions of BTC of notional.
+ const lossBasis=event.selectedStructures.map(s=>{const m=obj(s.marginSnapshot);return{candidateId:s.candidateId,usd:num(m.maximumStructuralLossUsd)??(num(m.theoreticalMaximumSpreadLossBtc)!==null?num(m.theoreticalMaximumSpreadLossBtc)!*entryPrice:null)}}).filter(x=>x.usd!==null&&x.usd>0) as Array<{candidateId:string;usd:number}>;
  const largest=lossBasis.sort((a,b)=>b.usd-a.usd)[0];
  const riskBudgetUsd=largest?.usd??null;
  const quantity=riskBudgetUsd!==null&&riskPerUnit!==null&&riskPerUnit>0?riskBudgetUsd/riskPerUnit:null;
@@ -247,7 +251,7 @@ export function buildEventFuturesBaseline(event:ResearchSelectionEvent,policy:Fu
   funding_intervals_expected:expectedFundingHours.length,funding_intervals_observed:observedFundingHours,
   funding_usd_per_unit:fundingPerUnit,
   net_pnl_usd_per_unit_after_funding:netAfterFundingPerUnit,
-  equal_risk_sizing_method:"option_max_economic_loss_usd / abs(futures_entry - structural_invalidation)",
+  equal_risk_sizing_method:"option_maximum_structural_loss_usd / abs(futures_entry - structural_invalidation)",
   equal_risk_sizing_status:quantity===null?"downstream_derivable":"derived",
   quantity,quantity_basis:largest?.candidateId??null,risk_budget_usd:riskBudgetUsd,
   gross_trading_pnl_usd:quantity===null||grossPerUnit===null?null:grossPerUnit*quantity,

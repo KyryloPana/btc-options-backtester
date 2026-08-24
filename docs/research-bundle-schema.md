@@ -1,6 +1,6 @@
 # Research Bundle Schema
 
-Schema **3.4.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and `events.jsonl`, `underlying_path.jsonl`, `candidates.jsonl`, `valuations.jsonl`, `outcomes.jsonl`, `availability.jsonl`, `margin_scenarios.jsonl`, `evidence_trades.jsonl`, `structure_economics.jsonl`, `futures_comparisons.jsonl`, and `futures_path.jsonl`. Empty tables remain empty files and availability is stated in `run.json`.
+Schema **3.6.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and `events.jsonl`, `underlying_path.jsonl`, `candidates.jsonl`, `valuations.jsonl`, `outcomes.jsonl`, `availability.jsonl`, `margin_scenarios.jsonl`, `evidence_trades.jsonl`, `structure_economics.jsonl`, `futures_comparisons.jsonl`, and `futures_path.jsonl`. Empty tables remain empty files and availability is stated in `run.json`.
 
 **`candidates.jsonl` = selected performance numerator; `availability.jsonl` = complete generated denominator.** Reports calculate coverage from availability and recompute extrema from valuations, never UI summaries.
 
@@ -32,7 +32,9 @@ Consumers validate the schema version, primary keys, foreign keys, venues, statu
 
 ### Canonical economics, identity and provenance (3.4.0)
 
-**One maximum economic loss.** `structure_economics.jsonl` and `margin_scenarios.jsonl` both derive it from `canonicalMaximumEconomicLoss`, so the two tables cannot disagree. It is the bounded `usd-cash-flow` extremum of the exact inverse payoff, reported as a **positive USD magnitude** (`maximum_economic_loss_units.sign_convention`), with the BTC figure being that loss converted at the stated reference index. The divergent `btc-settlement` extremum is never exported as a terminal loss. Maximum economic loss is not Initial Margin, Maintenance Margin, protective-long cost, or a required balance; nothing in `structure_economics.jsonl` may be named as margin.
+**One bounded structural loss (3.5.0).** `structure_economics.jsonl` and `margin_scenarios.jsonl` both derive `maximum_structural_loss_*` from `canonicalStructuralLoss`, so the two tables cannot disagree, and the analytics economics layer reads the same helper. It is the bounded structural risk of the vertical: net opening cash flow at the reference index plus the gross spread position value at each sampled settlement index, reported as a **positive USD magnitude**, with BTC as that loss converted at the stated reference index.
+
+Settlement **delivery fees are excluded** and reported separately in `settlement_fee_treatment`. A delivery fee is a fixed BTC amount, so its USD value grows without bound as the settlement index grows; for a bear call both legs finish deep ITM, making a global fee-inclusive USD maximum mathematically **unbounded**. Sampling that tail at `Number.MAX_SAFE_INTEGER` is what produced `0.0003 BTC x 9.007e15 = $2.702 trillion` on ordinary $1k-wide spreads and poisoned futures equal-risk sizing. `global_fee_inclusive_maximum` states `bounded` or `unbounded` honestly, and the finite fee figure is labelled scenario-specific at a named settlement index. Structural loss is not Initial Margin, Maintenance Margin, protective-long cost, or a required balance; nothing in `structure_economics.jsonl` may be named as margin.
 
 **One configuration identity.** `effective_configuration_hash` is taken over a canonical, methodology-only representation: object keys sorted, set-like arrays sorted, `generatedAtUtc` and `applicationBuild` excluded as provenance rather than methodology. `source_run_id` is derived from the same identity. A store whose events carry different methodology hashes is **refused** at export, naming the event IDs, the hashes and the differing fields — a stale event must be regenerated, and schema migration is never a substitute.
 
@@ -41,6 +43,24 @@ Consumers validate the schema version, primary keys, foreign keys, venues, statu
 **Denominator.** `trade_dataset_mr_event_count` comes from the active trade dataset (`trade_dataset_mr_event_count_source`), never from the selection store and never a hardcoded historic count.
 
 **Manifest.** `table_availability` covers every canonical table and is derived from actual exported content. The validator checks it in both directions: usable rows can never read as unavailable, and no usable rows can never read as available.
+
+### Canonical outcome identity (3.6.0)
+
+Outcome identity comes from ONE semantic table (`research-outcomes.ts`), not from string shape. The previous exporter lowercased and underscored labels, so `"3D"` became `"3d"` and never matched the canonical `fixed_3d`: valid persisted fixed-time outcomes were replaced by generic unavailable rows, and `holding_hours` was hardcoded `null` on every row.
+
+Rows now carry `outcome_identity_version`, `source_label`, `source_status` and `unmapped_source_labels`, and `status` is faithful to the source: an evaluated snapshot is never demoted, and an unavailable one is never promoted. Four states stay distinct -- snapshot absent, snapshot not-hit, snapshot evaluated, and an exporter mapping failure -- and only the last is a defect. A label no canonical policy maps to fails the export loudly rather than shipping a bundle quietly missing a policy the engine produced. `fixed_14d` is recognised but deliberately outside the exported set, so it is neither an error nor a claimed drop.
+
+`holding_hours` is `(effective close - that track's own actual entry) / 3_600_000`, where the effective close is the valuation timestamp, falling back to the causal decision timestamp. It is measured from the track's own entry, so a delayed track reports the interval it genuinely held for. It is `null` for unreached or unavailable outcomes, and never negative, before entry, or past expiry.
+
+Each track descriptor in `structure_economics.jsonl` carries a `source_outcomes` digest of what the producing engine persisted, so the validator compares source semantics -- status, timestamps, PnL -- against the exported rows rather than merely checking that some rows exist.
+
+### Delayed economic tracks
+
+`delayed_maker` / `delayed_taker` are `available` only when the snapshot is evaluated, carries a real delayed opening timestamp, AND has at least one causal post-entry valuation point. Delayed opening evidence on its own is entry-only: the descriptor reports `entry_status:"available"` with `path_status:"unavailable"` and the reason code `delayed_entry_available_path_unavailable`, and the overall track status stays `unavailable`. Downstream analytics can therefore never read `available` as a usable PnL path — `delayedEconomicPathAvailable` is the one predicate the exporter and the analytics importer both use.
+
+The delayed opening timestamp is always the engine's own and is never backdated to the signal. Points before it or after expiry are dropped, not clamped, and pre-entry resolutions (VPOC or invalidation already occurred, expiry passed, inputs absent) keep the track unavailable rather than allowing hindsight selection.
+
+Provenance stays split: `entry_basis:"observed_delayed_fill"` for the observed opening, and `valuation_basis:"reconstructed_intrinsic_marks"` for the post-entry path — those points are reconstructed intrinsic values, never observed executable closes. Reference fair value remains the primary economic baseline; delayed execution is a sensitivity cohort.
 
 ### Futures baseline semantics
 

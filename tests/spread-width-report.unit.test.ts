@@ -93,7 +93,7 @@ const valuations=[
 
 /** No margin data anywhere: the canonical default. */
 const margin_scenarios=[{event_id:"e1",candidate_id:"e1-w1000",margin_status:"unavailable",
- incremental_initial_margin:null,peak_initial_margin:null,peak_maintenance_margin:null,maximum_loss_usd:null}];
+ incremental_initial_margin:null,peak_initial_margin:null,peak_maintenance_margin:null,maximum_structural_loss_usd:null}];
 
 const dataset={filename:"f.zip",schemaVersion:"2.2.0",migratedFrom:null,run:{dataset_id:"ds",bundle_id:"b"},
  tables:{events,candidates,outcomes,valuations,underlying_path,margin_scenarios,availability:[]},

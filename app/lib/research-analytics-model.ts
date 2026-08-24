@@ -1,3 +1,4 @@
+import { delayedEconomicPathAvailable } from "./research-tracks.ts";
 import type { AnalysisDataset } from "./research-analysis";
 
 export const ANALYTICS_STARTING_COMMIT =
@@ -382,10 +383,15 @@ function canonicalSnapshotTrack(
 ): ScenarioTrack {
   const entry = rec(snapshot.entrySnapshot),
     statusValue = s(snapshot.status),
+    // A delayed track additionally needs a usable causal post-entry path: the
+    // shared contract, so entry-only delayed evidence is never selected as a
+    // complete PnL cohort.
     available =
-      statusValue === "valued" ||
-      statusValue === "evaluated" ||
-      statusValue === "available",
+      (statusValue === "valued" ||
+        statusValue === "evaluated" ||
+        statusValue === "available") &&
+      (!track.startsWith("delayed_") ||
+        delayedEconomicPathAvailable(snapshot, expiry)),
     entryTime =
       time(entry.valuationTimestamp) ?? time(entry.targetTimestamp) ?? signal,
     unc = rec(snapshot.uncertainty),

@@ -44,7 +44,7 @@ export function futuresMarket(direction:"long"|"short",overrides:Partial<Futures
  };
 }
 
-export function futuresEvent(direction:"long"|"short"="long",overrides:{eventId?:string;futuresMarket?:FuturesMarketSnapshot|undefined;vpocTimestamp?:number|null;vpocPrice?:number|null;invalidationPrice?:number|null;underlyingHourlyPath?:Candle[];maximumEconomicLossUsd?:number}={}):ResearchSelectionEvent{
+export function futuresEvent(direction:"long"|"short"="long",overrides:{eventId?:string;futuresMarket?:FuturesMarketSnapshot|undefined;vpocTimestamp?:number|null;vpocPrice?:number|null;invalidationPrice?:number|null;underlyingHourlyPath?:Candle[];maximumStructuralLossUsd?:number}={}):ResearchSelectionEvent{
  const eventId=overrides.eventId??"mr-1";
  return{
   eventId,
@@ -56,6 +56,6 @@ export function futuresEvent(direction:"long"|"short"="long",overrides:{eventId?
    underlyingHourlyPath:overrides.underlyingHourlyPath??underlyingPath(),
    futuresMarket:"futuresMarket" in overrides?overrides.futuresMarket:futuresMarket(direction),
   },
-  selectedStructures:[{candidateId:`${eventId}~structure`,marginSnapshot:{maximumEconomicLossUsd:overrides.maximumEconomicLossUsd??500}}],
+  selectedStructures:[{candidateId:`${eventId}~structure`,marginSnapshot:{maximumStructuralLossUsd:overrides.maximumStructuralLossUsd??500}}],
  } as unknown as ResearchSelectionEvent;
 }

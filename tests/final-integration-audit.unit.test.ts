@@ -1,6 +1,6 @@
 import test from "node:test";import assert from "node:assert/strict";
 import {buildResearchBundle,validateResearchBundle} from "../app/lib/research-bundle.ts";
-import {canonicalMaximumEconomicLoss,MAXIMUM_ECONOMIC_LOSS_METHOD_VERSION} from "../app/lib/maximum-economic-loss.ts";
+import {canonicalStructuralLoss,STRUCTURAL_LOSS_METHOD_VERSION} from "../app/lib/maximum-economic-loss.ts";
 import {payoffExtrema} from "../app/lib/expiry-payoff.ts";
 import {buildResearchMarginSnapshot} from "../app/lib/research-margin.ts";
 import {resolveEventTiming} from "../app/lib/event-timing.ts";
@@ -27,12 +27,12 @@ const DIVERGENT={optionType:"P" as const,shortStrike:60_000,longStrike:55_000,sh
 test("PART 1: the divergent BTC-settlement extremum is real, and is never the canonical maximum loss",()=>{
  const divergent=payoffExtrema(DIVERGENT,"btc-settlement").maximumLoss;
  assert.ok(divergent<-1e6,`the raw inverse BTC extremum must genuinely diverge for this regression to mean anything (got ${divergent})`);
- const canonical=canonicalMaximumEconomicLoss(DIVERGENT);
+ const canonical=canonicalStructuralLoss(DIVERGENT);
  assert.equal(canonical.status,"available");
  assert.ok(canonical.usd!>0&&canonical.usd!<1e6,"the canonical figure is a bounded positive USD magnitude");
  assert.equal(canonical.btcAtReferenceIndex,canonical.usd!/DIVERGENT.entryIndex);
  assert.ok(Math.abs(canonical.btcAtReferenceIndex!)<1,"the BTC representation is bounded, not a tail artifact");
- assert.equal(canonical.methodVersion,MAXIMUM_ECONOMIC_LOSS_METHOD_VERSION);
+ assert.equal(canonical.methodVersion,STRUCTURAL_LOSS_METHOD_VERSION);
  assert.equal(canonical.signConvention,"positive_magnitude");
 });
 
@@ -40,16 +40,16 @@ test("PART 1: structure economics and margin scenarios reconcile on one maximum 
  const built=bundle();
  const economics=rows(built.files["structure_economics.jsonl"])[0]!;
  const margin=rows(built.files["margin_scenarios.jsonl"])[0]!;
- assert.equal(economics.maximum_economic_loss_status,"available");
+ assert.equal(economics.maximum_structural_loss_status,"available");
  assert.equal(economics.candidate_id,margin.candidate_id);
- assert.equal(economics.maximum_economic_loss_usd,margin.maximum_loss_usd,"one canonical USD maximum loss");
- assert.equal(economics.maximum_economic_loss_native,margin.maximum_loss_native,"one canonical BTC representation");
- assert.equal(economics.maximum_economic_loss_reference_index,margin.reference_index,"at one stated reference index");
- const usd=Number(economics.maximum_economic_loss_usd),index=Number(economics.maximum_economic_loss_reference_index);
+ assert.equal(economics.maximum_structural_loss_usd,margin.maximum_structural_loss_usd,"one canonical USD maximum loss");
+ assert.equal(economics.maximum_structural_loss_native,margin.maximum_structural_loss_native,"one canonical BTC representation");
+ assert.equal(economics.maximum_structural_loss_reference_index,margin.reference_index,"at one stated reference index");
+ const usd=Number(economics.maximum_structural_loss_usd),index=Number(economics.maximum_structural_loss_reference_index);
  assert.ok(usd>0,"reported as a positive magnitude");
- assert.ok(Math.abs(Number(economics.maximum_economic_loss_native)-usd/index)<1e-12);
- assert.deepEqual(economics.maximum_economic_loss_units,{native:"BTC",quote:"USD",sign_convention:"positive_magnitude"});
- assert.equal(economics.maximum_economic_loss_method_version,MAXIMUM_ECONOMIC_LOSS_METHOD_VERSION);
+ assert.ok(Math.abs(Number(economics.maximum_structural_loss_native)-usd/index)<1e-12);
+ assert.deepEqual(economics.maximum_structural_loss_units,{native:"BTC",quote:"USD",sign_convention:"positive_magnitude"});
+ assert.equal(economics.maximum_structural_loss_method_version,STRUCTURAL_LOSS_METHOD_VERSION);
 });
 
 test("PART 1: maximum economic loss stays distinct from initial and maintenance margin",()=>{
@@ -58,22 +58,22 @@ test("PART 1: maximum economic loss stays distinct from initial and maintenance 
    entrySnapshot:{valuationTimestamp:Date.parse("2026-08-25T08:00:00Z"),entryTargetIndex:58_000,sold:{priceBtcPerContract:0.02},bought:{priceBtcPerContract:0.01},openingFeesBtc:0.0005},
    valuationPathSnapshot:[],outcomeSnapshots:[],provenance:null}};
  const snapshot=buildResearchMarginSnapshot(structure) as Record<string,unknown>;
- const canonical=canonicalMaximumEconomicLoss(DIVERGENT);
- assert.equal(snapshot.maximumEconomicLossUsd,canonical.usd,"the margin layer reuses the same helper");
+ const canonical=canonicalStructuralLoss(DIVERGENT);
+ assert.equal(snapshot.maximumStructuralLossUsd,canonical.usd,"the margin layer reuses the same helper");
  for(const key of ["initialMarginBtc","maintenanceMarginBtc","openingInitialMarginBtc","openingMaintenanceMarginBtc"]){
   const value=snapshot[key];
   if(typeof value==="number")assert.notEqual(value,canonical.btcAtReferenceIndex,`${key} must not be the maximum economic loss`);
  }
- assert.equal(snapshot.maximumLossMethodVersion,MAXIMUM_ECONOMIC_LOSS_METHOD_VERSION);
+ assert.equal(snapshot.maximumLossMethodVersion,STRUCTURAL_LOSS_METHOD_VERSION);
 });
 
 test("PART 1: the validator rejects a maximum loss the two economic tables disagree about",()=>{
  const built=bundle();
  const files=structuredClone(built.files);
- files["margin_scenarios.jsonl"]=rows(files["margin_scenarios.jsonl"]).map(r=>JSON.stringify({...r,maximum_loss_usd:Number(r.maximum_loss_usd)*3})).join("\n")+"\n";
+ files["margin_scenarios.jsonl"]=rows(files["margin_scenarios.jsonl"]).map(r=>JSON.stringify({...r,maximum_structural_loss_usd:Number(r.maximum_structural_loss_usd)*3})).join("\n")+"\n";
  const checked=validateResearchBundle(files);
  assert.equal(checked.ok,false);
- assert.ok(checked.errors.some(e=>/different maximum economic losses/.test(e)),checked.errors.join(" | "));
+ assert.ok(checked.errors.some(e=>/different maximum structural losses/.test(e)),checked.errors.join(" | "));
 });
 
 // ---------------------------------------------------------------------------
@@ -526,9 +526,9 @@ test("PART 7: staleness diagnosis names the minority events, and the exporter re
 
 test("PART 7 / versioning: a previous-schema bundle is rejected, never reinterpreted",()=>{
  const built=bundle();
- assert.equal(JSON.parse(built.files["run.json"]).schema_version,"3.4.0");
- for(const previous of ["3.3.0","3.2.0"]){
-  const stale={...built.files,"run.json":built.files["run.json"].replace('"3.4.0"',`"${previous}"`)};
+ assert.equal(JSON.parse(built.files["run.json"]).schema_version,"3.6.0");
+ for(const previous of ["3.5.0","3.4.0","3.3.0"]){
+  const stale={...built.files,"run.json":built.files["run.json"].replace('"3.6.0"',`"${previous}"`)};
   assert.equal(validateResearchBundle(stale).ok,false,`${previous} carried different maximum-loss semantics and must not be read as current`);
  }
 });

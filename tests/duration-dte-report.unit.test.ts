@@ -123,8 +123,8 @@ const valuations=[
 ];
 
 const margin_scenarios=[
- {event_id:"e1",candidate_id:"c1a",margin_status:"available",maximum_loss_usd:1000},
- {event_id:"e4",candidate_id:"c4a",margin_status:"available",maximum_loss_usd:1000},
+ {event_id:"e1",candidate_id:"c1a",margin_status:"available",maximum_structural_loss_usd:1000},
+ {event_id:"e4",candidate_id:"c4a",margin_status:"available",maximum_structural_loss_usd:1000},
 ];
 
 const dataset={filename:"f.zip",schemaVersion:"2.1.0",migratedFrom:null,run:{dataset_id:"ds",bundle_id:"b"},

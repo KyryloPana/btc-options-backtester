@@ -178,13 +178,13 @@ test("STRUCTURE: exactly one economic record per candidate ID, with requested an
 test("PAYOFF: maximum economic loss states its units, reference index and method, and is never called margin",()=>{
  const bundle=buildResearchBundle(referenceOnlyFixture(),now);
  const economics=parse(bundle.files["structure_economics.jsonl"])[0]!;
- assert.deepEqual(economics.maximum_economic_loss_units,{native:"BTC",quote:"USD",sign_convention:"positive_magnitude"});
- if(economics.maximum_economic_loss_native!==null){
-  assert.notEqual(economics.maximum_economic_loss_reference_index,null,"the USD conversion states its index");
-  assert.match(String(economics.maximum_economic_loss_method),/inverse-option expiry payoff/i);
-  assert.match(String(economics.maximum_economic_loss_assumption),/not an unconditional terminal BTC loss/i,
+ assert.deepEqual(economics.maximum_structural_loss_units,{native:"BTC",quote:"USD",sign_convention:"positive_magnitude"});
+ if(economics.maximum_structural_loss_native!==null){
+  assert.notEqual(economics.maximum_structural_loss_reference_index,null,"the USD conversion states its index");
+  assert.match(String(economics.maximum_structural_loss_method),/inverse-option expiry payoff/i);
+  assert.match(String(economics.maximum_structural_loss_assumption),/not an unconditional terminal BTC loss/i,
    "the BTC figure is not presented as unconditional");
- }else assert.notEqual(economics.maximum_economic_loss_unavailable_reason,null,"an absent payoff says why");
+ }else assert.notEqual(economics.maximum_structural_loss_unavailable_reason,null,"an absent payoff says why");
  // The protective long's premium plus fees is never presented as margin.
  for(const key of Object.keys(economics))assert.ok(!/margin|required_balance/i.test(key),
   `structure economics must not name a capital requirement (${key}); margin lives in margin_scenarios.jsonl`);
@@ -207,11 +207,11 @@ test("VOLATILITY: per-leg IV and provenance survive export without changing exec
 });
 
 test("VERSIONING: the schema is bumped and old execution-gated bundles are not reinterpreted",()=>{
- assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION,"3.4.0");
+ assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION,"3.6.0");
  const bundle=buildResearchBundle(referenceOnlyFixture(),now);
  // A bundle claiming the previous version is rejected rather than silently
  // read as if its execution-gated rows were the new canonical economics.
- const stale={...bundle.files,"run.json":bundle.files["run.json"].replace('"3.4.0"','"3.3.0"')};
+ const stale={...bundle.files,"run.json":bundle.files["run.json"].replace('"3.6.0"','"3.5.0"')};
  assert.equal(validateResearchBundle(stale).ok,false);
  // Dropping the new table is a hard failure, not a silent downgrade.
  const withoutTable={...bundle.files,"structure_economics.jsonl":""};
