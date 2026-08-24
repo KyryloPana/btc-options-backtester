@@ -120,7 +120,7 @@ export function SpreadWidthReportView({report,view="maker",onViewChange}:{
    <Card label="Actual widths" value={s.distinctActualWidths.length?s.distinctActualWidths.map(widthLabel).join(" · "):NOT_ESTIMABLE}/>
    <Card label="Width substituted" value={String(s.substitutedWidthN)} detail="requested ≠ actual" title="Historical strike availability forced the protective long onto a different strike. Economics use the actual contracts."/>
    <Card label="Median net credit" value={usd(s.medianNetCreditUsd)}/>
-   <Card label="Median max economic loss" value={usd(s.medianMaxEconomicLossUsd)} detail="exact inverse payoff"/>
+   <Card label="Median max structural loss" value={usd(s.medianStructuralLossUsd)} detail="canonical bounded structural risk"/>
    <Card label="Median fee drag" value={pct(s.medianFeeDragRoundTrip)} detail="estimated round trip"/>
    <Card label="Capital data" value={`${s.openingMarginAvailableN} / ${s.matchedObservations}`} detail="opening margin available" title="Margin depends on the account model, so it is Unavailable unless the canonical margin scenario reports it."/>
   </div>
@@ -129,21 +129,21 @@ export function SpreadWidthReportView({report,view="maker",onViewChange}:{
   {/* 2 · Entry economics */}
   <section className="dd-block"><h3>1 · Entry economics by actual width</h3>
    <div className="table-scroll"><table className="dd-table dd-compact">
-    <thead><tr><th>Actual width</th><th>N</th><th>Gross credit</th><th>Net credit</th><th>Credit / actual width</th><th>Credit / requested</th><th>Credit / max loss</th><th>Long-leg cost</th><th>Long share of short</th><th>Fee drag (open)</th><th>Fee drag (round trip)</th><th>Breakeven index</th><th>Max economic loss</th></tr></thead>
+    <thead><tr><th>Actual width</th><th>N</th><th>Gross credit</th><th>Net credit</th><th>Credit / actual width</th><th>Credit / requested</th><th>Credit / structural loss</th><th>Long-leg cost</th><th>Long share of short</th><th>Fee drag (open)</th><th>Fee drag (round trip)</th><th>Breakeven index</th><th>Max structural loss</th></tr></thead>
     <tbody>{report.entryEconomics.map(r=><tr key={r.actualWidthUsd}>
      <td>{widthLabel(r.actualWidthUsd)}{r.substitutedN>0&&<small className="dd-muted"> · {r.substitutedN} substituted</small>}</td>
      <td>{r.n}</td>
      <td>{usd(r.medianGrossCreditUsd)}</td><td>{usd(r.medianNetCreditUsd)}</td>
      <td>{ratio(r.medianCreditPerActualWidth)}</td>
      <td className="dd-muted">{ratio(r.medianCreditPerRequestedWidth)}</td>
-     <td>{ratio(r.medianCreditPerMaxLoss)}</td>
+     <td>{ratio(r.medianCreditPerStructuralLoss)}</td>
      <td>{usd(r.medianLongLegCostUsd)}</td><td>{pct(r.medianLongLegShareOfShortPremium)}</td>
      <td>{pct(r.medianFeeDragOnOpening)}</td><td>{pct(r.medianFeeDragRoundTrip)}</td>
      <td>{money(r.medianBreakEvenIndex)}</td>
-     <td className="negative">{usd(r.medianMaxEconomicLossUsd)}</td>
+     <td className="negative">{usd(r.medianStructuralLossUsd)}</td>
     </tr>)}</tbody>
    </table></div>
-   <small className="dd-note">Maximum economic loss is the exact inverse-option payoff, not width minus credit: intrinsic value is non-linear in the settlement index, per-leg settlement fees apply, and the USD result depends on both entry and settlement price. Credit-per-requested-width is shown muted because it is audit information — the actual contracts drive every economic figure.</small>
+   <small className="dd-note">Maximum structural loss is the canonical bounded structural risk exported by the research bundle, not width minus credit and not recomputed here. It deliberately excludes settlement delivery fees: a delivery fee is a fixed BTC amount, so its USD value grows without bound as the settlement index grows and no finite fee-inclusive maximum exists for a bear call. Delivery fees are reported separately at a named settlement scenario. Credit-per-requested-width is shown muted because it is audit information — the actual contracts drive every economic figure.</small>
   </section>
 
   {/* 3 · Protection vs cost */}
@@ -197,18 +197,18 @@ export function SpreadWidthReportView({report,view="maker",onViewChange}:{
   {/* 5 · Capital economics */}
   <section className="dd-block"><h3>5 · Capital economics</h3>
    <div className="table-scroll"><table className="dd-table dd-compact">
-    <thead><tr><th>Actual width</th><th>N</th><th>Max economic loss</th><th>Opening margin</th><th>Peak margin</th><th>Return on max loss</th><th>Return on opening margin</th><th>Return on peak capital</th></tr></thead>
+    <thead><tr><th>Actual width</th><th>N</th><th>Max structural loss</th><th>Opening margin</th><th>Peak margin</th><th>Return on structural loss</th><th>Return on opening margin</th><th>Return on peak capital</th></tr></thead>
     <tbody>{report.capital.map(r=><tr key={r.actualWidthUsd}>
      <td>{widthLabel(r.actualWidthUsd)}</td><td>{r.n}</td>
-     <td className="negative">{usd(r.medianMaxEconomicLossUsd)}</td>
+     <td className="negative">{usd(r.medianStructuralLossUsd)}</td>
      <td className={r.openingMarginAvailableN?undefined:"dd-muted"} title={r.marginUnavailableReason??undefined}>{r.openingMarginAvailableN?usd(r.medianOpeningMarginUsd):UNAVAILABLE}</td>
      <td className={r.peakMarginAvailableN?undefined:"dd-muted"} title={r.marginUnavailableReason??undefined}>{r.peakMarginAvailableN?usd(r.medianPeakMarginUsd):UNAVAILABLE}</td>
-     <td>{ratio(r.medianReturnOnMaxLoss)}</td>
+     <td>{ratio(r.medianReturnOnStructuralLoss)}</td>
      <td className={r.medianReturnOnOpeningMargin===null?"dd-muted":undefined}>{ratio(r.medianReturnOnOpeningMargin)}</td>
      <td className={r.medianReturnOnPeakCapital===null?"dd-muted":undefined}>{ratio(r.medianReturnOnPeakCapital)}</td>
     </tr>)}</tbody>
    </table></div>
-   <small className="dd-note">Three separate concepts. Maximum economic loss is a property of the payoff and is computed here. Opening and peak margin are properties of the ACCOUNT — they depend on Deribit&rsquo;s margin model, standard versus portfolio margin and segregated versus cross collateral — so where the canonical margin scenario does not report them they stay Unavailable. The protective-leg cost, the width and the maximum loss are never substituted for a margin figure, and a return whose denominator is Unavailable is itself Unavailable rather than zero.</small>
+   <small className="dd-note">Three separate concepts. Maximum structural loss is an economic property of the structure, consumed from the canonical export; it is not Initial Margin and not Maintenance Margin. Opening and peak margin are properties of the ACCOUNT — they depend on Deribit&rsquo;s margin model, standard versus portfolio margin and segregated versus cross collateral — so where the canonical margin scenario does not report them they stay Unavailable. The protective-leg cost, the width and the structural loss are never substituted for a margin figure, and a return whose denominator is Unavailable is itself Unavailable rather than zero.</small>
   </section>
 
   {/* 6 · Stability across width */}
@@ -216,18 +216,18 @@ export function SpreadWidthReportView({report,view="maker",onViewChange}:{
    {steps.length===0
     ?<p className="dd-empty-inline">{UNAVAILABLE} — no matched ladder contains two different actual widths, so no adjacent step can be formed.</p>
     :<><div className="table-scroll"><table className="dd-table dd-compact">
-     <thead><tr><th>Event</th><th>Short K</th><th>DTE</th><th>Step</th><th>Δ net credit</th><th>Δ fee drag</th><th>Δ max loss</th><th>Δ invalidation PnL</th><th>Δ worst adverse</th><th>Δ settlement</th><th>Δ protection benefit</th><th>Δ return on max loss</th></tr></thead>
+     <thead><tr><th>Event</th><th>Short K</th><th>DTE</th><th>Step</th><th>Δ net credit</th><th>Δ fee drag</th><th>Δ structural loss</th><th>Δ invalidation PnL</th><th>Δ worst adverse</th><th>Δ settlement</th><th>Δ protection benefit</th><th>Δ return on structural loss</th></tr></thead>
      <tbody>{steps.map(step=><tr key={`${step.matchKey}-${step.narrowerWidthUsd}`}>
       <td>{step.eventId}</td><td>{money(step.shortStrike)}</td><td>{step.actualDteDays===null?"—":d1(step.actualDteDays)}</td>
       <td>{widthLabel(step.narrowerWidthUsd)} → {widthLabel(step.widerWidthUsd)}</td>
       <td className={step.deltaNetCreditUsd===null?"dd-muted":step.deltaNetCreditUsd>=0?"positive":"negative"}>{signedUsd(step.deltaNetCreditUsd)}</td>
       <td>{step.deltaFeeDragRoundTrip===null?UNAVAILABLE:pct(step.deltaFeeDragRoundTrip)}</td>
-      <td className={step.deltaMaxEconomicLossUsd===null?"dd-muted":"negative"}>{signedUsd(step.deltaMaxEconomicLossUsd)}</td>
+      <td className={step.deltaStructuralLossUsd===null?"dd-muted":"negative"}>{signedUsd(step.deltaStructuralLossUsd)}</td>
       <td className={step.deltaPnlAtInvalidationUsd===null?"dd-muted":undefined}>{signedUsd(step.deltaPnlAtInvalidationUsd)}</td>
       <td className={step.deltaWorstAdverseUsd===null?"dd-muted":undefined}>{signedUsd(step.deltaWorstAdverseUsd)}</td>
       <td className={step.deltaSettlementUsd===null?"dd-muted":undefined}>{signedUsd(step.deltaSettlementUsd)}</td>
       <td className={step.deltaProtectionBenefitUsd===null?"dd-muted":undefined}>{signedUsd(step.deltaProtectionBenefitUsd)}</td>
-      <td className={step.deltaReturnOnMaxLoss===null?"dd-muted":undefined}>{step.deltaReturnOnMaxLoss===null?UNAVAILABLE:step.deltaReturnOnMaxLoss.toFixed(3)}</td>
+      <td className={step.deltaReturnOnStructuralLoss===null?"dd-muted":undefined}>{step.deltaReturnOnStructuralLoss===null?UNAVAILABLE:step.deltaReturnOnStructuralLoss.toFixed(3)}</td>
      </tr>)}</tbody>
     </table></div>
     <small className="dd-note">Each row is one step between two ADJACENT actual widths inside a single matched ladder, never a difference of aggregate totals. A region where consecutive steps are small in every column is a plateau; a step where credit rises sharply while protection benefit collapses is the edge of one. The report stops here deliberately — identifying the region is its job, choosing inside it is not.</small></>}
@@ -236,7 +236,7 @@ export function SpreadWidthReportView({report,view="maker",onViewChange}:{
   {/* 7 · Audit */}
   <section className="dd-block"><h3>7 · Matched structures</h3>
    <div className="table-scroll"><table className="dd-table">
-    <thead><tr><th>Event</th><th>DTE</th><th>Short K</th><th>Requested</th><th>Actual</th><th>Scenario</th><th>Gross</th><th>Net</th><th>Long-leg cost</th><th>Fees</th><th>Max economic loss</th><th>PnL VPOC</th><th>PnL inval.</th><th>Worst adverse</th><th>Settlement</th><th>Protection benefit</th><th>Return on max loss</th></tr></thead>
+    <thead><tr><th>Event</th><th>DTE</th><th>Short K</th><th>Requested</th><th>Actual</th><th>Scenario</th><th>Gross</th><th>Net</th><th>Long-leg cost</th><th>Fees</th><th>Max structural loss</th><th>PnL VPOC</th><th>PnL inval.</th><th>Worst adverse</th><th>Settlement</th><th>Protection benefit</th><th>Return on structural loss</th></tr></thead>
     <tbody>{rows.map((r:WidthStructure)=><tr key={r.structureExecutionId}>
      <td>{r.eventId}</td><td>{r.actualDteDays===null?"—":d1(r.actualDteDays)}</td>
      <td>{money(r.identity.shortStrike)}</td>
@@ -246,12 +246,12 @@ export function SpreadWidthReportView({report,view="maker",onViewChange}:{
      <td>{usd(r.entry.grossCreditUsd)}</td><td>{usd(r.entry.netCreditUsd)}</td>
      <td>{usd(r.protection.longLegPremiumUsd)}</td>
      <td>{r.entry.openingFeesBtc===null?UNAVAILABLE:`${r.entry.openingFeesBtc.toFixed(5)} BTC`}</td>
-     <td className="negative">{usd(r.payoff.maxEconomicLossUsd.value)}</td>
+     <td className="negative">{usd(r.payoff.maximumStructuralLossUsd.value)}</td>
      <td>{usd(r.pnlAtVpocUsd)}</td><td>{usd(r.pnlAtInvalidationUsd)}</td>
      <td className={r.worstAdverseUsd===null?"dd-muted":"negative"} title={r.adverse.reason??undefined}>{usd(r.worstAdverseUsd)}</td>
      <td>{usd(r.pnlAtSettlementUsd)}</td>
      <td>{usd(r.protection.benefitAtDeepTailUsd.value)}</td>
-     <td className={r.capital.returnOnMaxLoss.value===null?"dd-muted":undefined} title={r.capital.returnOnMaxLoss.reason??undefined}>{ratio(r.capital.returnOnMaxLoss.value)}</td>
+     <td className={r.capital.returnOnStructuralLoss.value===null?"dd-muted":undefined} title={r.capital.returnOnStructuralLoss.reason??undefined}>{ratio(r.capital.returnOnStructuralLoss.value)}</td>
     </tr>)}</tbody>
    </table></div>
    <div className="ur-pager">

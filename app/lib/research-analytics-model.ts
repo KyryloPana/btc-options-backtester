@@ -1,4 +1,6 @@
 import { delayedEconomicPathAvailable } from "./research-tracks.ts";
+import { canonicalOutcomeId, outcomeHoldingHours, outcomeSourceStatus, outcomeTriggerStatus } from "./research-outcomes.ts";
+import { indexByCandidate, readCanonicalStructuralLoss, type StructuralLossReading } from "./canonical-structural-loss.ts";
 import type { AnalysisDataset } from "./research-analysis";
 
 export const ANALYTICS_STARTING_COMMIT =
@@ -212,6 +214,111 @@ export function buildResearchAnalyticsModel(d: AnalysisDataset): ResearchAnalyti
   return createResearchAnalyticsContext(d).model;
 }
 
+/** Statuses only a raw engine snapshot uses; never a tabular outcome status. */
+const SNAPSHOT_ONLY_STATUSES = new Set(["estimated", "not-hit"]);
+
+/** ISO string from either an ISO string or a millisecond timestamp. */
+const isoTime = (v: unknown): string | null => {
+  const x = s(v);
+  if (x !== null) return x;
+  const ms = n(v);
+  return ms === null ? null : new Date(ms).toISOString();
+};
+
+/**
+ * Project ONE canonical outcome into the older tabular shape.
+ *
+ * FIDELITY RULE. Track availability governs whether the TRACK exists; it never
+ * decides whether an individual exit policy was reached or priced. The
+ * projection previously wrote `status: available ? "priced" : "unavailable"`
+ * and `trigger_status: ... ?? "reached"`, so an available Reference track
+ * silently reported every exit -- including an invalidation that never
+ * happened -- as reached and priced.
+ *
+ * Each outcome now keeps its OWN canonical state. A state that the source
+ * already carries is passed through untouched; only a snapshot that carries no
+ * exported state at all is classified, and then by the same canonical helpers
+ * the exporter uses, never by a second mapping table written here. Nothing is
+ * promoted, and a genuinely evaluated source outcome is not demoted either.
+ *
+ * `priced` is the older tabular vocabulary for the canonical `evaluated`; the
+ * two are the same state under different names, so translating between them is
+ * not a status change.
+ */
+function projectOutcome(
+  x: Row,
+  name: string,
+  candidateId: string,
+  scenario: "maker" | "taker",
+  track: ScenarioTrack,
+  expiry: number | null,
+): Row {
+  // Canonical identity first, then the exported column, then the snapshot label.
+  const outcomeType =
+    s(x.outcome_type) ??
+    canonicalOutcomeId(x.label) ??
+    canonicalOutcomeId(name) ??
+    name;
+  // An exported row already states these; a raw snapshot is classified by the
+  // canonical helpers rather than assumed.
+  const triggerStatus = s(x.trigger_status) ?? outcomeTriggerStatus(x);
+  const sourceStatus = s(x.source_status) ?? outcomeSourceStatus(x);
+  const decision = isoTime(x.decision_available_timestamp_utc) ?? isoTime(x.decisionTimestamp);
+  const valuation = isoTime(x.valuation_timestamp_utc) ?? isoTime(x.valuationTimestamp);
+  const nativePnl = n(x.net_pnl_native) ?? n(x.estimatedNetPnlBtc) ?? n(x.raw_net_pnl_native);
+  const usdPnl = n(x.net_pnl_usd) ?? n(x.estimatedNetPnlUsd) ?? n(x.raw_net_pnl_usd);
+  // Two vocabularies share the field name. An exported tabular row states
+  // evaluated/priced/unavailable; a raw engine snapshot states estimated/not-hit.
+  // A snapshot status is a SOURCE status, so it is classified rather than
+  // passed through as if it were already a tabular one. `evaluated` and `priced`
+  // are the same state under two names, so translating between them is not a
+  // status change.
+  const raw = s(x.status);
+  const tabular = raw !== null && !SNAPSHOT_ONLY_STATUSES.has(raw) ? raw : null;
+  const status =
+    tabular === "evaluated" || tabular === "priced"
+      ? "priced"
+      : tabular !== null
+        ? tabular
+        : triggerStatus === "reached" && sourceStatus === "estimated" && nativePnl !== null
+          ? "priced"
+          : "unavailable";
+  const priced = status === "priced";
+  const holding =
+    x.holding_hours !== undefined
+      ? n(x.holding_hours)
+      : outcomeHoldingHours({
+          reached: priced,
+          entryTimestampMs: track.entryTime,
+          valuationTimestampMs: valuation === null ? null : Date.parse(valuation),
+          decisionTimestampMs: decision === null ? null : Date.parse(decision),
+          expiryTimestampMs: expiry,
+        });
+  return {
+    ...x,
+    candidate_id: candidateId,
+    execution_scenario: scenario,
+    analytics_track: track.track,
+    outcome_type: outcomeType,
+    status,
+    trigger_status: triggerStatus,
+    source_status: sourceStatus,
+    decision_available_timestamp_utc: decision,
+    valuation_timestamp_utc: valuation,
+    holding_hours: holding,
+    // A per-pricing-track status that the source already stated is preserved;
+    // otherwise it follows this outcome's own state, never the track's.
+    raw_status: s(x.raw_status) ?? status,
+    iv_normalized_status: s(x.iv_normalized_status) ?? status,
+    net_pnl_native: nativePnl,
+    net_pnl_usd: usdPnl,
+    raw_net_pnl_native: n(x.raw_net_pnl_native) ?? nativePnl,
+    raw_net_pnl_usd: n(x.raw_net_pnl_usd) ?? usdPnl,
+    iv_normalized_net_pnl_native: n(x.iv_normalized_net_pnl_native) ?? nativePnl,
+    iv_normalized_net_pnl_usd: n(x.iv_normalized_net_pnl_usd) ?? usdPnl,
+  };
+}
+
 /**
  * Project one canonical analytical track back into the tabular shape consumed
  * by the older report calculators.  This is deliberately the only compatibility
@@ -260,27 +367,8 @@ function projectAnalyticsTrack(
       net_opening_cash_flow_native: available ? track.economics.netCredit : null,
     });
     if (!track) continue;
-    for (const [name, value] of Object.entries(track.outcomes)) {
-      const x = rec(value);
-      outcomes.push({
-        ...x,
-        candidate_id: observation.candidateId,
-        execution_scenario: scenario,
-        outcome_type: s(x.outcome_type) ?? s(x.label)?.toLowerCase() ?? name,
-        status: available ? "priced" : "unavailable",
-        trigger_status: s(x.trigger_status) ?? "reached",
-        decision_available_timestamp_utc: s(x.decision_available_timestamp_utc) ?? s(x.decisionTimestamp) ?? s(x.valuationTimestamp),
-        valuation_timestamp_utc: s(x.valuation_timestamp_utc) ?? s(x.valuationTimestamp),
-        raw_status: available ? "priced" : "unavailable",
-        iv_normalized_status: available ? "priced" : "unavailable",
-        net_pnl_native: n(x.net_pnl_native) ?? n(x.estimatedNetPnlBtc),
-        net_pnl_usd: n(x.net_pnl_usd) ?? n(x.estimatedNetPnlUsd),
-        raw_net_pnl_native: n(x.net_pnl_native) ?? n(x.estimatedNetPnlBtc),
-        raw_net_pnl_usd: n(x.net_pnl_usd) ?? n(x.estimatedNetPnlUsd),
-        iv_normalized_net_pnl_native: n(x.net_pnl_native) ?? n(x.estimatedNetPnlBtc),
-        iv_normalized_net_pnl_usd: n(x.net_pnl_usd) ?? n(x.estimatedNetPnlUsd),
-      });
-    }
+    for (const [name, value] of Object.entries(track.outcomes))
+      outcomes.push(projectOutcome(rec(value), name, observation.candidateId, scenario, track, observation.structure.expiryTime));
     for (const value of track.valuationPath) {
       const x = rec(value);
       valuations.push({
@@ -307,6 +395,7 @@ function economics(
   margin: Row | undefined,
   outcome: Row | undefined,
   entryTime: number | null,
+  structuralLoss?: StructuralLossReading,
 ): PositionEconomics {
   const gross = n(r.gross_credit_debit_native),
     entryFees = n(r.opening_fees_native) ?? 0,
@@ -318,15 +407,15 @@ function economics(
     usd = n(outcome?.net_pnl_usd),
     width = n(rec(r.actual_strikes).width),
     qty = n(r.quantity) ?? 1,
-    // Canonical bounded structural risk, from the exported margin metadata.
-    // `maximum_economic_loss_native` never existed on a candidates row and was
-    // renamed away entirely, so this always fell through to the derivation
-    // below. That derivation is algebraically identical to
+    // Canonical bounded structural risk, read through the single canonical
+    // adapter: structure_economics first, margin_scenarios as reconciliation.
+    // The width-minus-credit derivation below is algebraically identical to
     // `canonicalStructuralLoss` for an inverse vertical
-    // (width/index x qty - net credit) and is retained only as a fallback for
-    // rows whose margin metadata is absent; it is never preferred over the
-    // canonical value, so the two can no longer diverge silently.
+    // (width/index x qty - net credit) and is retained only as a last resort
+    // for rows that carry neither canonical source; it is never preferred over
+    // a canonical value, so the two can no longer diverge silently.
     maxLoss =
+      structuralLoss?.btc ??
       n(margin?.maximum_structural_loss_native) ??
       (width !== null && net !== null && n(r.entry_index_price) !== null
         ? Math.max(0, (width / n(r.entry_index_price)!) * qty - net)
@@ -347,7 +436,7 @@ function economics(
         ? (exit - entryTime) / 864e5
         : null,
     reasons: string[] = [];
-  if (maxLoss === null) reasons.push("maximum loss unavailable");
+  if (maxLoss === null) reasons.push("maximum structural loss unavailable");
   if (openIm === null) reasons.push("opening margin unavailable");
   if (peakIm === null) reasons.push("peak capital unavailable");
   if (pnl === null) reasons.push("exit PnL unavailable");
@@ -388,6 +477,7 @@ function canonicalSnapshotTrack(
   snapshot: Row,
   expiry: number | null,
   signal: number | null,
+  structuralLoss?: StructuralLossReading,
 ): ScenarioTrack {
   const entry = rec(snapshot.entrySnapshot),
     statusValue = s(snapshot.status),
@@ -479,6 +569,7 @@ function canonicalSnapshotTrack(
           } as Row)
         : undefined,
       entryTime,
+      structuralLoss,
     ),
     reason: available ? null : (s(snapshot.reason) ?? `${track} unavailable`),
   };
@@ -490,6 +581,16 @@ function buildResearchAnalyticsModelUncached(
   const t = d.tables,
     events = new Map((t.events ?? []).map((r) => [s(r.event_id)!, r])),
     margins = t.margin_scenarios ?? [],
+    // Canonical structural risk is READ once per candidate, never recomputed.
+    structureEconomicsById = indexByCandidate(t.structure_economics),
+    marginById = indexByCandidate(margins),
+    structuralLossFor = (candidateId: string | null): StructuralLossReading | undefined =>
+      candidateId === null
+        ? undefined
+        : readCanonicalStructuralLoss({
+            economics: structureEconomicsById.get(candidateId),
+            margin: marginById.get(candidateId),
+          }),
     outcomes = t.outcomes ?? [],
     vals = t.valuations ?? [],
     groups = new Map<
@@ -606,10 +707,11 @@ function buildResearchAnalyticsModelUncached(
             (x) => s(x.candidate_id) === s(r.candidate_id) && s(x.execution_scenario) === s(r.execution_scenario),
           ).map((x, index) => [(s(x.outcome_type) ?? `outcome_${index}`).toLowerCase(), x])),
           exitPolicy: s(r.exit_policy) ?? "settlement",
-          economics: economics(r, margin, outcome, entry),
+          economics: economics(r, margin, outcome, entry, structuralLossFor(s(r.candidate_id))),
           reason: s(r.execution_scenario_reason),
         };
       }
+      const baseLoss = structuralLossFor(s(base.candidate_id));
       const ref = rec(base.reference_valuation);
       if (Object.keys(ref).length)
         tracks.reference = canonicalSnapshotTrack(
@@ -619,6 +721,7 @@ function buildResearchAnalyticsModelUncached(
           ref,
           expiry,
           signal,
+          baseLoss,
         );
       const delayed = rec(base.delayed_execution);
       if (Object.keys(delayed).length) {
@@ -632,6 +735,7 @@ function buildResearchAnalyticsModelUncached(
             maker,
             expiry,
             signal,
+            baseLoss,
           );
         if (Object.keys(taker).length)
           tracks.delayed_taker = canonicalSnapshotTrack(
@@ -641,6 +745,7 @@ function buildResearchAnalyticsModelUncached(
             taker,
             expiry,
             signal,
+            baseLoss,
           );
         if (!Object.keys(maker).length && !Object.keys(taker).length) {
           tracks.delayed_maker = canonicalSnapshotTrack(
@@ -650,6 +755,7 @@ function buildResearchAnalyticsModelUncached(
             delayed,
             expiry,
             signal,
+            baseLoss,
           );
           tracks.delayed_taker = canonicalSnapshotTrack(
             id,
@@ -658,6 +764,7 @@ function buildResearchAnalyticsModelUncached(
             delayed,
             expiry,
             signal,
+            baseLoss,
           );
         }
       }
@@ -676,6 +783,7 @@ function buildResearchAnalyticsModelUncached(
             snapshot,
             expiry,
             signal,
+            baseLoss,
           );
       }
       return {

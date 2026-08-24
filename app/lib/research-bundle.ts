@@ -2,7 +2,7 @@ import { assessCandidateAnalyticalTracks, canonicalJson, migrateResearchSelectio
 import { reconcileCandidateSpread } from "./semantic-spread.ts";
 import { buildEventFuturesBaseline, FUTURES_ENGINE_VERSION } from "./futures-baseline.ts";
 import { resolveEventTiming } from "./event-timing.ts";
-import { OUTCOMES_OUTSIDE_EXPORT_CONTRACT, RESEARCH_OUTCOME_IDENTITY_VERSION, canonicalOutcomeId, outcomeHoldingHours, resolveOutcomeLabels } from "./research-outcomes.ts";
+import { OUTCOMES_OUTSIDE_EXPORT_CONTRACT, RESEARCH_OUTCOME_IDENTITY_VERSION, canonicalOutcomeId, outcomeHoldingHours, outcomeSourceStatus, outcomeTriggerStatus, resolveOutcomeLabels } from "./research-outcomes.ts";
 import { CONFIGURATION_IDENTITY_VERSION, describeMethodologyStaleness, diagnoseMethodologyStaleness, effectiveConfigurationHash, methodologyIdentity } from "./configuration-identity.ts";
 import { BUILD_PROVENANCE_UNAVAILABLE, buildProvenanceStatus } from "./build-provenance.ts";
 import { buildResearchMarginSnapshot, canonicalMarginReason, LEGACY_MARGIN_NOT_COMPUTED_REASON } from "./research-margin.ts";
@@ -45,13 +45,10 @@ const outcomeIndex=(snapshots:readonly JsonValue[])=>{
  }
  return{byOutcome,unmapped};
 };
-/** Faithful export status: an evaluated source snapshot is never demoted, and an unavailable one is never promoted. */
-const sourceOutcomeStatus=(snapshot:Record<string,JsonValue>|undefined)=>{
- if(!snapshot)return "absent" as const;
- const status=String(snapshot.status??"");
- return status==="estimated"?"estimated" as const:status==="not-hit"?"not-hit" as const:"unavailable" as const;
-};
-const triggerStatus=(snapshot:Row|undefined)=>{if(!snapshot)return "unavailable";if(snapshot.status==="not-hit")return "not_reached";if(snapshot.evidenceReason==="Target occurs after contract expiry.")return "after_expiry";if(snapshot.trigger==="ambiguous")return "ambiguous";return snapshot.decisionTimestamp==null?"unavailable":"reached"};
+// One canonical definition, shared with the analytics compatibility projection
+// so a report can never invent an outcome state the engines did not produce.
+const sourceOutcomeStatus=outcomeSourceStatus;
+const triggerStatus=outcomeTriggerStatus;
 const qualityCode=(quality:JsonValue):ResearchReasonCode=>quality==="green"?"quality_green":quality==="yellow"?"quality_yellow":quality==="red"?"quality_red":"quality_unavailable";
 const missingFieldCode=(field:JsonValue):ResearchReasonCode=>field==="targetIndex"?"missing_target_index":"missing_pricing_track";
 
