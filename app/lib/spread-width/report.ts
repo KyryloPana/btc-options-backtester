@@ -32,13 +32,13 @@ export interface WidthBandRow {
  readonly medianNetCreditUsd:number|null;
  readonly medianCreditPerActualWidth:number|null;
  readonly medianCreditPerRequestedWidth:number|null;
- readonly medianCreditPerMaxLoss:number|null;
+ readonly medianCreditPerStructuralLoss:number|null;
  readonly medianLongLegCostUsd:number|null;
  readonly medianLongLegShareOfShortPremium:number|null;
  readonly medianFeeDragOnOpening:number|null;
  readonly medianFeeDragRoundTrip:number|null;
  readonly medianBreakEvenIndex:number|null;
- readonly medianMaxEconomicLossUsd:number|null;
+ readonly medianStructuralLossUsd:number|null;
 }
 
 export interface ProtectionRow {
@@ -67,12 +67,12 @@ export interface PathRiskRow {
 export interface CapitalRow {
  readonly actualWidthUsd:number;
  readonly n:number;
- readonly medianMaxEconomicLossUsd:number|null;
+ readonly medianStructuralLossUsd:number|null;
  readonly openingMarginAvailableN:number;
  readonly peakMarginAvailableN:number;
  readonly medianOpeningMarginUsd:number|null;
  readonly medianPeakMarginUsd:number|null;
- readonly medianReturnOnMaxLoss:number|null;
+ readonly medianReturnOnStructuralLoss:number|null;
  readonly medianReturnOnOpeningMargin:number|null;
  readonly medianReturnOnPeakCapital:number|null;
  /** The shared reason opening/peak margin is missing, when it is. */
@@ -99,12 +99,12 @@ export interface AdjacentWidthStep {
  /** Wider minus narrower, in each metric's own units. Null when either side is Unavailable. */
  readonly deltaNetCreditUsd:number|null;
  readonly deltaFeeDragRoundTrip:number|null;
- readonly deltaMaxEconomicLossUsd:number|null;
+ readonly deltaStructuralLossUsd:number|null;
  readonly deltaPnlAtInvalidationUsd:number|null;
  readonly deltaWorstAdverseUsd:number|null;
  readonly deltaSettlementUsd:number|null;
  readonly deltaProtectionBenefitUsd:number|null;
- readonly deltaReturnOnMaxLoss:number|null;
+ readonly deltaReturnOnStructuralLoss:number|null;
  readonly deltaReturnOnOpeningMargin:number|null;
  readonly deltaReturnOnPeakCapital:number|null;
  readonly economicsComparable:boolean;
@@ -129,9 +129,9 @@ export interface WidthSummary {
  readonly distinctActualWidths:readonly number[];
  readonly substitutedWidthN:number;
  readonly medianNetCreditUsd:number|null;
- readonly medianMaxEconomicLossUsd:number|null;
+ readonly medianStructuralLossUsd:number|null;
  readonly medianFeeDragRoundTrip:number|null;
- readonly maxLossAvailableN:number;
+ readonly structuralLossAvailableN:number;
  readonly openingMarginAvailableN:number;
  readonly peakMarginAvailableN:number;
 }
@@ -165,13 +165,13 @@ function bandRow(width:number,rows:readonly WidthStructure[]):WidthBandRow{
   medianNetCreditUsd:median(defined(rows.map(r=>r.entry.netCreditUsd))),
   medianCreditPerActualWidth:median(defined(rows.map(r=>r.entry.creditPerActualWidth))),
   medianCreditPerRequestedWidth:median(defined(rows.map(r=>r.entry.creditPerRequestedWidth))),
-  medianCreditPerMaxLoss:median(defined(rows.map(r=>r.entry.creditPerMaxEconomicLoss))),
+  medianCreditPerStructuralLoss:median(defined(rows.map(r=>r.entry.creditPerStructuralLoss))),
   medianLongLegCostUsd:median(defined(rows.map(r=>r.protection.longLegPremiumUsd))),
   medianLongLegShareOfShortPremium:median(defined(rows.map(r=>r.entry.longLegCostShareOfShortPremium))),
   medianFeeDragOnOpening:median(defined(rows.map(r=>r.entry.feeDragOnOpening))),
   medianFeeDragRoundTrip:median(defined(rows.map(r=>r.entry.feeDragRoundTrip))),
   medianBreakEvenIndex:median(defined(rows.map(r=>r.payoff.breakEvenIndex.value))),
-  medianMaxEconomicLossUsd:median(defined(rows.map(r=>r.payoff.maxEconomicLossUsd.value))),
+  medianStructuralLossUsd:median(defined(rows.map(r=>r.payoff.maximumStructuralLossUsd.value))),
  };
 }
 
@@ -205,11 +205,11 @@ function capitalRow(width:number,rows:readonly WidthStructure[]):CapitalRow{
  const peak=rows.filter(r=>r.capital.peakMarginUsd.value!==null);
  return {
   actualWidthUsd:width,n:rows.length,
-  medianMaxEconomicLossUsd:median(defined(rows.map(r=>r.capital.maxEconomicLossUsd.value))),
+  medianStructuralLossUsd:median(defined(rows.map(r=>r.capital.maximumStructuralLossUsd.value))),
   openingMarginAvailableN:opening.length,peakMarginAvailableN:peak.length,
   medianOpeningMarginUsd:median(defined(opening.map(r=>r.capital.incrementalInitialMarginUsd.value))),
   medianPeakMarginUsd:median(defined(peak.map(r=>r.capital.peakMarginUsd.value))),
-  medianReturnOnMaxLoss:median(defined(rows.map(r=>r.capital.returnOnMaxLoss.value))),
+  medianReturnOnStructuralLoss:median(defined(rows.map(r=>r.capital.returnOnStructuralLoss.value))),
   medianReturnOnOpeningMargin:median(defined(rows.map(r=>r.capital.returnOnOpeningMargin.value))),
   medianReturnOnPeakCapital:median(defined(rows.map(r=>r.capital.returnOnPeakCapital.value))),
   marginUnavailableReason:opening.length===0?rows[0]?.capital.incrementalInitialMarginUsd.reason??null:null,
@@ -225,12 +225,12 @@ function stepOf(narrower:WidthStructure,wider:WidthStructure):AdjacentWidthStep{
   narrowerWidthUsd:narrower.identity.actualWidthUsd!,widerWidthUsd:wider.identity.actualWidthUsd!,
   deltaNetCreditUsd:eco(diff(wider.entry.netCreditUsd,narrower.entry.netCreditUsd)),
   deltaFeeDragRoundTrip:eco(diff(wider.entry.feeDragRoundTrip,narrower.entry.feeDragRoundTrip)),
-  deltaMaxEconomicLossUsd:diff(wider.payoff.maxEconomicLossUsd.value,narrower.payoff.maxEconomicLossUsd.value),
+  deltaStructuralLossUsd:diff(wider.payoff.maximumStructuralLossUsd.value,narrower.payoff.maximumStructuralLossUsd.value),
   deltaPnlAtInvalidationUsd:eco(diff(wider.pnlAtInvalidationUsd,narrower.pnlAtInvalidationUsd)),
   deltaWorstAdverseUsd:eco(diff(wider.worstAdverseUsd,narrower.worstAdverseUsd)),
   deltaSettlementUsd:eco(diff(wider.pnlAtSettlementUsd,narrower.pnlAtSettlementUsd)),
   deltaProtectionBenefitUsd:eco(diff(wider.protection.benefitAtDeepTailUsd.value,narrower.protection.benefitAtDeepTailUsd.value)),
-  deltaReturnOnMaxLoss:eco(diff(wider.capital.returnOnMaxLoss.value,narrower.capital.returnOnMaxLoss.value)),
+  deltaReturnOnStructuralLoss:eco(diff(wider.capital.returnOnStructuralLoss.value,narrower.capital.returnOnStructuralLoss.value)),
   deltaReturnOnOpeningMargin:eco(diff(wider.capital.returnOnOpeningMargin.value,narrower.capital.returnOnOpeningMargin.value)),
   deltaReturnOnPeakCapital:eco(diff(wider.capital.returnOnPeakCapital.value,narrower.capital.returnOnPeakCapital.value)),
   economicsComparable,
@@ -283,9 +283,9 @@ export function buildSpreadWidthReport(dataset:AnalysisDataset,scenario?:Executi
    distinctActualWidths:widths,
    substitutedWidthN:structures.filter(s=>s.identity.widthSubstituted).length,
    medianNetCreditUsd:median(defined(matched.map(s=>s.entry.netCreditUsd))),
-   medianMaxEconomicLossUsd:median(defined(matched.map(s=>s.payoff.maxEconomicLossUsd.value))),
+   medianStructuralLossUsd:median(defined(matched.map(s=>s.payoff.maximumStructuralLossUsd.value))),
    medianFeeDragRoundTrip:median(defined(matched.map(s=>s.entry.feeDragRoundTrip))),
-   maxLossAvailableN:matched.filter(s=>s.payoff.maxEconomicLossUsd.value!==null).length,
+   structuralLossAvailableN:matched.filter(s=>s.payoff.maximumStructuralLossUsd.value!==null).length,
    openingMarginAvailableN:matched.filter(s=>s.capital.incrementalInitialMarginUsd.value!==null).length,
    peakMarginAvailableN:matched.filter(s=>s.capital.peakMarginUsd.value!==null).length,
   },
@@ -305,13 +305,15 @@ export function buildSpreadWidthReport(dataset:AnalysisDataset,scenario?:Executi
    "Scope. This report analyses PROTECTIVE WIDTH only. The short strike is held constant inside every comparison and is never re-optimized here: the short strike decides where risk begins, width decides how much tail exposure is retained and how much protection is purchased. Short-strike placement is a separate report.",
    `Comparison unit. A matched width group holds the same MR event, actual expiry and DTE, SHORT STRIKE, option/structure and exit policy; only the protective long differs. Execution scenario is absent from the primary key. This report is scoped to the ${primary?"reference":selectedScenario} track; explicit observed robustness layers are filtered before grouping, so maker and taker never share a statistic.`,
    "Requested versus actual width. Historical strike availability frequently forces the protective long onto a strike other than the one requested. Every economic figure -- payoff, credit ratio, maximum loss, capital return -- is computed from the ACTUAL contracts, and structures are ordered on the ladder by actual width. The requested width is retained beside it for audit and is reported as substituted where the two differ, but it is never fed into a calculation.",
-   "Inverse-option payoff. Maximum economic loss is NOT modelled as width minus credit. These are inverse BTC options: intrinsic value is (K-S)/S or (S-K)/S, settlement fees apply per leg, and the USD result depends on both the entry index and the settlement index. Every payoff, breakeven and maximum-loss figure comes from the application's authoritative expiry-payoff utility, so this report cannot disagree with the payoff shown elsewhere in the app.",
-   "Entry economics use canonical per-leg premiums and the canonical fee schedule, per execution scenario: maker and taker each price their own legs and their own fees. Credit is reported against requested width, actual width and the exact maximum economic loss, since the last of those is the only denominator that reflects the real payoff.",
+   "Structural risk is consumed, not recomputed. The canonical risk figure is the bounded MAXIMUM STRUCTURAL LOSS already exported by the research bundle: structure_economics is the primary source and margin_scenarios is read as reconciliation. Where both are present and materially disagree, the figure is reported Unavailable as an integrity failure rather than resolved by preferring one. This report no longer derives its own fee-inclusive maximum from a payoff extremum sampled at an unbounded settlement index.",
+   "Settlement fees remain real and remain separate. A delivery fee is a fixed BTC amount per leg, so its USD value grows without bound as the settlement index grows; for a bear call, where both legs finish deep in the money, no finite GLOBAL fee-inclusive maximum exists at all. Delivery fees are therefore reported at an explicitly named settlement scenario and are never folded into the bounded structural loss.",
+   "Inverse-option payoff. The authoritative expiry-payoff utility still supplies the scenario quantities it legitimately answers -- breakeven, maximum profit, the settlement payoff and the protective-long counterfactual -- so this report cannot disagree with the payoff shown elsewhere in the app. It no longer defines the report's canonical structural risk.",
+   "Entry economics use canonical per-leg premiums and the canonical fee schedule, per execution scenario: maker and taker each price their own legs and their own fees. Credit is reported against requested width, actual width and the canonical maximum structural loss, since the last of those is the only denominator that reflects the structure's genuinely bounded risk.",
    "Fees. Opening fees are canonical. The four-leg round trip adds an estimated closing pair computed with the SAME canonical fee schedule applied to the entry premiums; it is labelled an estimate and never presented as a recorded fee. Fee drag is reported both on the opening alone and on the estimated round trip.",
    "Protective long as insurance. The counterfactual removes ONLY the long leg: the same event, the same short option, the same entry timing, the same execution scenario and the same settlement index, priced through the same canonical premiums, fee schedule and inverse-intrinsic primitives. It is not a separate naked backtest with its own assumptions. Benefit is reported at the long strike, where protection first bites, and at a stated deep-tail reference index; the unprotected inverse short has no finite worst case, which is the point of carrying the leg.",
    "Path risk uses only evidence from inside the structure's life. PnL at invalidation is used only when the invalidation genuinely occurred between entry and expiry. Worst adverse and MAE come from the shared adverse-path primitive: this scenario's raw-VWAP track only, never a modelled mark. Touch and breach come from the shared strike-challenge primitive and depend on the short strike and the path alone -- which is why every width in a matched group shares the same challenge state.",
    "Slow-resolution behaviour reuses the canonical Duration & DTE cohorts (fast < P25, normal P25-P75, slow > P75, with unresolved kept explicit), cut from the observed first-resolution distribution. No hypothetical path is fabricated, and DTE is held constant inside each matched group.",
-   "Capital. Three concepts are kept apart and never collapsed. Maximum economic loss is a property of the payoff and is computed here. Incremental initial margin and peak margin are properties of the ACCOUNT -- they depend on Deribit's margin model, standard versus portfolio margin and segregated versus cross collateral -- so where the canonical margin scenario does not report them they stay Unavailable. The protective-leg cost, the width and the maximum loss are never substituted for a margin figure, and a return whose denominator is Unavailable is itself Unavailable rather than zero.",
+   "Capital. Three concepts are kept apart and never collapsed. Maximum STRUCTURAL loss is an economic property of the structure and is consumed from the canonical export; it is not Initial Margin and not Maintenance Margin. Incremental initial margin and peak margin are properties of the ACCOUNT -- they depend on Deribit's margin model, standard versus portfolio margin and segregated versus cross collateral -- so where the canonical margin scenario does not report them they stay Unavailable. The protective-leg cost, the width and the structural loss are never substituted for a margin figure, and a return whose denominator is Unavailable is itself Unavailable rather than zero.",
    "Stability, not selection. Adjacent-width steps are reported pairwise inside each matched group so a plateau -- a region where neighbouring widths behave similarly -- can be seen rather than inferred from aggregate totals. No width is chosen, and no width is preferred merely for having produced the highest historical PnL.",
   ],
  };

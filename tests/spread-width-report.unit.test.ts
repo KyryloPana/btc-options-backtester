@@ -4,6 +4,7 @@ import type {AnalysisDataset} from "../app/lib/research-analysis.ts";
 import {normalizeWidthStructures} from "../app/lib/spread-width/normalize.ts";
 import {buildSpreadWidthReport} from "../app/lib/spread-width/report.ts";
 import {expiryPayoff,payoffExtrema} from "../app/lib/expiry-payoff.ts";
+import {canonicalStructuralLoss,STRUCTURAL_LOSS_METHOD_VERSION} from "../app/lib/maximum-economic-loss.ts";
 
 const H=36e5;
 const D=(day:number,hour=0)=>new Date(Date.UTC(2026,0,day,hour)).toISOString();
@@ -192,34 +193,44 @@ test("ENTRY: a narrower spread keeps less credit than a wider one on this ladder
 
 /* ---------------- inverse payoff ---------------- */
 
-test("PAYOFF: maximum economic loss comes from the authoritative inverse utility, not width minus credit",()=>{
+test("PAYOFF: structural risk is the canonical bounded loss, not a fee-inclusive payoff extremum",()=>{
  const s=pick("e1-w2000");
  const input={optionType:"P" as const,shortStrike:40000,longStrike:38000,
   shortEntryPremiumBtc:SHORT_PREMIUM,longEntryPremiumBtc:LONG_PREMIUM[38000]!,
   entryIndex:ENTRY_INDEX,amount:QTY,openingFeesBtc:.0004,expiryTimestamp:T(8)};
- const expected=payoffExtrema(input,"usd-cash-flow");
- assert.equal(s.payoff.maxEconomicLossUsd.value,expected.maximumLoss);
- assert.equal(s.payoff.maxProfitUsd.value,expected.maximumProfit);
- // The naive model would be width - net credit; the exact inverse payoff is not that.
- const naive=-(2000-s.entry.netCreditUsd!);
- assert.notEqual(Math.round(s.payoff.maxEconomicLossUsd.value!),Math.round(naive));
+ // The report reproduces the canonical helper exactly, and reports a positive magnitude.
+ const canonical=canonicalStructuralLoss(input);
+ assert.equal(canonical.status,"available");
+ assert.equal(s.payoff.maximumStructuralLossUsd.value,canonical.usd);
+ assert.equal(s.payoff.structuralLossMethodVersion,STRUCTURAL_LOSS_METHOD_VERSION);
+ assert.ok(s.payoff.maximumStructuralLossUsd.value!>0,"the canonical sign convention is a positive magnitude");
+ // Maximum profit remains a legitimate payoff-primitive quantity.
+ assert.equal(s.payoff.maxProfitUsd.value,payoffExtrema(input,"usd-cash-flow").maximumProfit);
+ // Bounded and plausible: never the fee-inclusive tail artifact.
+ assert.ok(s.payoff.maximumStructuralLossUsd.value!<1e6,"an ordinary $2k-wide spread cannot carry a six-figure-plus structural risk");
 });
 
-test("PAYOFF: the result is settlement-price dependent and carries a BTC equivalent",()=>{
+test("PAYOFF: delivery fees stay separate from the bounded structural loss",()=>{
  const s=pick("e1-w2000");
  const input={optionType:"P" as const,shortStrike:40000,longStrike:38000,
   shortEntryPremiumBtc:SHORT_PREMIUM,longEntryPremiumBtc:LONG_PREMIUM[38000]!,
   entryIndex:ENTRY_INDEX,amount:QTY,openingFeesBtc:.0004,expiryTimestamp:T(8)};
  const high=expiryPayoff(input,45000,"usd-cash-flow").pnl,low=expiryPayoff(input,36000,"usd-cash-flow").pnl;
  assert.ok(high>low,"the payoff genuinely depends on the settlement index");
- assert.notEqual(s.payoff.maxEconomicLossBtc.value,s.payoff.maxEconomicLossUsd.value,"native BTC and USD are distinct");
- assert.notEqual(s.payoff.maxLossIndex,null);
- assert.ok(s.payoff.settlementFeesAtMaxLossBtc!>=0,"per-leg settlement fees are included");
+ const fees=s.payoff.settlementFees!;
+ assert.equal(fees.includedInStructuralLoss,false);
+ // A bull put has both legs out of the money above the short strike, so its
+ // fee-inclusive maximum genuinely is bounded.
+ assert.equal(fees.globalFeeInclusiveMaximum,"bounded");
+ assert.ok(fees.scenarioLabel,"the delivery fee is reported at a NAMED settlement scenario");
+ assert.notEqual(s.payoff.structuralLossSettlementIndex,null);
+ assert.ok(s.payoff.settlementFeesAtStructuralLossBtc!>=0);
+ assert.notEqual(s.payoff.maximumStructuralLossBtc.value,s.payoff.maximumStructuralLossUsd.value,"native BTC and USD are distinct");
 });
 
-test("PAYOFF: a wider spread carries a strictly larger maximum economic loss",()=>{
- const losses=groupFor("e1").structures.map(s=>s.payoff.maxEconomicLossUsd.value!);
- for(let i=1;i<losses.length;i++)assert.ok(losses[i]!<losses[i-1]!,"loss is negative, so wider is more negative");
+test("PAYOFF: a wider spread carries a strictly larger maximum structural loss",()=>{
+ const losses=groupFor("e1").structures.map(s=>s.payoff.maximumStructuralLossUsd.value!);
+ for(let i=1;i<losses.length;i++)assert.ok(losses[i]!>losses[i-1]!,"loss is a positive magnitude, so wider is larger");
 });
 
 test("PAYOFF: breakeven is solved on the canonical net payoff",()=>{
@@ -232,9 +243,9 @@ test("PAYOFF: invalid canonical inputs leave the payoff Unavailable with a reaso
  const broken={...dataset,tables:{...dataset.tables,candidates:candidates.map(c=>
   c.candidate_id==="e1-w2000"&&c.execution_scenario==="maker"?{...c,entry_legs:{short:{price_native:null},long:{price_native:null}}}:c)}} as unknown as AnalysisDataset;
  const s=normalizeWidthStructures(broken).find(x=>x.candidateId==="e1-w2000"&&x.executionScenario==="maker")!;
- assert.equal(s.payoff.maxEconomicLossUsd.value,null);
- assert.match(s.payoff.maxEconomicLossUsd.reason!,/canonical premium|absent/i);
- assert.equal(s.capital.returnOnMaxLoss.value,null,"a ratio whose denominator is missing stays Unavailable");
+ assert.equal(s.payoff.maximumStructuralLossUsd.value,null);
+ assert.match(s.payoff.maximumStructuralLossUsd.reason!,/canonical premium|absent/i);
+ assert.equal(s.capital.returnOnStructuralLoss.value,null,"a ratio whose denominator is missing stays Unavailable");
 });
 
 /* ---------------- long-leg insurance ---------------- */
@@ -299,17 +310,17 @@ test("PATH: slow-resolution cohorts reuse the canonical Duration & DTE boundarie
 
 test("CAPITAL: maximum economic loss, opening margin and peak margin stay three separate things",()=>{
  const c=pick("e1-w2000").capital;
- assert.notEqual(c.maxEconomicLossUsd.value,null,"max loss is a payoff property and is computable");
+ assert.notEqual(c.maximumStructuralLossUsd.value,null,"max loss is a payoff property and is computable");
  assert.equal(c.incrementalInitialMarginUsd.value,null,"opening margin is an account property and is unavailable here");
  assert.equal(c.peakMarginUsd.value,null);
  assert.match(c.incrementalInitialMarginUsd.reason!,/account model|portfolio margin/i);
  // The maximum loss must never be silently reused as a margin figure.
- assert.notEqual(c.incrementalInitialMarginUsd.value,c.maxEconomicLossUsd.value);
+ assert.notEqual(c.incrementalInitialMarginUsd.value,c.maximumStructuralLossUsd.value);
 });
 
 test("CAPITAL: a return is Unavailable exactly when its denominator is",()=>{
  const c=pick("e1-w2000").capital;
- assert.notEqual(c.returnOnMaxLoss.value,null,"max loss exists, so this ratio exists");
+ assert.notEqual(c.returnOnStructuralLoss.value,null,"max loss exists, so this ratio exists");
  assert.equal(c.returnOnOpeningMargin.value,null);
  assert.equal(c.returnOnPeakCapital.value,null);
  assert.match(c.returnOnOpeningMargin.reason!,/account model|portfolio margin/i);
@@ -332,7 +343,7 @@ test("CAPITAL: a genuinely available margin figure produces a real ratio",()=>{
 test("CAPITAL: the report surfaces how much capital data actually exists",()=>{
  assert.equal(report.summary.openingMarginAvailableN,0);
  assert.equal(report.summary.peakMarginAvailableN,0);
- assert.ok(report.summary.maxLossAvailableN>0,"max loss is computable even with no margin data at all");
+ assert.ok(report.summary.structuralLossAvailableN>0,"max loss is computable even with no margin data at all");
  const row=report.capital.find(r=>r.actualWidthUsd===2000)!;
  assert.equal(row.medianOpeningMarginUsd,null);
  assert.match(row.marginUnavailableReason!,/account model|portfolio margin/i);
@@ -345,7 +356,7 @@ test("STEPS: adjacent-width differences are pairwise, not aggregate",()=>{
  assert.equal(step.narrowerWidthUsd,1000);
  assert.equal(step.widerWidthUsd,2000);
  assert.ok(step.deltaNetCreditUsd!>0,"widening retains more credit");
- assert.ok(step.deltaMaxEconomicLossUsd!<0,"and carries a larger maximum loss");
+ assert.ok(step.deltaStructuralLossUsd!>0,"and carries a larger structural loss magnitude");
  assert.equal(step.deltaWorstAdverseUsd,-240-(-180),"wider ran further under water on the same path");
  assert.ok(step.deltaProtectionBenefitUsd!<0,"the wider long removes less tail");
  assert.equal(step.economicsComparable,true);
@@ -371,7 +382,7 @@ test("SUMMARY: matched observations, width bands and substitution are all report
  assert.equal(s.matchedGroups,3,"e1, e2 and e3 each have a ladder");
  assert.equal(s.substitutedWidthN,1,"only e3-substituted differs from its request");
  assert.ok(s.adjacentSteps>=4);
- assert.notEqual(s.medianMaxEconomicLossUsd,null);
+ assert.notEqual(s.medianStructuralLossUsd,null);
 });
 
 test("MISSING DATA: a single-width group is excluded from pairwise comparison",()=>{

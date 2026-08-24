@@ -9,6 +9,23 @@ export const FUTURES_SLIPPAGE_MODEL_VERSION="futures-zero-slippage-reference-v1"
 export const FUTURES_FUNDING_MODEL_VERSION="deribit-hourly-interest-1h-v1" as const;
 export const CANONICAL_BTC_PERPETUAL="BTC-PERPETUAL" as const;
 export const DEFAULT_FUTURES_SLIPPAGE_BPS=0;
+export const EQUAL_RISK_SIZING_METHOD="option_maximum_structural_loss_usd / abs(futures_entry - structural_invalidation)" as const;
+
+/**
+ * The ONE canonical equal-risk sizing rule, shared by the engine and by the
+ * Research Analytics comparison report so the two can never diverge.
+ *
+ * The risk budget is the option structure's BOUNDED STRUCTURAL loss in USD. It
+ * must never be a fee-inclusive tail figure: a fixed BTC delivery fee converted
+ * at a huge settlement index produced trillion-dollar risk budgets and hundreds
+ * of millions of BTC of notional. The per-unit risk is the distance from the
+ * futures entry to the structural invalidation.
+ */
+export function equalRiskFuturesQuantity(riskBudgetUsd:number|null,riskPerUnitUsd:number|null):number|null{
+ if(riskBudgetUsd===null||!Number.isFinite(riskBudgetUsd)||riskBudgetUsd<=0)return null;
+ if(riskPerUnitUsd===null||!Number.isFinite(riskPerUnitUsd)||riskPerUnitUsd<=0)return null;
+ return riskBudgetUsd/riskPerUnitUsd;
+}
 const HOUR_MS=3_600_000,DAY_MS=86_400_000;
 
 export type FuturesPolicy="vpoc"|"invalidation"|"fixed_3d"|"fixed_5d"|"fixed_7d";
@@ -191,7 +208,7 @@ export function buildEventFuturesBaseline(event:ResearchSelectionEvent,policy:Fu
  const lossBasis=event.selectedStructures.map(s=>{const m=obj(s.marginSnapshot);return{candidateId:s.candidateId,usd:num(m.maximumStructuralLossUsd)??(num(m.theoreticalMaximumSpreadLossBtc)!==null?num(m.theoreticalMaximumSpreadLossBtc)!*entryPrice:null)}}).filter(x=>x.usd!==null&&x.usd>0) as Array<{candidateId:string;usd:number}>;
  const largest=lossBasis.sort((a,b)=>b.usd-a.usd)[0];
  const riskBudgetUsd=largest?.usd??null;
- const quantity=riskBudgetUsd!==null&&riskPerUnit!==null&&riskPerUnit>0?riskBudgetUsd/riskPerUnit:null;
+ const quantity=equalRiskFuturesQuantity(riskBudgetUsd,riskPerUnit);
 
  const observedTrade=(market.trades??[]).slice().sort((a,b)=>a.timestamp-b.timestamp)
   .find(t=>t.timestamp>=order&&t.direction===(timing.direction==="long"?"buy":"sell"));
@@ -251,7 +268,7 @@ export function buildEventFuturesBaseline(event:ResearchSelectionEvent,policy:Fu
   funding_intervals_expected:expectedFundingHours.length,funding_intervals_observed:observedFundingHours,
   funding_usd_per_unit:fundingPerUnit,
   net_pnl_usd_per_unit_after_funding:netAfterFundingPerUnit,
-  equal_risk_sizing_method:"option_maximum_structural_loss_usd / abs(futures_entry - structural_invalidation)",
+  equal_risk_sizing_method:EQUAL_RISK_SIZING_METHOD,
   equal_risk_sizing_status:quantity===null?"downstream_derivable":"derived",
   quantity,quantity_basis:largest?.candidateId??null,risk_budget_usd:riskBudgetUsd,
   gross_trading_pnl_usd:quantity===null||grossPerUnit===null?null:grossPerUnit*quantity,

@@ -195,7 +195,7 @@ test("EXPORT: structure economics and margin scenarios agree, and the manifest v
 
 test("FUTURES: equal-risk sizing uses the bounded structural loss and stays plausible",()=>{
  const structural=canonicalStructuralLoss(BEAR_1K).usd!;
- const event=futuresEvent("long",{invalidationPrice:80,maximumEconomicLossUsd:structural});
+ const event=futuresEvent("long",{invalidationPrice:80,maximumStructuralLossUsd:structural});
  (event.selectedStructures[0] as unknown as {marginSnapshot:Record<string,number>}).marginSnapshot={maximumStructuralLossUsd:structural};
  const comparison=buildEventFuturesBaseline(event).comparison;
  assert.equal(comparison.risk_budget_usd,structural);

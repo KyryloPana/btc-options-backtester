@@ -86,6 +86,31 @@ export function resolveOutcomeLabels(labels: readonly unknown[]): ResolvedOutcom
 }
 
 /**
+ * Faithful source status for one persisted outcome snapshot: an evaluated
+ * snapshot is never demoted and an unavailable one is never promoted.
+ *
+ * This lives here, beside the identity table, because it is part of the same
+ * canonical semantics. The exporter and the analytics compatibility projection
+ * both read it, so a track being available can never be allowed to invent an
+ * outcome state neither engine produced.
+ */
+export type OutcomeSourceStatus="estimated"|"not-hit"|"unavailable"|"absent";
+export function outcomeSourceStatus(snapshot:Readonly<Record<string,unknown>>|undefined|null):OutcomeSourceStatus{
+  if(!snapshot)return "absent";
+  const status=String(snapshot.status??"");
+  return status==="estimated"?"estimated":status==="not-hit"?"not-hit":"unavailable";
+}
+
+export type OutcomeTriggerStatus="reached"|"not_reached"|"after_expiry"|"ambiguous"|"unavailable";
+export function outcomeTriggerStatus(snapshot:Readonly<Record<string,unknown>>|undefined|null):OutcomeTriggerStatus{
+  if(!snapshot)return "unavailable";
+  if(snapshot.status==="not-hit")return "not_reached";
+  if(snapshot.evidenceReason==="Target occurs after contract expiry.")return "after_expiry";
+  if(snapshot.trigger==="ambiguous")return "ambiguous";
+  return snapshot.decisionTimestamp==null?"unavailable":"reached";
+}
+
+/**
  * Holding time for one outcome, measured from THAT TRACK's own actual entry --
  * never from the original signal, so a delayed track reports the interval it
  * genuinely held for.

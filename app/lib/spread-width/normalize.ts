@@ -3,6 +3,7 @@ import {adversePath,type AdversePathObservation} from "../adverse-path.ts";
 import {challengeOf,type ChallengeObservation} from "../strike-challenge.ts";
 import {calculateDeliveryFee,calculateOptionFee,STANDARD_INVERSE_BTC_OPTION_FEE} from "../accounting.ts";
 import {breakEven,expiryPayoff,intrinsicBtc,payoffExtrema,type ExpiryPayoffInput} from "../expiry-payoff.ts";
+import {indexByCandidate,readCanonicalStructuralLoss,type StructuralLossReading,type StructuralLossSettlementFees,type StructuralLossSource} from "../canonical-structural-loss.ts";
 import type {OptionType} from "../backtester.ts";
 import {normalizeExecutionScenarioStatus,type ExecutionScenarioStatus} from "../execution-scenario.ts";
 
@@ -21,12 +22,20 @@ import {normalizeExecutionScenarioStatus,type ExecutionScenarioStatus} from "../
  * contracts. The requested width is retained beside it purely for audit, and
  * is never substituted into an economic calculation.
  *
- * PAYOFF. Maximum economic loss is NOT modelled as width minus credit. These
- * are inverse BTC options: the payoff is non-linear in the settlement index,
- * settlement fees apply per leg, and the USD result depends on the settlement
- * price as well as the entry index. Every payoff figure therefore comes from
- * the application's authoritative expiry-payoff utility rather than a
- * competing formula written here.
+ * STRUCTURAL RISK IS CONSUMED, NOT RECOMPUTED. The report's canonical risk
+ * figure is the BOUNDED MAXIMUM STRUCTURAL LOSS already exported by the research
+ * bundle, read through the single canonical adapter. This module previously
+ * derived its own fee-inclusive "maximum economic loss" from payoffExtrema and a
+ * Number.MAX_SAFE_INTEGER tail sample; for a bear call that turned a fixed BTC
+ * delivery fee into an unbounded USD figure. It no longer defines risk at all.
+ *
+ * SETTLEMENT FEES REMAIN REAL AND REMAIN SEPARATE. Delivery fees are reported at
+ * an explicitly named settlement scenario, and whether a finite GLOBAL
+ * fee-inclusive maximum exists at all is stated rather than assumed.
+ *
+ * THE PAYOFF PRIMITIVES ARE STILL USED for what they legitimately answer:
+ * scenario payoff, breakeven, maximum profit and the protective-long
+ * counterfactual. They no longer define the report's canonical structural risk.
  */
 
 export type ExecutionScenario="maker"|"taker";
@@ -62,8 +71,8 @@ export interface EntryEconomics {
  readonly longLegCostShareOfShortPremium:number|null;
  readonly creditPerRequestedWidth:number|null;
  readonly creditPerActualWidth:number|null;
- /** Net credit divided by the exact maximum economic loss, not by width. */
- readonly creditPerMaxEconomicLoss:number|null;
+ /** Net credit divided by the canonical bounded structural loss, not by width. */
+ readonly creditPerStructuralLoss:number|null;
  /** Opening plus an estimated closing round trip, from the same canonical fee schedule. */
  readonly estimatedRoundTripFeesBtc:number|null;
  readonly feeDragOnOpening:number|null;
@@ -71,14 +80,31 @@ export interface EntryEconomics {
 }
 
 export interface PayoffFacts {
- /** Exact maximum economic loss from the authoritative inverse payoff, in USD cash-flow terms. */
- readonly maxEconomicLossUsd:Availability<number>;
- readonly maxEconomicLossBtc:Availability<number>;
+ /**
+  * The CANONICAL bounded maximum structural loss, in USD, as a positive
+  * magnitude. Consumed from the exported research bundle; never recomputed here
+  * and never fee-inclusive.
+  */
+ readonly maximumStructuralLossUsd:Availability<number>;
+ /** The same loss in BTC at the canonical reference index. Not a tail extremum. */
+ readonly maximumStructuralLossBtc:Availability<number>;
+ /** Which canonical source the structural loss came from. */
+ readonly structuralLossSource:StructuralLossSource|null;
+ readonly structuralLossMethodVersion:string|null;
+ /** True when structure_economics and margin_scenarios both carried it and agreed. */
+ readonly structuralLossReconciled:boolean;
+ /** Settlement index at which the bounded structural maximum is attained. */
+ readonly structuralLossSettlementIndex:number|null;
+ /**
+  * Delivery fees are real and are kept separate: scenario-specific, plus an
+  * explicit statement of whether a finite GLOBAL fee-inclusive maximum exists.
+  */
+ readonly settlementFees:StructuralLossSettlementFees|null;
+ /** Scenario-specific settlement fees at the structural-loss settlement index. */
+ readonly settlementFeesAtStructuralLossBtc:number|null;
+ /** Scenario quantities from the payoff primitives, which remain legitimate. */
  readonly maxProfitUsd:Availability<number>;
  readonly breakEvenIndex:Availability<number>;
- /** The settlement index at which the maximum loss is realised. */
- readonly maxLossIndex:number|null;
- readonly settlementFeesAtMaxLossBtc:number|null;
 }
 
 /**
@@ -107,20 +133,21 @@ export interface ProtectionFacts {
 /**
  * Three capital concepts that are never collapsed into one number.
  *
- * Maximum economic loss is a property of the PAYOFF and is computable here.
- * Incremental initial margin and peak margin are properties of the ACCOUNT --
- * they depend on Deribit's margin model, standard versus portfolio margin and
- * segregated versus cross collateral. When the canonical margin scenario does
- * not report them they stay Unavailable; the protective-leg cost, the width and
- * the maximum loss are never substituted for a margin figure.
+ * Maximum STRUCTURAL loss is an ECONOMIC property of the structure and is
+ * consumed from the canonical export. Incremental initial margin and peak margin
+ * are properties of the ACCOUNT -- they depend on Deribit's margin model,
+ * standard versus portfolio margin and segregated versus cross collateral. When
+ * the canonical margin scenario does not report them they stay Unavailable; the
+ * protective-leg cost, the width and the structural loss are never substituted
+ * for a margin figure. Structural loss is not IM and not MM.
  */
 export interface CapitalFacts {
- readonly maxEconomicLossUsd:Availability<number>;
+ readonly maximumStructuralLossUsd:Availability<number>;
  readonly incrementalInitialMarginUsd:Availability<number>;
  readonly peakMarginUsd:Availability<number>;
  readonly marginModel:string|null;
  readonly accountConfiguration:string|null;
- readonly returnOnMaxLoss:Availability<number>;
+ readonly returnOnStructuralLoss:Availability<number>;
  readonly returnOnOpeningMargin:Availability<number>;
  readonly returnOnPeakCapital:Availability<number>;
 }
@@ -171,7 +198,7 @@ const scenarioStatusOf=normalizeExecutionScenarioStatus;
 const optionTypeOf=(v:unknown):OptionType|null=>{const s=str(v);return s==="C"||s==="P"?s:null};
 const DAY=864e5;
 
-const MARGIN_UNAVAILABLE="The canonical margin scenario does not report this figure. Deribit's requirement depends on the account model -- standard versus portfolio margin, segregated versus cross collateral -- so it is left Unavailable rather than approximated from the protective-leg cost, the width or the maximum economic loss.";
+const MARGIN_UNAVAILABLE="The canonical margin scenario does not report this figure. Deribit's requirement depends on the account model -- standard versus portfolio margin, segregated versus cross collateral -- so it is left Unavailable rather than approximated from the protective-leg cost, the width or the maximum structural loss.";
 
 /** The exact payoff input, or null when a canonical field the payoff needs is absent. */
 function payoffInputOf(s:{optionType:OptionType|null;shortStrike:number|null;longStrike:number|null;
@@ -202,34 +229,33 @@ function nakedShortPnlUsd(input:ExpiryPayoffInput,scenario:ExecutionScenario,set
  return netEntryBtc*input.entryIndex+netPositionBtc*settlementIndex;
 }
 
-function payoffFactsOf(input:ExpiryPayoffInput|null):PayoffFacts{
- if(!input)return {
-  maxEconomicLossUsd:missing("A canonical premium, strike, entry index, quantity or opening-fee field is absent, so the exact inverse payoff cannot be evaluated."),
-  maxEconomicLossBtc:missing("Same missing canonical payoff inputs."),
-  maxProfitUsd:missing("Same missing canonical payoff inputs."),
-  breakEvenIndex:missing("Same missing canonical payoff inputs."),
-  maxLossIndex:null,settlementFeesAtMaxLossBtc:null,
- };
+/**
+ * Structural risk comes from the canonical reading. Maximum profit and breakeven
+ * are scenario quantities and still come from the payoff primitives, which is a
+ * legitimate use of them: neither is a risk definition.
+ */
+function payoffFactsOf(input:ExpiryPayoffInput|null,loss:StructuralLossReading):PayoffFacts{
+ const structural={
+  maximumStructuralLossUsd:loss.status==="available"&&loss.usd!==null?has(loss.usd):missing<number>(loss.reason??"The canonical maximum structural loss is unavailable for this structure."),
+  maximumStructuralLossBtc:loss.status==="available"&&loss.btc!==null?has(loss.btc):missing<number>(loss.reason??"The canonical maximum structural loss is unavailable for this structure."),
+  structuralLossSource:loss.source,structuralLossMethodVersion:loss.methodVersion,
+  structuralLossReconciled:loss.reconciled,structuralLossSettlementIndex:loss.settlementIndex,
+  settlementFees:loss.settlementFees,
+  settlementFeesAtStructuralLossBtc:loss.settlementFees?.scenarioDeliveryFeesBtc??null,
+ } as const;
+ if(!input)return {...structural,
+  maxProfitUsd:missing("A canonical premium, strike, entry index, quantity or opening-fee field is absent, so the exact inverse payoff cannot be evaluated."),
+  breakEvenIndex:missing("Same missing canonical payoff inputs.")};
  try{
-  const usd=payoffExtrema(input,"usd-cash-flow"),btc=payoffExtrema(input,"btc-settlement");
-  // The loss extreme is realised at whichever tested settlement index produces
-  // it; the payoff utility samples the strikes and both tails.
-  const epsilon=Math.min(input.shortStrike,input.longStrike)*1e-9;
-  const candidateIndices=[epsilon,input.shortStrike,input.longStrike,Number.MAX_SAFE_INTEGER];
-  let maxLossIndex=candidateIndices[0]!,worst=Infinity;
-  for(const index of candidateIndices){const pnl=expiryPayoff(input,index,"usd-cash-flow").pnl;if(pnl<worst){worst=pnl;maxLossIndex=index}}
-  const at=expiryPayoff(input,maxLossIndex,"usd-cash-flow");
+  const usd=payoffExtrema(input,"usd-cash-flow");
   const be=breakEven(input,"usd-cash-flow");
-  return {
-   maxEconomicLossUsd:has(usd.maximumLoss),maxEconomicLossBtc:has(btc.maximumLoss),
+  return {...structural,
    maxProfitUsd:has(usd.maximumProfit),
    breakEvenIndex:be?has(be.index):missing("The canonical net payoff does not cross zero inside the sampled settlement range."),
-   maxLossIndex,settlementFeesAtMaxLossBtc:at.settlementFeesBtc,
   };
  }catch(error){
   const reason=`The canonical strikes and premiums do not form a valid credit spread: ${error instanceof Error?error.message:String(error)}`;
-  return {maxEconomicLossUsd:missing(reason),maxEconomicLossBtc:missing(reason),maxProfitUsd:missing(reason),
-   breakEvenIndex:missing(reason),maxLossIndex:null,settlementFeesAtMaxLossBtc:null};
+  return {...structural,maxProfitUsd:missing(reason),breakEvenIndex:missing(reason)};
  }
 }
 
@@ -272,11 +298,11 @@ function capitalFactsOf(payoff:PayoffFacts,marginRow:Readonly<Record<string,unkn
   return has(realizedPnlUsd/Math.abs(denominator));
  };
  return {
-  maxEconomicLossUsd:payoff.maxEconomicLossUsd,
+  maximumStructuralLossUsd:payoff.maximumStructuralLossUsd,
   incrementalInitialMarginUsd:incrementalUsd===null?missing(MARGIN_UNAVAILABLE):has(incrementalUsd),
   peakMarginUsd:peakUsd===null?missing(MARGIN_UNAVAILABLE):has(peakUsd),
   marginModel:str(marginRow?.margin_model),accountConfiguration:str(marginRow?.account_configuration),
-  returnOnMaxLoss:ratio(payoff.maxEconomicLossUsd.value,payoff.maxEconomicLossUsd.reason??MARGIN_UNAVAILABLE),
+  returnOnStructuralLoss:ratio(payoff.maximumStructuralLossUsd.value,payoff.maximumStructuralLossUsd.reason??MARGIN_UNAVAILABLE),
   returnOnOpeningMargin:ratio(incrementalUsd,MARGIN_UNAVAILABLE),
   returnOnPeakCapital:ratio(peakUsd,MARGIN_UNAVAILABLE),
  };
@@ -293,6 +319,10 @@ export function normalizeWidthStructures(dataset:AnalysisDataset):readonly Width
  const candidates=dataset.tables.candidates??[],outcomes=dataset.tables.outcomes??[],
   valuations=dataset.tables.valuations??[],events=dataset.tables.events??[],
   paths=dataset.tables.underlying_path??[],margins=dataset.tables.margin_scenarios??[];
+ // Canonical structural risk is READ, never recomputed. structure_economics is
+ // primary; margin_scenarios is the reconciliation source.
+ const economicsByCandidate=indexByCandidate(dataset.tables.structure_economics),
+  marginByCandidate=indexByCandidate(margins);
  const eventById=new Map(events.map(e=>[str(e.event_id)??"",e]));
  const pathByEvent=new Map<string,Readonly<Record<string,unknown>>[]>();
  for(const row of paths){const id=str(row.event_id);if(!id)continue;const list=pathByEvent.get(id);if(list)list.push(row);else pathByEvent.set(id,[row])}
@@ -327,7 +357,12 @@ export function normalizeWidthStructures(dataset:AnalysisDataset):readonly Width
   const netCreditBtc=evaluated?num(row.net_opening_cash_flow_native):null;
 
   const input=payoffInputOf({optionType,shortStrike,longStrike,shortPremiumBtc,longPremiumBtc,entryIndex,quantity,openingFeesBtc,expiryTimestampMs});
-  const payoff=payoffFactsOf(input);
+  const structuralLoss=readCanonicalStructuralLoss({
+   economics:economicsByCandidate.get(candidateId),
+   margin:marginByCandidate.get(candidateId),
+   fallback:input,
+  });
+  const payoff=payoffFactsOf(input,structuralLoss);
   const protection=protectionFactsOf(input,scenario);
 
   const toUsd=(v:number|null)=>v!==null&&entryIndex!==null?v*entryIndex:null;
@@ -348,8 +383,8 @@ export function normalizeWidthStructures(dataset:AnalysisDataset):readonly Width
     ?netCreditBtc*entryIndex/requestedWidthUsd:null,
    creditPerActualWidth:netCreditBtc!==null&&actualWidthUsd!==null&&actualWidthUsd>0&&entryIndex!==null
     ?netCreditBtc*entryIndex/actualWidthUsd:null,
-   creditPerMaxEconomicLoss:netCreditBtc!==null&&payoff.maxEconomicLossUsd.value!==null&&payoff.maxEconomicLossUsd.value!==0&&entryIndex!==null
-    ?netCreditBtc*entryIndex/Math.abs(payoff.maxEconomicLossUsd.value):null,
+   creditPerStructuralLoss:netCreditBtc!==null&&payoff.maximumStructuralLossUsd.value!==null&&payoff.maximumStructuralLossUsd.value!==0&&entryIndex!==null
+    ?netCreditBtc*entryIndex/Math.abs(payoff.maximumStructuralLossUsd.value):null,
    estimatedRoundTripFeesBtc,
    feeDragOnOpening:openingFeesBtc!==null&&grossCreditBtc!==null&&grossCreditBtc>0?openingFeesBtc/grossCreditBtc:null,
    feeDragRoundTrip:estimatedRoundTripFeesBtc!==null&&grossCreditBtc!==null&&grossCreditBtc>0?estimatedRoundTripFeesBtc/grossCreditBtc:null,
