@@ -1,7 +1,7 @@
 import { unzipSync, strFromU8 } from "fflate";
-import { RESEARCH_BUNDLE_FILES, RESEARCH_BUNDLE_SCHEMA_VERSION, validateResearchBundle } from "./research-bundle";
-import { validateTradeDataset, type TradeDataset } from "./trade-datasets";
-import { reconcileCandidateSpread } from "./semantic-spread";
+import { RESEARCH_BUNDLE_FILES, RESEARCH_BUNDLE_SCHEMA_VERSION, validateResearchBundle } from "./research-bundle.ts";
+import { validateTradeDataset, type TradeDataset } from "./trade-datasets.ts";
+import { reconcileCandidateSpread } from "./semantic-spread.ts";
 
 export type CapabilityStatus="available"|"derivable"|"degraded"|"unavailable";
 export interface Capability {id:string;label:string;status:CapabilityStatus;requiredInputs:readonly string[];missingInputs:readonly string[];affectedEventCount:number;affectedCandidateCount:number;reasonCodes:readonly string[]}
