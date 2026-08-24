@@ -416,6 +416,15 @@ function economics(
     // a canonical value, so the two can no longer diverge silently.
     maxLoss =
       structuralLoss?.btc ??
+    // Canonical bounded structural risk, from the exported margin metadata.
+    // `maximum_economic_loss_native` never existed on a candidates row and was
+    // renamed away entirely, so this always fell through to the derivation
+    // below. That derivation is algebraically identical to
+    // `canonicalStructuralLoss` for an inverse vertical
+    // (width/index x qty - net credit) and is retained only as a fallback for
+    // rows whose margin metadata is absent; it is never preferred over the
+    // canonical value, so the two can no longer diverge silently.
+    maxLoss =
       n(margin?.maximum_structural_loss_native) ??
       (width !== null && net !== null && n(r.entry_index_price) !== null
         ? Math.max(0, (width / n(r.entry_index_price)!) * qty - net)
