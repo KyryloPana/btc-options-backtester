@@ -472,6 +472,8 @@ export function DurationDteReportView({report,view="maker",onViewChange}:{report
    <div className="dd-horizons">{report.horizons.map(hz=><span key={hz.nominalDays} className="dd-horizon-pill">{hz.label}{hz.eligibleDteRange&&<small> {hz.eligibleDteRange.min}–{hz.eligibleDteRange.max}d</small>}</span>)}</div>
   </header>
 
+  <p className="dd-note" data-testid="duration-execution-scope"><b>Analytical layer.</b> The primary comparisons on this report are computed on the execution-independent structure population — Reference — and are unchanged by any execution assumption: {report.executionScenarioScope.independentOf.join("; ")}. One display scenario ({report.executionScenarioScope.displayScenario}) scopes only the explicitly execution-dependent subsections: {report.executionScenarioScope.appliesTo.join("; ")}. {report.executionScenarioScope.note}</p>
+
   {report.excludedIneligible>0&&<p className="dd-notice">{report.excludedIneligible} structure(s) excluded — their underlying MR event is ineligible for time-to-event analysis, never counted as a resolution or a failure.</p>}
 
   <div className="dd-cards">

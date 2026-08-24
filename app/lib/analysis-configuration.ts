@@ -5,6 +5,26 @@
  * configuration is an input to the analysis-run identity, which keeps a given configuration
  * reproducibly tied to the run it produced. `PricingTrack` stays an explicit union because raw and
  * IV-normalized pricing must never be collapsed into a single track.
+ *
+ * WHAT THESE FIELDS ARE NOT. `pricingTrack` and `executionAssumption` are NOT a
+ * workspace-wide analytical-track selector, and the visible control surface no
+ * longer presents them as one. The canonical architecture routes each report to
+ * the layer its question requires (see `analytical-track-layers.ts`), and every
+ * layer that needs an execution scenario supplies its own.
+ *
+ *  - `pricingTrack` is report-scoped: the Duration & DTE operational-holding
+ *    subsection is the only consumer that reads it from here, and the control is
+ *    labelled with that scope.
+ *  - `executionAssumption` is retained ONLY as an internal parameter for the
+ *    older exit-policy and economics calculators, which set it themselves per
+ *    layer. It has no visible workspace control, because a value chosen there
+ *    would reach no report: `buildExitPolicyReport` and `buildEconomicReport`
+ *    both override it for every layer they construct.
+ *
+ * `CapitalBasis` keeps the serialized token `maximum_economic_loss` for
+ * compatibility with stored configurations and the run identity. The quantity it
+ * selects is the canonical bounded MAXIMUM STRUCTURAL LOSS; only the visible
+ * wording changed. Structural loss is not IM and not MM.
  */
 export type PricingTrack="raw_vwap"|"iv_normalized";
 export type ExecutionAssumption="maker"|"taker";

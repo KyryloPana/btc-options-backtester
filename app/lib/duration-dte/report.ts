@@ -158,8 +158,25 @@ export interface HeadlineSummary {
  readonly medianHoldingDays:number|null;
 }
 
+/**
+ * What the display scenario actually governs.
+ *
+ * Duration & DTE is not a maker report. Its structural timing, actual DTE,
+ * thesis-resolution and DTE-buffer analyses are execution-INDEPENDENT and use
+ * one row per structure with their own denominator. The scenario argument scopes
+ * the explicitly execution-dependent subsections only, and is declared here so
+ * the view can state that scope rather than implying the whole report is maker.
+ */
+export interface ExecutionScenarioScope {
+ readonly displayScenario:ExecutionScenario;
+ readonly appliesTo:readonly string[];
+ readonly independentOf:readonly string[];
+ readonly note:string;
+}
+
 export interface DurationDteReport {
  readonly scenario:ExecutionScenario;
+ readonly executionScenarioScope:ExecutionScenarioScope;
  /** Selected-scenario rows, for the event-level audit table. */
  readonly candidates:readonly DteCandidate[];
  /** One row per structure, execution-independent. */
@@ -374,6 +391,12 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
 
  return {
   scenario,
+  executionScenarioScope:{
+   displayScenario:scenario,
+   appliesTo:["Per-horizon scenario coverage","Leg synchronization","Operational holding period and capital-day return","The event-level candidate audit table"],
+   independentOf:["Effective events and actual DTE","Thesis resolution and coverage curve","Outcome before expiry","DTE buffer","Matched horizon comparison","Matched maker-vs-taker comparison, which reads both scenarios directly"],
+   note:"One display scenario scopes the execution-dependent subsections listed above. It is not a report-wide track selector, and the execution-independent analyses do not change with it.",
+  },
   candidates:scenarioRows,structures,horizons,
   headline:{
    effectiveEvents:underlying.effectiveN,totalEvents:underlying.totalEvents,
