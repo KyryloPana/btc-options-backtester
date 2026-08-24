@@ -1,4 +1,4 @@
-import { canonicalMaximumEconomicLoss } from "./maximum-economic-loss.ts";
+import { canonicalStructuralLoss } from "./maximum-economic-loss.ts";
 import { reconstructStandardVerticalMargin, type MarginPointInput } from "./margin.ts";
 import { canonicalJson, type JsonValue, type SelectedStructure } from "./research-selections.ts";
 
@@ -36,19 +36,31 @@ export function buildResearchMarginSnapshot(structure:Pick<SelectedStructure,"ca
  if(!reference||reference.status!=="valued")return unavailable("An execution-independent canonical reference valuation is required.","margin_no_canonical_valuation_path");
  const optionType=candidate.optionType,shortStrike=number(candidate.shortStrike)??number(object(candidate.actualStrikes).short),longStrike=number(candidate.longStrike)??number(object(candidate.actualStrikes).long),expiryTimestamp=number(candidate.expiryTimestamp),entryTimestamp=number(entry.valuationTimestamp)??number(entry.targetTimestamp),entryIndex=number(entry.entryTargetIndex),shortPremium=legMark(entry,"sold"),longPremium=legMark(entry,"bought"),openingFees=number(entry.openingFeesBtc);
  if(optionType!=="C"&&optionType!=="P"||shortStrike===undefined||longStrike===undefined||expiryTimestamp===undefined||entryTimestamp===undefined||entryIndex===undefined||shortPremium===undefined||longPremium===undefined||openingFees===undefined)return unavailable("Canonical reference entry economics are incomplete for maximum-loss and margin reconstruction.","verified_historical_margin_model_unavailable");
- // Maximum economic loss comes from the ONE canonical helper shared with
- // structure_economics, so the two canonical tables cannot disagree.
- const loss=canonicalMaximumEconomicLoss({optionType,shortStrike,longStrike,shortEntryPremiumBtc:shortPremium,longEntryPremiumBtc:longPremium,entryIndex,amount:structure.quantity,openingFeesBtc:openingFees,expiryTimestamp});
- if(loss.status!=="available")return unavailable(loss.reason??"The bounded maximum economic loss could not be evaluated.","verified_historical_margin_model_unavailable");
+ // Bounded STRUCTURAL loss from the ONE canonical helper shared with
+ // structure_economics, so the two canonical tables cannot disagree. Delivery
+ // fees are excluded there because their USD value is unbounded; they travel
+ // alongside as a named settlement scenario.
+ const loss=canonicalStructuralLoss({optionType,shortStrike,longStrike,shortEntryPremiumBtc:shortPremium,longEntryPremiumBtc:longPremium,entryIndex,amount:structure.quantity,openingFeesBtc:openingFees,expiryTimestamp});
+ if(loss.status!=="available")return unavailable(loss.reason??"The bounded structural loss could not be evaluated.","verified_historical_margin_model_unavailable");
  const maximumLoss=loss.btcAtReferenceIndex!;
  const lossMetadata={
-  maximumEconomicLossUsd:loss.usd,
-  maximumEconomicLossBtcAtReferenceIndex:loss.btcAtReferenceIndex,
+  maximumStructuralLossUsd:loss.usd,
+  maximumStructuralLossBtcAtReferenceIndex:loss.btcAtReferenceIndex,
   referenceIndex:loss.referenceIndex,
+  worstStructuralSettlementIndex:loss.worstStructuralIndex,
   maximumLossMethod:loss.method,
   maximumLossMethodVersion:loss.methodVersion,
   maximumLossAssumption:loss.assumption,
   maximumLossSignConvention:loss.signConvention,
+  settlementFeeTreatment:{
+   included_in_structural_loss:loss.settlementFees.includedInStructuralLoss,
+   global_fee_inclusive_maximum:loss.settlementFees.globalFeeInclusiveMaximum,
+   global_fee_inclusive_maximum_reason:loss.settlementFees.globalFeeInclusiveMaximumReason,
+   scenario_index:loss.settlementFees.scenarioIndex,
+   scenario_label:loss.settlementFees.scenarioLabel,
+   scenario_delivery_fees_btc:loss.settlementFees.scenarioDeliveryFeesBtc,
+   scenario_delivery_fees_usd:loss.settlementFees.scenarioDeliveryFeesUsd,
+  },
  };
  const result=reconstructStandardVerticalMargin({optionType,amount:structure.quantity,shortStrike,longStrike,expiryTimestamp,theoreticalMaximumSpreadLossBtc:maximumLoss,points:referenceMarginPoints(reference),entryTimestamp,terminalTimestamp:expiryTimestamp});
  if(result.status==="unavailable")return canonicalJson({...result,theoreticalMaximumSpreadLossBtc:maximumLoss,...lossMetadata,reasonCode:canonicalMarginReason(result.reason)});

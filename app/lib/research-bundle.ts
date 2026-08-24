@@ -7,11 +7,11 @@ import { BUILD_PROVENANCE_UNAVAILABLE, buildProvenanceStatus } from "./build-pro
 import { buildResearchMarginSnapshot, canonicalMarginReason, LEGACY_MARGIN_NOT_COMPUTED_REASON } from "./research-margin.ts";
 import { CANONICAL_TRACKS, describeCanonicalTracks, legVolatility } from "./research-tracks.ts";
 import type { ExpiryPayoffInput } from "./expiry-payoff.ts";
-import { MAXIMUM_ECONOMIC_LOSS_SIGN_CONVENTION, canonicalMaximumEconomicLoss, type CanonicalMaximumEconomicLoss } from "./maximum-economic-loss.ts";
+import { STRUCTURAL_LOSS_SIGN_CONVENTION, canonicalStructuralLoss, type CanonicalStructuralLoss } from "./maximum-economic-loss.ts";
 
-export const RESEARCH_BUNDLE_SCHEMA_VERSION="3.4.0" as const;
+export const RESEARCH_BUNDLE_SCHEMA_VERSION="3.5.0" as const;
 /** Bundle schema versions this app can still import (see importResearchBundle). */
-export const LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS=["1.0.0","2.0.0","2.1.0","2.2.0","2.3.0","3.0.0","3.1.0","3.2.0","3.3.0"] as const;
+export const LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS=["1.0.0","2.0.0","2.1.0","2.2.0","2.3.0","3.0.0","3.1.0","3.2.0","3.3.0","3.4.0"] as const;
 export const RESEARCH_BUNDLE_FILES=["run.json","events.jsonl","underlying_path.jsonl","structure_economics.jsonl","candidates.jsonl","valuations.jsonl","outcomes.jsonl","availability.jsonl","margin_scenarios.jsonl","evidence_trades.jsonl","futures_comparisons.jsonl","futures_path.jsonl"] as const;
 export const REQUIRED_OUTCOMES=["vpoc","invalidation","credit_capture_25","credit_capture_50","credit_capture_70","fixed_3d","fixed_5d","fixed_7d","settlement"] as const;
 export const RESEARCH_REASON_CODES=["entry_priced","entry_unavailable","direct_vwap","model_reconstructed","quality_green","quality_yellow","quality_red","quality_unavailable","valuation_priced","pricing_track_unavailable","outside_executable_window","raw_source_evidence","executable_evidence","missing_target_index","missing_pricing_track","outcome_priced","outcome_not_reached","outcome_after_expiry","outcome_ambiguous_sequence","outcome_reached_but_unpriced","candidate_priced","candidate_unavailable","verified_historical_margin_model_unavailable","margin_no_canonical_valuation_path","margin_missing_index","margin_missing_short_mark","margin_missing_long_mark","margin_historical_rule_unverified","margin_deployment_unsupported","margin_not_recomputed","futures_instrument_unavailable","unsupported_futures_instrument","futures_reference_series_unavailable","futures_reference_series_incomplete","futures_entry_observation_unavailable","futures_exit_observation_unavailable","futures_series_gap_at_entry_decision","futures_series_gap_at_decision","futures_entry_bar_resolution_lag","futures_direction_unavailable","futures_event_vpoc_unavailable","futures_event_invalidation_unavailable","futures_event_resolution_ambiguous","futures_vpoc_target_not_reached","futures_event_vpoc_not_configured","futures_invalidation_not_reached","futures_event_invalidation_not_configured","futures_exit_endpoint_unavailable","funding_not_evaluated","futures_invalidation_distance_unavailable","futures_fee_schedule_unavailable","futures_no_funding_interval_elapsed","matched_endpoint_unavailable","observed_futures_execution_unavailable","funding_unavailable","funding_partial","futures_margin_unavailable"] as const;
@@ -99,13 +99,14 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
   const referenceEntryTs=num(refEntry.valuationTimestamp)??num(refEntry.targetTimestamp);
   const actualWidth=num(c.actualWidth)??(shortStrike!==null&&longStrike!==null?Math.abs(shortStrike-longStrike):null);
   const requestedWidth=num(generated?.requestedStrikes?.width??null);
-  // ONE canonical maximum-economic-loss calculation, shared with the margin
-  // layer -- never width minus credit, and never the divergent BTC-settlement
-  // tail extremum, which is a tail artifact rather than a terminal trade loss.
-  let maxLoss:CanonicalMaximumEconomicLoss={status:"unavailable",usd:null,btcAtReferenceIndex:null,referenceIndex:index,breakevenIndex:null,method:null,methodVersion:null,assumption:null,signConvention:null,reason:"Reference entry economics are incomplete, so the exact inverse payoff cannot be evaluated."};
+  // ONE canonical bounded STRUCTURAL loss, shared with the margin layer --
+  // never width minus credit, never the divergent BTC-settlement extremum, and
+  // never a fixed BTC delivery fee converted at an arbitrary huge settlement
+  // index. Delivery fees travel separately with their own scenario.
+  let maxLoss:CanonicalStructuralLoss={status:"unavailable",usd:null,btcAtReferenceIndex:null,referenceIndex:index,worstStructuralIndex:null,breakevenIndex:null,method:null,methodVersion:null,assumption:null,signConvention:null,settlementFees:{includedInStructuralLoss:false,globalFeeInclusiveMaximum:"unbounded",globalFeeInclusiveMaximumReason:"Not evaluated: reference entry economics are incomplete.",scenarioIndex:null,scenarioLabel:null,scenarioDeliveryFeesBtc:null,scenarioDeliveryFeesUsd:null},reason:"Reference entry economics are incomplete, so the exact inverse payoff cannot be evaluated."};
   if(optionType&&(optionType==="C"||optionType==="P")&&shortStrike!==null&&longStrike!==null&&shortPremium!==null&&longPremium!==null&&index!==null&&index>0&&quantity!==null&&quantity>0&&feesReference!==null&&feesReference>=0&&expiry!==null){
    const input:ExpiryPayoffInput={optionType,shortStrike,longStrike,shortEntryPremiumBtc:shortPremium,longEntryPremiumBtc:longPremium,entryIndex:index,amount:quantity,openingFeesBtc:feesReference,expiryTimestamp:expiry};
-   maxLoss=canonicalMaximumEconomicLoss(input);
+   maxLoss=canonicalStructuralLoss(input);
   }
   return row({
    run_id:runId,source_run_id:sourceIds.get(e.eventId),venue:s.venue,event_id:e.eventId,candidate_id:s.candidateId,
@@ -129,16 +130,28 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
    modeled_conservative_status:typeof modeledConservative.status==="string"?modeledConservative.status:"not_evaluated",
    breakeven_index:maxLoss.breakevenIndex,
    breakeven_method:maxLoss.breakevenIndex===null?null:"numerical bisection over the canonical inverse net payoff",
-   maximum_economic_loss_status:maxLoss.status,
-   maximum_economic_loss_native:maxLoss.btcAtReferenceIndex,maximum_economic_loss_usd:maxLoss.usd,
-   maximum_economic_loss_units:{native:"BTC",quote:"USD",sign_convention:MAXIMUM_ECONOMIC_LOSS_SIGN_CONVENTION},
-   maximum_economic_loss_reference_index:maxLoss.referenceIndex??index,
-   maximum_economic_loss_method:maxLoss.method,
-   maximum_economic_loss_method_version:maxLoss.methodVersion,
-   maximum_economic_loss_assumption:maxLoss.assumption,
-   maximum_economic_loss_unavailable_reason:maxLoss.reason,
+   maximum_structural_loss_status:maxLoss.status,
+   maximum_structural_loss_native:maxLoss.btcAtReferenceIndex,maximum_structural_loss_usd:maxLoss.usd,
+   maximum_structural_loss_units:{native:"BTC",quote:"USD",sign_convention:STRUCTURAL_LOSS_SIGN_CONVENTION},
+   maximum_structural_loss_reference_index:maxLoss.referenceIndex??index,
+   maximum_structural_loss_settlement_index:maxLoss.worstStructuralIndex,
+   maximum_structural_loss_method:maxLoss.method,
+   maximum_structural_loss_method_version:maxLoss.methodVersion,
+   maximum_structural_loss_assumption:maxLoss.assumption,
+   maximum_structural_loss_unavailable_reason:maxLoss.reason,
+   // Delivery fees are reported here, never folded into the structural maximum:
+   // a fixed BTC fee has unbounded USD value as the settlement index grows.
+   settlement_fee_treatment:{
+    included_in_structural_loss:maxLoss.settlementFees.includedInStructuralLoss,
+    global_fee_inclusive_maximum:maxLoss.settlementFees.globalFeeInclusiveMaximum,
+    global_fee_inclusive_maximum_reason:maxLoss.settlementFees.globalFeeInclusiveMaximumReason,
+    scenario_index:maxLoss.settlementFees.scenarioIndex,
+    scenario_label:maxLoss.settlementFees.scenarioLabel,
+    scenario_delivery_fees_btc:maxLoss.settlementFees.scenarioDeliveryFeesBtc,
+    scenario_delivery_fees_usd:maxLoss.settlementFees.scenarioDeliveryFeesUsd,
+   },
    credit_per_actual_width:netReference!==null&&actualWidth!==null&&actualWidth>0&&index!==null?netReference*index/actualWidth:null,
-   credit_per_maximum_economic_loss:netReference!==null&&maxLoss.usd!==null&&maxLoss.usd!==0&&index!==null?netReference*index/maxLoss.usd:null,
+   credit_per_maximum_structural_loss:netReference!==null&&maxLoss.usd!==null&&maxLoss.usd!==0&&index!==null?netReference*index/maxLoss.usd:null,
    // Every contracted track carries an explicit status here, so a consumer can
    // tell "unsupported for this structure, and why" from "absent from the file".
    tracks:describeCanonicalTracks(s as unknown as Record<string,unknown>).map(t=>({
@@ -300,12 +313,14 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
    ||persisted.reasonCode==="margin_not_recomputed"
    ||persisted.reason===LEGACY_MARGIN_NOT_COMPUTED_REASON
    ||persisted.unavailabilityReason===LEGACY_MARGIN_NOT_COMPUTED_REASON;
-  const m=stale?obj(buildResearchMarginSnapshot(s)):persisted,available=m.status==="available"||m.state==="ok",deployment=obj(m.deployment),openingIm=num(m.openingInitialMarginBtc)??num(m.initialMarginBtc),openingMm=num(m.openingMaintenanceMarginBtc)??num(m.maintenanceMarginBtc),peakIm=num(m.peakInitialMarginBtc),peakMm=num(m.peakMaintenanceMarginBtc);return row({run_id:runId,source_run_id:sourceIds.get(e.eventId),event_id:e.eventId,candidate_id:s.candidateId,margin_scenario_id:`${s.venue}~margin~${hash(s.candidateId)}`,venue:s.venue,margin_status:available?"available":"unavailable",margin_model:deployment.model??null,method_version:m.engineVersion??m.ruleVersion??null,rule_version:m.ruleVersion??null,provenance:m.provenance??null,account_configuration:deployment.accountAssumption??null,collateral_currency:deployment.collateralCurrency??"BTC",settlement_currency:"BTC",incremental_initial_margin:available?openingIm:null,incremental_maintenance_margin:available?openingMm:null,peak_initial_margin:available?peakIm:null,peak_maintenance_margin:available?peakMm:null,peak_timestamp_utc:available?iso(num(m.peakInitialTimestamp)??num(m.observationTimestamp)):null,capital_days_margin:available?num(m.capitalDaysMarginBtc):null,maximum_loss_native:num(m.maximumEconomicLossBtcAtReferenceIndex)??num(m.theoreticalMaximumSpreadLossBtc),
-   maximum_loss_usd:num(m.maximumEconomicLossUsd),
-   maximum_loss_units:{native:"BTC",quote:"USD",sign_convention:MAXIMUM_ECONOMIC_LOSS_SIGN_CONVENTION},
-   maximum_loss_method:typeof m.maximumLossMethod==="string"?m.maximumLossMethod:null,
-   maximum_loss_method_version:typeof m.maximumLossMethodVersion==="string"?m.maximumLossMethodVersion:null,
-   maximum_loss_assumption:typeof m.maximumLossAssumption==="string"?m.maximumLossAssumption:null,reference_index:num(m.referenceIndex)??num(m.indexPrice),calculation_method:available?(m.method??m.evidenceModel??"historical Standard Margin reconstruction"):null,data_quality:available?"historical_formula_reconstruction":"unavailable",reason_codes:available?[]:[String(m.reasonCode??canonicalMarginReason(m.reason??m.unavailabilityReason))],unavailable_reason:available?null:String(m.reason??m.unavailabilityReason??"Verified historical margin reconstruction is unavailable."),margin_measurement:"model_estimated_historical_requirement",
+  const m=stale?obj(buildResearchMarginSnapshot(s)):persisted,available=m.status==="available"||m.state==="ok",deployment=obj(m.deployment),openingIm=num(m.openingInitialMarginBtc)??num(m.initialMarginBtc),openingMm=num(m.openingMaintenanceMarginBtc)??num(m.maintenanceMarginBtc),peakIm=num(m.peakInitialMarginBtc),peakMm=num(m.peakMaintenanceMarginBtc);return row({run_id:runId,source_run_id:sourceIds.get(e.eventId),event_id:e.eventId,candidate_id:s.candidateId,margin_scenario_id:`${s.venue}~margin~${hash(s.candidateId)}`,venue:s.venue,margin_status:available?"available":"unavailable",margin_model:deployment.model??null,method_version:m.engineVersion??m.ruleVersion??null,rule_version:m.ruleVersion??null,provenance:m.provenance??null,account_configuration:deployment.accountAssumption??null,collateral_currency:deployment.collateralCurrency??"BTC",settlement_currency:"BTC",incremental_initial_margin:available?openingIm:null,incremental_maintenance_margin:available?openingMm:null,peak_initial_margin:available?peakIm:null,peak_maintenance_margin:available?peakMm:null,peak_timestamp_utc:available?iso(num(m.peakInitialTimestamp)??num(m.observationTimestamp)):null,capital_days_margin:available?num(m.capitalDaysMarginBtc):null,maximum_structural_loss_native:num(m.maximumStructuralLossBtcAtReferenceIndex)??num(m.theoreticalMaximumSpreadLossBtc),
+   maximum_structural_loss_usd:num(m.maximumStructuralLossUsd),
+   maximum_structural_loss_settlement_index:num(m.worstStructuralSettlementIndex),
+   settlement_fee_treatment:(m.settlementFeeTreatment??null) as JsonValue,
+   maximum_structural_loss_units:{native:"BTC",quote:"USD",sign_convention:STRUCTURAL_LOSS_SIGN_CONVENTION},
+   maximum_structural_loss_method:typeof m.maximumLossMethod==="string"?m.maximumLossMethod:null,
+   maximum_structural_loss_method_version:typeof m.maximumLossMethodVersion==="string"?m.maximumLossMethodVersion:null,
+   maximum_structural_loss_assumption:typeof m.maximumLossAssumption==="string"?m.maximumLossAssumption:null,reference_index:num(m.referenceIndex)??num(m.indexPrice),calculation_method:available?(m.method??m.evidenceModel??"historical Standard Margin reconstruction"):null,data_quality:available?"historical_formula_reconstruction":"unavailable",reason_codes:available?[]:[String(m.reasonCode??canonicalMarginReason(m.reason??m.unavailabilityReason))],unavailable_reason:available?null:String(m.reason??m.unavailabilityReason??"Verified historical margin reconstruction is unavailable."),margin_measurement:"model_estimated_historical_requirement",
    margin_measurement_note:"Reconstructed from the versioned Deribit Standard Margin formula against causal historical marks. This is a model-estimated historical requirement, not evidence of the balance Deribit actually reserved in the historical account.",
    capital_days_basis:available?"initial_margin_btc":null,
    capital_days_definition:available?"Initial margin in BTC integrated piecewise-constant between canonical valuation points from the reference entry to expiry, with the final point held to the terminal timestamp; equivalent to capital-days-to-expiry on the initial-margin basis.":null,
@@ -319,7 +334,7 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
  const futuresPath=futuresBuilt.flatMap(({path},i)=>path.map(p=>row({run_id:runId,source_run_id:sourceIds.get(store.events[i].eventId),venue:"deribit",...p})));
  const sourceRuns=store.events.map(e=>({source_run_id:sourceIds.get(e.eventId),venue:e.selectedStructures[0]?.venue??e.generationSnapshot.candidates[0]?.venue??"deribit",event_id:e.eventId,configuration:e.generationSnapshot.configuration,effective_configuration_hash:configurationHashes.get(e.eventId),configuration_identity_version:CONFIGURATION_IDENTITY_VERSION,application_build:e.generationSnapshot.configuration.applicationBuild??BUILD_PROVENANCE_UNAVAILABLE,generation_timestamp_utc:e.generationSnapshot.generatedAtUtc}));
  const migratedValuationWindowDiagnostics=selected.flatMap(({e,s})=>(["maker","taker"] as const).flatMap(executionScenario=>{const diagnostic=s.executionScenarios[executionScenario].valuationWindowMigration;return diagnostic?[{event_id:e.eventId,candidate_id:s.candidateId,execution_scenario:executionScenario,...diagnostic}]:[]}));
- const run=row({schema_version:RESEARCH_BUNDLE_SCHEMA_VERSION,futures_engine_version:FUTURES_ENGINE_VERSION,valuation_window_diagnostics:{migrated:migratedValuationWindowDiagnostics,builder_omitted_before_entry:omittedValuationsBeforeEntry,builder_omitted_after_expiry:omittedValuationsAfterExpiry},run_id:runId,generated_at_utc:generatedAtUtc,dataset_id:store.datasetId,dataset_version_updated_at:datasetUpdatedAt??store.updatedAtUtc,application_commit_build_id:[...new Set(sourceRuns.map(x=>x.application_build))],pricing_engine_versions:[...new Set(sourceRuns.map(x=>x.configuration.pricingEngineVersion))],quality_rules_versions:[...new Set(sourceRuns.map(x=>x.configuration.qualityRulesVersion))],valuation_methodology_version:"simple-model-reconstruction/1.0.0",valuation_intervals:[...new Set(sourceRuns.map(x=>x.configuration.valuationInterval))],timezone:"UTC",included_pricing_tracks:["raw_vwap","iv_normalized"],included_execution_scenarios:["maker","taker"],dte_windows:sourceRuns.map(x=>x.configuration.dteWindows),expiry_selection_modes:[...new Set(sourceRuns.map(x=>x.configuration.expirySelectionMode))],evidence_windows:sourceRuns.map(x=>x.configuration.historicalEvidenceWindows),synchronization_thresholds:sourceRuns.map(x=>x.configuration.synchronizationThresholds),quality_thresholds:sourceRuns.map(x=>x.configuration.qualityThresholds),model_assumptions:sourceRuns.map(x=>x.configuration.modelAssumptions),fee_assumptions:sourceRuns.map(x=>x.configuration.feeAssumptions),settlement_rules:sourceRuns.map(x=>x.configuration.settlementRules),trade_dataset_mr_event_count:num(context.tradeDatasetMrEventCount??null)??null,trade_dataset_mr_event_count_source:num(context.tradeDatasetMrEventCount??null)!==null?"active_trade_dataset":"unavailable",persisted_research_event_count:events.length,events_with_generated_candidates_count:new Set(availability.map(x=>x.event_id)).size,events_with_selected_candidates_count:new Set(candidates.map(x=>x.event_id)).size,events_with_stored_underlying_paths_count:new Set(paths.map(x=>x.event_id)).size,selected_structure_count:new Set(candidates.map(x=>x.candidate_id)).size,selected_structure_execution_row_count:candidates.length,generated_denominator_count:availability.length,venues:[...new Set(store.events.flatMap(e=>e.generationSnapshot.candidates.map(c=>c.venue))) ],venue_configuration:{deribit:economic,bybit:null,binance:null},effective_configuration_hash:distinctMethodologies[0]??null,methodology_identity:methodologyIdentity(store.events[0]?.generationSnapshot.configuration??{}) as unknown as JsonValue,build_provenance_status:buildProvenanceStatus(sourceRuns.map(x=>x.application_build)),source_runs:sourceRuns,table_availability:{underlying_path:paths.length?"available":"unavailable",structure_economics:structureEconomics.some(r=>r.maximum_economic_loss_status==="available")?"available":"unavailable",candidates:candidates.length?"available":"unavailable",availability:availability.length?"available":"unavailable",valuations:[...valuations,...independentValuations].some(v=>v.valuation_status==="priced")?"available":"unavailable",outcomes:[...outcomes,...independentOutcomes].some(o=>o.status==="evaluated")?"available":"unavailable",margin_scenarios:margins.some(m=>m.margin_status==="available")?"available":"unavailable",evidence_trades:evidence.length?"available":"unavailable",futures_comparisons:futures.some(f=>f.availability==="available")?"available":"unavailable",futures_path:futuresPath.length?"available":"unavailable"}});
+ const run=row({schema_version:RESEARCH_BUNDLE_SCHEMA_VERSION,futures_engine_version:FUTURES_ENGINE_VERSION,valuation_window_diagnostics:{migrated:migratedValuationWindowDiagnostics,builder_omitted_before_entry:omittedValuationsBeforeEntry,builder_omitted_after_expiry:omittedValuationsAfterExpiry},run_id:runId,generated_at_utc:generatedAtUtc,dataset_id:store.datasetId,dataset_version_updated_at:datasetUpdatedAt??store.updatedAtUtc,application_commit_build_id:[...new Set(sourceRuns.map(x=>x.application_build))],pricing_engine_versions:[...new Set(sourceRuns.map(x=>x.configuration.pricingEngineVersion))],quality_rules_versions:[...new Set(sourceRuns.map(x=>x.configuration.qualityRulesVersion))],valuation_methodology_version:"simple-model-reconstruction/1.0.0",valuation_intervals:[...new Set(sourceRuns.map(x=>x.configuration.valuationInterval))],timezone:"UTC",included_pricing_tracks:["raw_vwap","iv_normalized"],included_execution_scenarios:["maker","taker"],dte_windows:sourceRuns.map(x=>x.configuration.dteWindows),expiry_selection_modes:[...new Set(sourceRuns.map(x=>x.configuration.expirySelectionMode))],evidence_windows:sourceRuns.map(x=>x.configuration.historicalEvidenceWindows),synchronization_thresholds:sourceRuns.map(x=>x.configuration.synchronizationThresholds),quality_thresholds:sourceRuns.map(x=>x.configuration.qualityThresholds),model_assumptions:sourceRuns.map(x=>x.configuration.modelAssumptions),fee_assumptions:sourceRuns.map(x=>x.configuration.feeAssumptions),settlement_rules:sourceRuns.map(x=>x.configuration.settlementRules),trade_dataset_mr_event_count:num(context.tradeDatasetMrEventCount??null)??null,trade_dataset_mr_event_count_source:num(context.tradeDatasetMrEventCount??null)!==null?"active_trade_dataset":"unavailable",persisted_research_event_count:events.length,events_with_generated_candidates_count:new Set(availability.map(x=>x.event_id)).size,events_with_selected_candidates_count:new Set(candidates.map(x=>x.event_id)).size,events_with_stored_underlying_paths_count:new Set(paths.map(x=>x.event_id)).size,selected_structure_count:new Set(candidates.map(x=>x.candidate_id)).size,selected_structure_execution_row_count:candidates.length,generated_denominator_count:availability.length,venues:[...new Set(store.events.flatMap(e=>e.generationSnapshot.candidates.map(c=>c.venue))) ],venue_configuration:{deribit:economic,bybit:null,binance:null},effective_configuration_hash:distinctMethodologies[0]??null,methodology_identity:methodologyIdentity(store.events[0]?.generationSnapshot.configuration??{}) as unknown as JsonValue,build_provenance_status:buildProvenanceStatus(sourceRuns.map(x=>x.application_build)),source_runs:sourceRuns,table_availability:{underlying_path:paths.length?"available":"unavailable",structure_economics:structureEconomics.some(r=>r.maximum_structural_loss_status==="available")?"available":"unavailable",candidates:candidates.length?"available":"unavailable",availability:availability.length?"available":"unavailable",valuations:[...valuations,...independentValuations].some(v=>v.valuation_status==="priced")?"available":"unavailable",outcomes:[...outcomes,...independentOutcomes].some(o=>o.status==="evaluated")?"available":"unavailable",margin_scenarios:margins.some(m=>m.margin_status==="available")?"available":"unavailable",evidence_trades:evidence.length?"available":"unavailable",futures_comparisons:futures.some(f=>f.availability==="available")?"available":"unavailable",futures_path:futuresPath.length?"available":"unavailable"}});
  const files=Object.fromEntries(RESEARCH_BUNDLE_FILES.map(name=>[name,name==="run.json"?JSON.stringify(run)+"\n":lines(({"events.jsonl":events,"underlying_path.jsonl":paths,"structure_economics.jsonl":structureEconomics,"candidates.jsonl":candidates,"valuations.jsonl":[...valuations,...independentValuations],"outcomes.jsonl":[...outcomes,...independentOutcomes],"availability.jsonl":availability,"margin_scenarios.jsonl":margins,"evidence_trades.jsonl":evidence,"futures_comparisons.jsonl":futures,"futures_path.jsonl":futuresPath})[name]??[])])) as ResearchBundle["files"];
  const validation=validateResearchBundle(files);if(!validation.ok)throw new Error(summarizeResearchBundleErrors(validation.errors).summary);return{files,run};
 }
@@ -376,15 +391,15 @@ export function validateResearchBundle(files:Partial<Record<string,string>>):{ok
   // Requested-vs-actual provenance and the actual horizon must survive export.
   for(const key of ["requested_short_strike","requested_long_strike","requested_width","actual_short_strike","actual_long_strike","actual_width","width_substituted","expiry_timestamp_utc","reference_entry_timestamp_utc","actual_dte_hours","actual_dte_days"])
    if(!(key in r))errors.push(`Structure economics ${id} is missing ${key}.`);
-  const units=obj(r.maximum_economic_loss_units as JsonValue);
+  const units=obj(r.maximum_structural_loss_units as JsonValue);
   if(units.sign_convention!=="positive_magnitude")errors.push(`Structure economics ${id} does not state the canonical maximum-loss sign convention.`);
-  if(r.maximum_economic_loss_status==="available"){
-   const usd=num(r.maximum_economic_loss_usd),native=num(r.maximum_economic_loss_native),index=num(r.maximum_economic_loss_reference_index);
+  if(r.maximum_structural_loss_status==="available"){
+   const usd=num(r.maximum_structural_loss_usd),native=num(r.maximum_structural_loss_native),index=num(r.maximum_structural_loss_reference_index);
    if(usd===null||usd<0)errors.push(`Structure economics ${id} reports an available maximum loss that is not a positive USD magnitude.`);
    if(index===null||index<=0)errors.push(`Structure economics ${id} states no positive reference index for its BTC maximum loss.`);
    if(usd!==null&&index!==null&&index>0&&native!==null&&!nearlyEqual(native,usd/index))errors.push(`Structure economics ${id} BTC maximum loss is not the USD loss converted at the stated reference index.`);
-   if(!r.maximum_economic_loss_method||!r.maximum_economic_loss_method_version)errors.push(`Structure economics ${id} does not name its maximum-loss method and version.`);
-  }else if(r.maximum_economic_loss_unavailable_reason==null)errors.push(`Structure economics ${id} has no maximum loss and no reason.`);
+   if(!r.maximum_structural_loss_method||!r.maximum_structural_loss_method_version)errors.push(`Structure economics ${id} does not name its maximum-loss method and version.`);
+  }else if(r.maximum_structural_loss_unavailable_reason==null)errors.push(`Structure economics ${id} has no maximum loss and no reason.`);
   // The protective long's premium plus fees is an economic cost, never an
   // account requirement; nothing in this table may be labelled as margin.
   for(const key of Object.keys(r))if(/margin|required_balance/i.test(key))errors.push(`Structure economics ${id} names a capital requirement (${key}); margin belongs in margin_scenarios.jsonl.`);
@@ -392,11 +407,11 @@ export function validateResearchBundle(files:Partial<Record<string,string>>):{ok
  // One canonical maximum-loss calculation: the two economic tables must agree.
  for(const m of rows("margin_scenarios.jsonl")){
   const economics=economicsByCandidate.get(String(m.candidate_id));if(!economics)continue;
-  const marginUsd=num(m.maximum_loss_usd),economicsUsd=num(economics.maximum_economic_loss_usd);
-  if(marginUsd!==null&&economicsUsd!==null&&!nearlyEqual(marginUsd,economicsUsd))errors.push(`${String(m.candidate_id)} reports different maximum economic losses in structure_economics (${economicsUsd}) and margin_scenarios (${marginUsd}).`);
-  const marginNative=num(m.maximum_loss_native),economicsNative=num(economics.maximum_economic_loss_native);
+  const marginUsd=num(m.maximum_structural_loss_usd),economicsUsd=num(economics.maximum_structural_loss_usd);
+  if(marginUsd!==null&&economicsUsd!==null&&!nearlyEqual(marginUsd,economicsUsd))errors.push(`${String(m.candidate_id)} reports different maximum structural losses in structure_economics (${economicsUsd}) and margin_scenarios (${marginUsd}).`);
+  const marginNative=num(m.maximum_structural_loss_native),economicsNative=num(economics.maximum_structural_loss_native);
   if(marginNative!==null&&economicsNative!==null&&!nearlyEqual(marginNative,economicsNative))errors.push(`${String(m.candidate_id)} reports different BTC maximum-loss representations across the two economic tables.`);
-  const marginIndex=num(m.reference_index),economicsIndex=num(economics.maximum_economic_loss_reference_index);
+  const marginIndex=num(m.reference_index),economicsIndex=num(economics.maximum_structural_loss_reference_index);
   if(marginIndex!==null&&economicsIndex!==null&&!nearlyEqual(marginIndex,economicsIndex))errors.push(`${String(m.candidate_id)} states different maximum-loss reference indices across the two economic tables.`);
  }
  // Every selected structure has a margin scenario, available or explicitly not.
@@ -476,7 +491,7 @@ export function validateResearchBundle(files:Partial<Record<string,string>>):{ok
  // can never read as unavailable, and no usable rows can never read as available.
  const availabilityChecks:Array<[string,boolean]>=[
   ["underlying_path",rows("underlying_path.jsonl").length>0],
-  ["structure_economics",rows("structure_economics.jsonl").some(r=>r.maximum_economic_loss_status==="available")],
+  ["structure_economics",rows("structure_economics.jsonl").some(r=>r.maximum_structural_loss_status==="available")],
   ["candidates",rows("candidates.jsonl").length>0],
   ["availability",rows("availability.jsonl").length>0],
   ["valuations",rows("valuations.jsonl").some(r=>r.valuation_status==="priced")],

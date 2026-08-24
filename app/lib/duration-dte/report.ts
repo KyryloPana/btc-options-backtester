@@ -358,7 +358,7 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
  const capitalFor=(candidateId:string):number|null=>{
   const m=margins.find(x=>x.candidate_id===candidateId&&x.margin_status==="available");
   if(!m)return null;
-  const value=configuration.capitalBasis==="maximum_economic_loss"?m.maximum_loss_native
+  const value=configuration.capitalBasis==="maximum_economic_loss"?m.maximum_structural_loss_native
    :configuration.capitalBasis==="incremental_opening_margin"?m.incremental_initial_margin:m.peak_initial_margin;
   return typeof value==="number"&&Number.isFinite(value)&&value>0?value:null;
  };

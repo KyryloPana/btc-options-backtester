@@ -445,7 +445,7 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
 
   const marginRow=margins.find(m=>m.candidate_id===candidateId),
    marginAvailable=marginRow?.margin_status==="available",
-   requiredCapitalUsd=marginAvailable?num(marginRow!.maximum_loss_usd)??num(marginRow!.peak_initial_margin):null;
+   requiredCapitalUsd=marginAvailable?num(marginRow!.maximum_structural_loss_usd)??num(marginRow!.peak_initial_margin):null;
   const observedPnlAtVpocUsd=pnlAt(outcomes,candidateId,scenario,"vpoc"), observedPnlAtInvalidationUsd=pnlAt(outcomes,candidateId,scenario,"invalidation"), observedPnlAtSettlementUsd=pnlAt(outcomes,candidateId,scenario,"settlement");
   const reference=observationFor(eventId,candidateId)?.tracks.reference;
   const pnlAtVpocRaw=reference?referencePnl(reference,"vpoc"):observedPnlAtVpocUsd, pnlAtInvalidationUsd=reference?referencePnl(reference,"invalidation"):observedPnlAtInvalidationUsd, pnlAtSettlementUsd=reference?referencePnl(reference,"settlement"):observedPnlAtSettlementUsd;

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {buildResearchBundle} from "../app/lib/research-bundle.ts";
-import {MAXIMUM_ECONOMIC_LOSS_METHOD_VERSION} from "../app/lib/maximum-economic-loss.ts";
+import {STRUCTURAL_LOSS_METHOD_VERSION,canonicalStructuralLoss} from "../app/lib/maximum-economic-loss.ts";
 import {migrateResearchSelectionStore} from "../app/lib/research-selections.ts";
 import {buildResearchMarginSnapshot} from "../app/lib/research-margin.ts";
 import {estimateStandardOptionMargin,reconstructStandardVerticalMargin,STANDARD_MARGIN_ENGINE_VERSION,STANDARD_MARGIN_RULE_ID,DEFAULT_DEPLOYMENT} from "../app/lib/margin.ts";
@@ -80,14 +80,14 @@ test("ESTIMATOR: opening IM and MM come from the existing versioned Standard Mar
 
 test("DISTINCTNESS: maximum economic loss is not initial or maintenance margin",()=>{
  const row=marginRow();
- assert.notEqual(row.maximum_loss_native,row.incremental_initial_margin);
- assert.notEqual(row.maximum_loss_native,row.incremental_maintenance_margin);
- assert.notEqual(row.maximum_loss_usd,row.incremental_initial_margin);
+ assert.notEqual(row.maximum_structural_loss_native,row.incremental_initial_margin);
+ assert.notEqual(row.maximum_structural_loss_native,row.incremental_maintenance_margin);
+ assert.notEqual(row.maximum_structural_loss_usd,row.incremental_initial_margin);
  // They are different KINDS of quantity: loss is a payoff property, margin is
  // an account requirement, and the row says so.
  assert.equal(row.margin_measurement,"model_estimated_historical_requirement");
- assert.match(String(row.maximum_loss_method),/inverse-option expiry payoff/i);
- assert.equal(row.maximum_loss_method_version,MAXIMUM_ECONOMIC_LOSS_METHOD_VERSION,"the shared canonical method is named by version");
+ assert.match(String(row.maximum_structural_loss_method),/inverse-option expiry payoff/i);
+ assert.equal(row.maximum_structural_loss_method_version,STRUCTURAL_LOSS_METHOD_VERSION,"the shared canonical method is named by version");
 });
 
 test("DISTINCTNESS: the protective long's cash cost is never presented as margin",()=>{
@@ -142,17 +142,25 @@ test("PATH: a missing mark is never forward-filled; the reconstruction reports u
 test("MAX LOSS: the BTC figure carries its reference index, method and assumption",()=>{
  const row=marginRow();
  assert.equal(row.reference_index,INDEX);
- assert.deepEqual(row.maximum_loss_units,{native:"BTC",quote:"USD",sign_convention:"positive_magnitude"});
- assert.match(String(row.maximum_loss_assumption),/not an unconditional terminal BTC loss/i);
+ assert.deepEqual(row.maximum_structural_loss_units,{native:"BTC",quote:"USD",sign_convention:"positive_magnitude"});
+ assert.match(String(row.maximum_structural_loss_assumption),/not an unconditional terminal BTC loss/i);
  // USD is the primary bounded figure; BTC is that loss at the stated index.
- const usd=Number(row.maximum_loss_usd),btc=Number(row.maximum_loss_native);
+ const usd=Number(row.maximum_structural_loss_usd),btc=Number(row.maximum_structural_loss_native);
  assert.ok(Number.isFinite(usd)&&usd>0);
  assert.ok(Math.abs(btc-usd/INDEX)<1e-9,"the BTC representation is the USD loss converted at the reference index");
- // It matches the authoritative inverse payoff, not width minus credit.
- const exact=Math.abs(payoffExtrema({optionType:"P",shortStrike:SHORT,longStrike:LONG,
+ // It is the ONE canonical bounded structural figure, and the delivery fees it
+ // excludes are reported separately: structural + scenario fees reconstructs the
+ // old fee-inclusive extremum exactly, so nothing was discarded, only separated.
+ const input={optionType:"P" as const,shortStrike:SHORT,longStrike:LONG,
   shortEntryPremiumBtc:.02,longEntryPremiumBtc:.01,entryIndex:INDEX,amount:1,openingFeesBtc:.001,
-  expiryTimestamp:ts+7*864e5},"usd-cash-flow").maximumLoss);
- assert.ok(Math.abs(usd-exact)<1e-6);
+  expiryTimestamp:ts+7*864e5};
+ const canonical=canonicalStructuralLoss(input);
+ assert.equal(usd,canonical.usd,"the margin layer reports the shared canonical structural loss");
+ const feeInclusive=Math.abs(payoffExtrema(input,"usd-cash-flow").maximumLoss);
+ assert.ok(Math.abs(usd+canonical.settlementFees.scenarioDeliveryFeesUsd!-feeInclusive)<1e-9);
+ const fees=row.settlement_fee_treatment as Record<string,unknown>;
+ assert.equal(fees.included_in_structural_loss,false);
+ assert.equal(fees.global_fee_inclusive_maximum,"bounded","a bull put's legs are OTM above the short strike");
 });
 
 test("MAX LOSS: the divergent inverse BTC extremum is never exported as a terminal loss",()=>{
@@ -163,7 +171,7 @@ test("MAX LOSS: the divergent inverse BTC extremum is never exported as a termin
   expiryTimestamp:ts+7*864e5},"btc-settlement").maximumLoss);
  assert.ok(btcExtremum>1e6,"the raw BTC extremum really is divergent, which is why it is not used");
  const row=marginRow();
- assert.ok(Number(row.maximum_loss_native)<1,"the exported BTC figure is a bounded conversion, not the divergent extremum");
+ assert.ok(Number(row.maximum_structural_loss_native)<1,"the exported BTC figure is a bounded conversion, not the divergent extremum");
 });
 
 test("CAPITAL TIME: capital-days states its basis and formula unambiguously",()=>{

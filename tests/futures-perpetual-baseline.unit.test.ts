@@ -12,7 +12,7 @@ const withGeneration=(event:ReturnType<typeof futuresEvent>)=>({...event,generat
 
 test("exactly one canonical futures baseline exists per event, never one per structure",()=>{
  const multi=futuresEvent("long");
- multi.selectedStructures=[{candidateId:"a",marginSnapshot:{maximumEconomicLossUsd:500}},{candidateId:"b",marginSnapshot:{maximumEconomicLossUsd:900}}] as never;
+ multi.selectedStructures=[{candidateId:"a",marginSnapshot:{maximumStructuralLossUsd:500}},{candidateId:"b",marginSnapshot:{maximumStructuralLossUsd:900}}] as never;
  const bundle=bundleOf([withGeneration(multi),withGeneration(futuresEvent("short",{eventId:"mr-2"}))] as never);
  const comparisons=rows(bundle.files["futures_comparisons.jsonl"]);
  assert.equal(comparisons.length,2,"one row per event");
