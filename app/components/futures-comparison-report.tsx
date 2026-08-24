@@ -41,7 +41,7 @@ export function FuturesComparisonReportView({report}:{report:FuturesComparisonRe
    <span><b>{s.equalRiskComparableN}</b>Equal-risk comparable pairs</span>
    <span><b>{usd(s.medianPairedDifferenceUsd)}</b>Median paired Options − Futures</span>
   </div>
-  <small className="dd-note">These are two different denominators and are never mixed. One perpetual observation exists per MR event, however many option structures were selected for it; a futures median computed over structure rows would reweight the futures population by option selection density. The paired difference uses matched event and endpoint observations only — unmatched aggregate means are never differenced and called an options advantage. No strategy is recommended.</small>
+  <small className="dd-note">The equal-risk futures quantity is an ANALYTICAL sizing figure, not an executable order amount: it is unrounded and is not stepped to the contract size or minimum trade amount, so it is never a guaranteed executable size. These are two different denominators and are never mixed. One perpetual observation exists per MR event, however many option structures were selected for it; a futures median computed over structure rows would reweight the futures population by option selection density. The paired difference uses matched event and endpoint observations only — unmatched aggregate means are never differenced and called an options advantage. No strategy is recommended.</small>
 
   {report.events.map(({baseline,options})=><div key={baseline.eventId} className="dd-event-block">
    <h3>{baseline.eventId} · {baseline.instrument??UNAVAILABLE} · {baseline.direction??UNAVAILABLE}</h3>
@@ -62,7 +62,7 @@ export function FuturesComparisonReportView({report}:{report:FuturesComparisonRe
      <td>{usd(baseline.riskToInvalidationUsdPerUnit)}</td>
     </tr></tbody>
    </table></div>
-   <small className="dd-note">{baseline.unitConvention??"Per-unit economics."} Missing funding stays explicit and is never treated as zero, and spot or index prices are never substituted for missing perpetual data. This event keeps its other canonical endpoints even where one is unavailable.</small>
+   <small className="dd-note">{baseline.unitConvention??"Per-unit economics."} Missing funding stays explicit and is never treated as zero, and spot or index prices are never substituted for missing perpetual data. This event keeps its other canonical endpoints even where one is unavailable. Slippage is the exported zero-slippage reference assumption, not a measured execution cost: these are reference economics, not observed executable economics, and the Maker/Taker layers elsewhere in the workspace remain the empirical execution evidence.</small>
 
    <div className="table-wrap"><table>
     <thead><tr><th>Endpoint</th><th>Outcome</th><th>Status</th><th>Decision</th><th>Observation</th><th>Price</th><th>Reason</th></tr></thead>
@@ -75,7 +75,7 @@ export function FuturesComparisonReportView({report}:{report:FuturesComparisonRe
    </table></div>
 
    <div className="table-wrap"><table>
-    <thead><tr><th>Candidate</th><th>Actual DTE</th><th>Strikes / width</th><th>Endpoint</th><th>Comparability</th><th>Reference option PnL</th><th>Max structural loss</th><th>Opening IM</th><th>Peak IM</th><th>Risk budget</th><th>Equal-risk futures qty</th><th>Equal-risk futures PnL</th><th>Options − Futures</th></tr></thead>
+    <thead><tr><th>Candidate</th><th>Actual DTE</th><th>Strikes / width</th><th>Endpoint</th><th>Comparability</th><th>Reference option PnL</th><th>Max structural loss</th><th>Opening IM</th><th>Peak IM</th><th>Risk budget</th><th>Equal-risk futures qty<br/><small>analytical</small></th><th>Equal-risk futures PnL</th><th>Options − Futures</th></tr></thead>
     <tbody>{options.map(o=><tr key={o.candidateId}>
      <th>{o.candidateId}</th>
      <td>{days(o.actualDteDays)}</td>

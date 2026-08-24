@@ -13,6 +13,7 @@ import {
 } from "./normalize.ts";
 import {buildResolutionSpeedReport,type ResolutionSpeedReport} from "./resolution-speed.ts";
 import {coverageFromSurvival,share,type CoveragePoint} from "./statistics.ts";
+import {indexByCandidate,readCanonicalStructuralLoss} from "../canonical-structural-loss.ts";
 
 /** Auditable dependency contract for every Duration metric family. */
 export const DURATION_METRIC_ROUTES={
@@ -372,11 +373,29 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
   :[];
  const pricedPolicy=policyObservations.filter(o=>o.status==="priced"&&o.holdingHours!==null&&o.holdingHours>0);
  const margins=dataset.tables.margin_scenarios??[];
+ const structureEconomics=indexByCandidate(dataset.tables.structure_economics),marginByCandidate=indexByCandidate(margins);
+ /**
+  * Capital in BTC for the selected basis.
+  *
+  * The two MARGIN bases are account quantities and correctly come from
+  * margin_scenarios alone. The STRUCTURAL-LOSS basis is an economic quantity and
+  * is read through the shared canonical adapter -- structure_economics first,
+  * margin_scenarios as reconciliation. It previously read margin_scenarios only,
+  * so every structure whose Standard Margin reconstruction was unavailable
+  * silently produced no capital-day return even though the canonical structural
+  * loss had been exported for it.
+  *
+  * `maximum_economic_loss` is the retained serialized configuration token; the
+  * quantity it selects is the canonical maximum STRUCTURAL loss.
+  */
  const capitalFor=(candidateId:string):number|null=>{
+  if(configuration.capitalBasis==="maximum_economic_loss"){
+   const loss=readCanonicalStructuralLoss({economics:structureEconomics.get(candidateId),margin:marginByCandidate.get(candidateId)});
+   return loss.status==="available"&&loss.btc!==null&&Number.isFinite(loss.btc)&&loss.btc>0?loss.btc:null;
+  }
   const m=margins.find(x=>x.candidate_id===candidateId&&x.margin_status==="available");
   if(!m)return null;
-  const value=configuration.capitalBasis==="maximum_economic_loss"?m.maximum_structural_loss_native
-   :configuration.capitalBasis==="incremental_opening_margin"?m.incremental_initial_margin:m.peak_initial_margin;
+  const value=configuration.capitalBasis==="incremental_opening_margin"?m.incremental_initial_margin:m.peak_initial_margin;
   return typeof value==="number"&&Number.isFinite(value)&&value>0?value:null;
  };
  const capitalReturns=pricedPolicy.flatMap(o=>{const cap=capitalFor(o.candidateId),days=o.holdingHours!/24;return cap!==null&&o.pnlBtc!==null&&days>0?[o.pnlBtc/(cap*days)]:[]});
