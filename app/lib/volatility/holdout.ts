@@ -328,18 +328,55 @@ export function buildSpreadHoldout(request: SpreadHoldoutRequest): SpreadHoldout
   };
 }
 
-/** Composition summary, so the next phase can state its sample without recomputing it. */
+/**
+ * Composition summary, so a later phase can state its sample without
+ * recomputing it.
+ *
+ * TWO DENOMINATORS live here and they are not interchangeable, so every field
+ * names the one it uses:
+ *
+ *   - a CASE is one withheld instrument at one snapshot. This is the frozen
+ *     scoring cohort: every model comparison must divide by `total_cases`.
+ *   - a TRUTH OBSERVATION is one individual withheld exchange print. A case
+ *     hides every print of its instrument in the canonical window, which is
+ *     4-5 prints on average and can be well over a hundred.
+ *
+ * Reporting a case-level count beside an observation-level one without saying
+ * which is which produces two mutually inconsistent universes in the same
+ * table, which is exactly what happened in the Phase 2A.3 report.
+ */
 export interface HoldoutComposition {
+  /** Frozen scoring cohort. The denominator for every model comparison. */
   readonly total_cases: number;
-  readonly by_mode: Readonly<Record<string, number>>;
-  readonly by_readiness: Readonly<Record<string, number>>;
-  readonly calls: number;
-  readonly puts: number;
-  readonly by_dte_bucket: Readonly<Record<string, number>>;
-  readonly by_moneyness_bucket: Readonly<Record<string, number>>;
+  /** Individual withheld prints across all cases. NOT a scoring denominator. */
+  readonly total_truth_observations: number;
+  readonly truth_observations_per_case: {
+    readonly min: number; readonly median: number;
+    readonly mean: number; readonly max: number;
+  };
+  readonly cases_by_mode: Readonly<Record<string, number>>;
+  readonly cases_by_readiness: Readonly<Record<string, number>>;
+  readonly cases_by_option_type: Readonly<Record<string, number>>;
+  readonly cases_by_dte_bucket: Readonly<Record<string, number>>;
+  readonly cases_by_moneyness_bucket: Readonly<Record<string, number>>;
+  readonly truth_observations_by_option_type: Readonly<Record<string, number>>;
+  readonly truth_observations_by_moneyness_bucket: Readonly<Record<string, number>>;
   readonly distinct_events: number;
   readonly distinct_snapshots: number;
+  /** Identity of the frozen cohort. Changes if the case set changes at all. */
+  readonly cohort_content_hash: string;
 }
+
+/**
+ * A case's own option type and moneyness bucket.
+ *
+ * Every truth in a case is the SAME instrument at the SAME snapshot, so strike,
+ * option type and underlying are constant across it; the first truth defines
+ * the case. A case with no truth cannot exist -- `buildHoldoutCase` returns null
+ * rather than emitting one.
+ */
+export const caseOptionType = (holdout: HoldoutCase): string => holdout.truth[0]?.option_type ?? "unknown";
+export const caseLogMoneyness = (holdout: HoldoutCase): number | null => holdout.truth[0]?.log_moneyness ?? null;
 
 export const dteBucket = (days: number): string =>
   days < 3 ? "0-3d" : days < 7 ? "3-7d" : days < 14 ? "7-14d" : days < 30 ? "14-30d" : "30d+";
@@ -357,16 +394,36 @@ export function summarizeHoldouts(cases: readonly HoldoutCase[]): HoldoutComposi
     return out;
   };
   const truths = cases.flatMap(c => c.truth);
+  const perCase = cases.map(c => c.truth.length).sort((a, b) => a - b);
+  const median = perCase.length
+    ? perCase.length % 2 ? perCase[(perCase.length - 1) / 2]!
+      : (perCase[perCase.length / 2 - 1]! + perCase[perCase.length / 2]!) / 2
+    : 0;
+
   return {
     total_cases: cases.length,
-    by_mode: count(cases.map(c => c.mode)),
-    by_readiness: count(cases.map(c => c.remaining_readiness.readiness)),
-    calls: truths.filter(t => t.option_type === "C").length,
-    puts: truths.filter(t => t.option_type === "P").length,
-    by_dte_bucket: count(cases.map(c => dteBucket(c.actual_dte_days))),
-    by_moneyness_bucket: count(truths.map(t => moneynessBucket(t.log_moneyness))),
+    total_truth_observations: truths.length,
+    truth_observations_per_case: {
+      min: perCase.length ? perCase[0]! : 0,
+      median,
+      mean: perCase.length ? truths.length / perCase.length : 0,
+      max: perCase.length ? perCase[perCase.length - 1]! : 0,
+    },
+    cases_by_mode: count(cases.map(c => c.mode)),
+    cases_by_readiness: count(cases.map(c => c.remaining_readiness.readiness)),
+    cases_by_option_type: count(cases.map(caseOptionType)),
+    cases_by_dte_bucket: count(cases.map(c => dteBucket(c.actual_dte_days))),
+    cases_by_moneyness_bucket: count(cases.map(c => {
+      const k = caseLogMoneyness(c);
+      return k === null ? "unknown" : moneynessBucket(k);
+    })),
+    truth_observations_by_option_type: count(truths.map(t => t.option_type)),
+    truth_observations_by_moneyness_bucket: count(truths.map(t => moneynessBucket(t.log_moneyness))),
     distinct_events: new Set(cases.map(c => c.event_id).filter(Boolean)).size,
     distinct_snapshots: new Set(cases.map(c => c.snapshot_id)).size,
+    // Order-independent, so the identity tracks the case SET rather than the
+    // order a run happened to build it in.
+    cohort_content_hash: contentHash([...cases.map(c => c.case_id)].sort()),
   };
 }
 

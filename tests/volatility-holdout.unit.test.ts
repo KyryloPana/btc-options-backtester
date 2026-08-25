@@ -6,7 +6,7 @@ import {
 import {
   DEFAULT_SYNCHRONOUS_WINDOW_MINUTES, HOLDOUT_METHOD_VERSION,
   assertHoldoutIsClean, buildHoldoutCase, buildSingleContractHoldouts, buildSpreadHoldout,
-  dteBucket, moneynessBucket, summarizeHoldouts,
+  caseLogMoneyness, caseOptionType, dteBucket, moneynessBucket, summarizeHoldouts,
 } from "../app/lib/volatility/holdout.ts";
 import {OPTION_HISTORY_HOST} from "../app/lib/volatility/reference-series.ts";
 
@@ -230,12 +230,67 @@ test("COMPOSITION: the sample is summarized across mode, readiness, type, DTE an
   const cases = buildSingleContractHoldouts({snapshot: fullSnapshot(), expiryTimestampMs: EXPIRY, eventId: "e1"});
   const summary = summarizeHoldouts(cases);
   assert.equal(summary.total_cases, LADDER.length);
-  assert.equal(summary.calls, LADDER.length);
-  assert.equal(summary.puts, 0);
+  assert.equal(summary.cases_by_option_type.C, LADDER.length);
   assert.equal(summary.distinct_events, 1);
   assert.equal(summary.distinct_snapshots, 1);
-  assert.ok(Object.values(summary.by_readiness).reduce((a, b) => a + b, 0) === LADDER.length);
-  assert.equal(Object.keys(summary.by_dte_bucket)[0], "3-7d", "the fixture expiry is 6.8 days out");
+  assert.equal(Object.values(summary.cases_by_readiness).reduce((a, b) => a + b, 0), LADDER.length);
+  assert.equal(Object.keys(summary.cases_by_dte_bucket)[0], "3-7d", "the fixture expiry is 6.8 days out");
+});
+
+/* ------- REGRESSION: the two denominators are separate and both stated ------- */
+
+test("DENOMINATOR: a case is one withheld instrument; truths are its individual prints", () => {
+  // One strike printed five times, the rest once. One CASE hides that
+  // instrument; five TRUTH OBSERVATIONS come with it. Reporting 5 beside 6
+  // without saying which is which is what produced two inconsistent universes
+  // in the Phase 2A.3 report.
+  const busy = [0, 1, 2, 3, 4].map(i => call(106_000, {tradeId: `busy-${i}`, timestampMs: T - (10 + i) * MIN}));
+  const snapshot = snapshotOf([...LADDER.filter(k => k !== 106_000).map(k => call(k)), ...busy]);
+  const cases = buildSingleContractHoldouts({snapshot, expiryTimestampMs: EXPIRY, eventId: "e1"});
+  const summary = summarizeHoldouts(cases);
+
+  assert.equal(summary.total_cases, LADDER.length, "six instruments, six cases");
+  assert.equal(summary.total_truth_observations, LADDER.length - 1 + busy.length,
+    "the busy strike contributes five truths from one case");
+  assert.notEqual(summary.total_cases, summary.total_truth_observations,
+    "the fixture must actually exercise the divergence");
+
+  // Case-level tallies sum to the case count.
+  for (const tally of [summary.cases_by_mode, summary.cases_by_readiness,
+    summary.cases_by_option_type, summary.cases_by_dte_bucket, summary.cases_by_moneyness_bucket])
+    assert.equal(Object.values(tally).reduce((a, b) => a + b, 0), summary.total_cases);
+
+  // Observation-level tallies sum to the truth count.
+  for (const tally of [summary.truth_observations_by_option_type,
+    summary.truth_observations_by_moneyness_bucket])
+    assert.equal(Object.values(tally).reduce((a, b) => a + b, 0), summary.total_truth_observations);
+
+  assert.equal(summary.truth_observations_per_case.max, busy.length);
+  assert.equal(summary.truth_observations_per_case.min, 1);
+  assert.ok(summary.truth_observations_per_case.mean > 1);
+});
+
+test("DENOMINATOR: the cohort hash identifies the case SET, independent of order", () => {
+  const cases = buildSingleContractHoldouts({snapshot: fullSnapshot(), expiryTimestampMs: EXPIRY, eventId: "e1"});
+  const forward = summarizeHoldouts(cases).cohort_content_hash;
+  assert.equal(summarizeHoldouts([...cases].reverse()).cohort_content_hash, forward,
+    "the frozen cohort identity must not depend on build order");
+  assert.notEqual(summarizeHoldouts(cases.slice(1)).cohort_content_hash, forward,
+    "dropping a case must change the cohort identity");
+  assert.ok(forward.length > 0);
+});
+
+test("DENOMINATOR: a case always carries at least one truth, so its type is well defined", () => {
+  const cases = buildSingleContractHoldouts({snapshot: fullSnapshot(), expiryTimestampMs: EXPIRY, eventId: "e1"});
+  for (const c of cases) {
+    assert.ok(c.truth.length >= 1, "a case with no truth would score nothing and must not exist");
+    assert.equal(new Set(c.truth.map(t => t.instrument_name)).size, 1,
+      "every truth in a case is the same instrument, which is what makes the case-level type well defined");
+    assert.equal(caseOptionType(c), c.truth[0]!.option_type);
+    assert.equal(caseLogMoneyness(c), c.truth[0]!.log_moneyness);
+  }
+  assert.equal(summarizeHoldouts([]).total_cases, 0);
+  assert.equal(summarizeHoldouts([]).truth_observations_per_case.median, 0);
 });
 
 test("COMPOSITION: bucket boundaries are explicit and side-aware", () => {

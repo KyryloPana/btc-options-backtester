@@ -287,14 +287,26 @@ So on the final day, same-expiry evidence cannot reach the strikes and cross-exp
 
 Built before any model exists, so no cohort can be chosen after seeing a result. Cases are persisted by reference to their snapshot — the evidence already lives in the shard cache — and `assertHoldoutIsClean` re-verifies the exclusion on every case rather than trusting the filter that built it.
 
-**Single-contract holdouts: 3,475**, across 121 snapshots and 5 events, built at entry, every named decision point, and every 6th scheduled 4-hour point.
+**Single-contract holdouts: 3,475 cases**, across 121 snapshots and 5 events, built at entry, every named decision point, and every 6th scheduled 4-hour point.
 
-| dimension | composition |
-|---|---|
-| option type (truths) | 8,594 calls / 7,377 puts |
-| DTE | 0–3d 580 · 3–7d 918 · 7–14d 1,113 · 14–30d 736 · 30d+ 128 |
-| moneyness | ATM 4,403 · near 3,535 · mid 4,522 · far 3,511 |
-| remaining readiness | dense 2,789 · sparse 343 · extrapolation 342 · cross-expiry 1 |
+> **Two denominators, corrected.** A **case** is one withheld instrument at one
+> snapshot — this is the frozen scoring cohort, **3,475**. A **truth observation**
+> is one individual withheld exchange print; a case hides every print of its
+> instrument in the canonical window, **15,971** in total (median 2, mean 4.6, max
+> 145 per case). The table below originally mixed the two, so its option-type and
+> moneyness rows summed to 15,971 while its DTE and readiness rows summed to
+> 3,475. Both are shown explicitly now. **Every model comparison divides by the
+> 3,475 cases.**
+
+| dimension | denominator | composition |
+|---|---|---|
+| DTE | cases (3,475) | 0–3d 580 · 3–7d 918 · 7–14d 1,113 · 14–30d 736 · 30d+ 128 |
+| remaining readiness | cases (3,475) | dense 2,789 · sparse 343 · extrapolation 342 · cross-expiry 1 |
+| option type | truth observations (15,971) | 8,594 calls / 7,377 puts |
+| moneyness | truth observations (15,971) | ATM 4,403 · near 3,535 · mid 4,522 · far 3,511 |
+
+Case-level option-type and moneyness tallies are now emitted too; see
+`HoldoutComposition` and the Phase 2B report for the reconciled figures.
 
 Each case supports removal of the exact target contract; the spread builder additionally supports short-leg, long-leg and both-leg removal. Withheld instruments are removed from **every** maturity, not just their own, so a model cannot recover the answer through the term structure. Truth carries true IV, true trade price, mark price where present, strike, underlying, expiry and the surrounding geometry after holdout.
 
