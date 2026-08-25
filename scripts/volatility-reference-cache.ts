@@ -175,11 +175,11 @@ async function readJsonl<T>(path: string): Promise<T[]> {
 }
 
 /** Rows already cached for a shard, so a rebuild need not refetch it. */
-export async function readReferenceShard(shardId: string, root = VOLATILITY_CACHE_ROOT): Promise<ReferenceSeriesRow[]> {
+export async function readReferenceShard(shardId: string, root: string = VOLATILITY_CACHE_ROOT): Promise<ReferenceSeriesRow[]> {
   return readJsonl<ReferenceSeriesRow>(shardPath(root, REFERENCE_SERIES_ID, shardId));
 }
 
-export async function listCachedShards(seriesId = REFERENCE_SERIES_ID, root = VOLATILITY_CACHE_ROOT): Promise<string[]> {
+export async function listCachedShards(seriesId: string = REFERENCE_SERIES_ID, root: string = VOLATILITY_CACHE_ROOT): Promise<string[]> {
   try {
     return (await readdir(join(root, seriesId)))
       .filter(f => f.endsWith(".jsonl")).map(f => f.replace(/\.jsonl$/, "")).sort();
@@ -237,7 +237,7 @@ export async function writeReferenceShards(input: {
   return {seriesId: REFERENCE_SERIES_ID, shardsWritten: written, shardsReused: reused, manifest};
 }
 
-export async function readReferenceManifest(root = VOLATILITY_CACHE_ROOT): Promise<ReferenceSeriesManifest | null> {
+export async function readReferenceManifest(root: string = VOLATILITY_CACHE_ROOT): Promise<ReferenceSeriesManifest | null> {
   try { return JSON.parse(await readFile(manifestPath(root, REFERENCE_SERIES_ID), "utf8")) as ReferenceSeriesManifest; }
   catch { return null; }
 }

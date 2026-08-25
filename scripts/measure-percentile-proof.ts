@@ -17,7 +17,7 @@ import {
 } from "../app/lib/volatility/market-iv-evidence.ts";
 import {
   OPTION_HISTORY_HOST, REFERENCE_SERIES_ID, buildReferenceSeriesRows,
-  referenceSeriesContentHash, type ListedExpiry,
+  referenceSeriesContentHash, type ListedExpiry, type ReferenceSeriesRow,
 } from "../app/lib/volatility/reference-series.ts";
 import {causalIvPercentile, type ReferenceObservation} from "../app/lib/volatility/iv-percentile.ts";
 import {HOUR_MS} from "../app/lib/volatility/realized-volatility.ts";
@@ -70,7 +70,7 @@ async function main() {
   process.stderr.write(`manifest ${instruments.length}; building ${PRIOR_HOURS} prior hours\n`);
 
   const history: Record<NominalTenor, ReferenceObservation[]> = {"7d": [], "14d": [], "30d": []};
-  const allRows = [];
+  const allRows: ReferenceSeriesRow[] = [];
   let attempted = 0;
 
   // Every target from PRIOR_HOURS before entry up to and including entry.

@@ -44,4 +44,4 @@ next-env.d.ts
 /.local-cache/
 /local-data/
 
-tsconfig.tsbuildinfo
+*.tsbuildinfo
