@@ -280,6 +280,35 @@ test("DENOMINATOR: the cohort hash identifies the case SET, independent of order
   assert.ok(forward.length > 0);
 });
 
+test("IDENTITY: a case id survives a round trip through storage order", () => {
+  // The shard cache stores observations sorted; the original build saw them in
+  // admission order. An order-sensitive identity would give the same case two
+  // different ids depending on where it was loaded from, which would make the
+  // frozen cohort impossible to verify -- and did, until this was fixed.
+  const busy = [0, 1, 2, 3].map(i => call(106_000, {tradeId: `b-${i}`, timestampMs: T - (5 + i) * MIN,
+    ivApiPercent: 42 + i}));
+  const others = LADDER.filter(k => k !== 106_000).map(k => call(k));
+  const build = (prints: readonly RawOptionPrint[]) => buildHoldoutCase({
+    snapshot: snapshotOf(prints), expiryTimestampMs: EXPIRY, mode: "exact_target_contract",
+    withheldInstruments: ["BTC-23JUN25-106000-C"],
+    legs: [{leg: "short", strike: 106_000, optionType: "C", instrumentName: "BTC-23JUN25-106000-C"}],
+  })!;
+
+  const asBuilt = build([...others, ...busy]);
+  const asStored = build([...others, ...[...busy].reverse()]);
+  assert.equal(asBuilt.truth.length, busy.length, "the fixture must actually hide several prints");
+  assert.equal(asStored.case_id, asBuilt.case_id,
+    "the same hidden evidence in a different order is the same case");
+  assert.equal(asStored.content_hash, asBuilt.content_hash);
+  // The truth itself is emitted in a canonical order too, so a consumer reading
+  // truth[0] gets the same print either way.
+  assert.deepEqual(asStored.truth.map(t => t.trade_id), asBuilt.truth.map(t => t.trade_id));
+
+  // Genuinely different hidden evidence is still a different case.
+  const different = build([...others, ...busy.slice(1)]);
+  assert.notEqual(different.case_id, asBuilt.case_id);
+});
+
 test("DENOMINATOR: a case always carries at least one truth, so its type is well defined", () => {
   const cases = buildSingleContractHoldouts({snapshot: fullSnapshot(), expiryTimestampMs: EXPIRY, eventId: "e1"});
   for (const c of cases) {

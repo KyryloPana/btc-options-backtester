@@ -157,10 +157,21 @@ export function buildHoldoutCase(request: HoldoutRequest): HoldoutCase | null {
     slice: remainingSlice, legs: legEvidence, adjacentSlices: adjacent,
   });
 
-  const truth = hidden.map(truthOf);
+  // Truth is sorted by its own content before hashing. The evidence a case
+  // hides is a SET, and the shard cache stores observations in a different
+  // order from the admission order they were first built in -- so an
+  // order-sensitive identity would give the same case two different ids
+  // depending on whether it came from memory or from disk, which is exactly
+  // what makes a "frozen cohort" unverifiable.
+  const truth = [...hidden].sort((a, b) =>
+    a.timestamp_ms - b.timestamp_ms
+    || (a.trade_id ?? "").localeCompare(b.trade_id ?? "")
+    || a.iv_decimal - b.iv_decimal).map(truthOf);
   const hash = contentHash([
     request.snapshot.content_hash, request.mode, request.expiryTimestampMs,
-    [...withheld].sort(), truth.map(t => [t.instrument_name, t.trade_id, t.true_iv_decimal]),
+    [...withheld].sort(),
+    [...truth.map(t => [t.instrument_name, t.trade_id, t.true_iv_decimal] as const)]
+      .map(tuple => JSON.stringify(tuple)).sort(),
   ]);
   const holdout: HoldoutCase = {
     case_id: `holdout~${request.mode}~${hash}`,
