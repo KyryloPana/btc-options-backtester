@@ -22,10 +22,11 @@ import {
   buildSingleContractHoldouts, buildSpreadHoldout, summarizeHoldouts, type HoldoutCase,
 } from "../app/lib/volatility/holdout.ts";
 import {aggregateSlice, assessCallPutCompatibility} from "../app/lib/volatility/strike-aggregation.ts";
+import {fitSsvi, ssviTotalVarianceAt, type SsviMaturityInput} from "../app/lib/volatility/ssvi.ts";
 import {
   LINEAR_INTERPOLATION_METHOD_VERSION, LOCAL_IV_ANCHOR_METHOD_VERSION, SVI_METHOD_VERSION,
-  PRIOR_ANCHOR_MAX_AGE_MINUTES,
-  estimateLinearInterpolation, estimateLocalIvAnchor, estimateSvi, fitSvi,
+  PRIOR_ANCHOR_MAX_AGE_MINUTES, SSVI_ESTIMATE_METHOD_VERSION,
+  estimateLinearInterpolation, estimateLocalIvAnchor, estimateSsvi, estimateSvi, fitSvi,
   type EstimationTarget, type PriorAnchor, type SurfaceEstimate,
 } from "../app/lib/volatility/surface-models.ts";
 import {
@@ -45,7 +46,8 @@ type Row = Record<string, unknown>;
 const str = (v: unknown): string | null => typeof v === "string" && v ? v : null;
 const num = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) ? v : null;
 
-const METHODS = [LOCAL_IV_ANCHOR_METHOD_VERSION, LINEAR_INTERPOLATION_METHOD_VERSION, SVI_METHOD_VERSION] as const;
+const METHODS = [LOCAL_IV_ANCHOR_METHOD_VERSION, LINEAR_INTERPOLATION_METHOD_VERSION,
+  SVI_METHOD_VERSION, SSVI_ESTIMATE_METHOD_VERSION] as const;
 type Method = (typeof METHODS)[number];
 
 async function loadSnapshots(): Promise<Map<number, SurfaceSnapshot>> {
@@ -85,7 +87,26 @@ function smileFor(cache: Map<string, ReturnType<typeof buildSmile>>, holdout: Ho
 function buildSmile(holdout: HoldoutCase) {
   const sameExpiry = holdout.fitting_inputs.filter(o => o.expiry_timestamp_ms === holdout.expiry_timestamp_ms);
   const points = aggregateSlice(sameExpiry);
-  return {points, fit: fitSvi(points), compatibility: assessCallPutCompatibility(points)};
+
+  // SSVI sees EVERY maturity in the snapshot, minus the withheld instrument --
+  // that shared term structure is the only thing it can offer over same-expiry
+  // SVI, so withholding it would test nothing.
+  const byExpiry = new Map<number, typeof holdout.fitting_inputs[number][]>();
+  for (const o of holdout.fitting_inputs) {
+    const list = byExpiry.get(o.expiry_timestamp_ms);
+    if (list) list.push(o); else byExpiry.set(o.expiry_timestamp_ms, [o]);
+  }
+  const maturities: SsviMaturityInput[] = [...byExpiry.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([expiry, rows]) => ({
+      expiryTimestampMs: expiry,
+      timeToExpiryYears: rows[0]!.time_to_expiry_years,
+      points: aggregateSlice(rows),
+    }));
+  return {
+    points, fit: fitSvi(points), ssvi: fitSsvi(maturities),
+    compatibility: assessCallPutCompatibility(points),
+  };
 }
 
 interface CaseContext {
@@ -211,7 +232,9 @@ async function main() {
     [LOCAL_IV_ANCHOR_METHOD_VERSION]: [],
     [LINEAR_INTERPOLATION_METHOD_VERSION]: [],
     [SVI_METHOD_VERSION]: [],
+    [SSVI_ESTIMATE_METHOD_VERSION]: [],
   };
+  const ssviDiagnostics: Row[] = [];
   const fitDiagnostics: Row[] = [];
   const compatibility: Row[] = [];
   let processed = 0;
@@ -239,7 +262,7 @@ async function main() {
       targetTimestampMs: holdout.target_timestamp_ms,
       expiryTimestampMs: holdout.expiry_timestamp_ms,
     };
-    const {points, fit, compatibility: compat} = smileFor(smileCache, holdout);
+    const {points, fit, ssvi, compatibility: compat} = smileFor(smileCache, holdout);
     const readinessClass = holdout.remaining_readiness.readiness;
     const strikeCount = holdout.remaining_slice?.unique_strike_count ?? 0;
     const truthAge = truth.age_minutes;
@@ -255,6 +278,18 @@ async function main() {
       [LOCAL_IV_ANCHOR_METHOD_VERSION]: estimateLocalIvAnchor(anchor, target, PRIOR_ANCHOR_MAX_AGE_MINUTES),
       [LINEAR_INTERPOLATION_METHOD_VERSION]: estimateLinearInterpolation(points, target),
       [SVI_METHOD_VERSION]: estimateSvi(fit, points, target),
+      [SSVI_ESTIMATE_METHOD_VERSION]: estimateSsvi(
+        ssviTotalVarianceAt(ssvi, holdout.expiry_timestamp_ms, target.logMoneyness),
+        points, target,
+        {maturity_count: ssvi.maturity_count, rms_residual_iv: ssvi.rms_residual_iv,
+          calendar_monotone: ssvi.calendar_monotone, constraint_violations: ssvi.constraint_violations,
+          rho: ssvi.parameters?.rho, eta: ssvi.parameters?.eta, gamma: ssvi.parameters?.gamma},
+        ssvi.unavailable_reason === null ? null
+          : ssvi.unavailable_reason === "insufficient_maturities"
+            || ssvi.unavailable_reason === "insufficient_observations"
+            ? "insufficient_observations"
+            : ssvi.unavailable_reason === "fit_economically_invalid"
+              ? "fit_economically_invalid" : "fit_did_not_converge"),
     };
     for (const method of METHODS)
       scored[method].push(scoreOne(method, estimates[method], holdout, target,
@@ -272,6 +307,15 @@ async function main() {
         parameters: fit.parameters as unknown as Row,
       });
       compatibility.push({snapshot_id: holdout.snapshot_id, ...compat as unknown as Row});
+      ssviDiagnostics.push({
+        snapshot_id: holdout.snapshot_id, expiry_timestamp_ms: holdout.expiry_timestamp_ms,
+        converged: ssvi.converged, unavailable_reason: ssvi.unavailable_reason,
+        maturity_count: ssvi.maturity_count, observation_count: ssvi.observation_count,
+        rms_residual_iv: ssvi.rms_residual_iv, calendar_monotone: ssvi.calendar_monotone,
+        constraint_violations: ssvi.constraint_violations,
+        rho: ssvi.parameters?.rho ?? null, eta: ssvi.parameters?.eta ?? null,
+        gamma: ssvi.parameters?.gamma ?? null,
+      });
     }
     processed += 1;
     if (processed % 500 === 0) process.stderr.write(`  scored ${processed}/${cohort.length}\n`);
@@ -284,6 +328,7 @@ async function main() {
     [LOCAL_IV_ANCHOR_METHOD_VERSION]: [],
     [LINEAR_INTERPOLATION_METHOD_VERSION]: [],
     [SVI_METHOD_VERSION]: [],
+    [SSVI_ESTIMATE_METHOD_VERSION]: [],
   };
 
   for (const row of spreadRows) {
@@ -324,7 +369,7 @@ async function main() {
     });
     if (!holdout) continue;
 
-    const {points, fit} = buildSmile(holdout.holdout);
+    const {points, fit, ssvi} = buildSmile(holdout.holdout);
     const legTarget = (truth: Row): EstimationTarget => ({
       strike: num(truth.strike)!, optionType: String(truth.option_type) === "P" ? "P" : "C",
       logMoneyness: num(truth.log_moneyness)!, timeToExpiryYears: num(truth.time_to_expiry_years)!,
@@ -343,7 +388,10 @@ async function main() {
       const estimateLeg = (t: EstimationTarget, instrument: string): SurfaceEstimate =>
         method === LOCAL_IV_ANCHOR_METHOD_VERSION ? estimateLocalIvAnchor(anchorFor(instrument), t, PRIOR_ANCHOR_MAX_AGE_MINUTES)
           : method === LINEAR_INTERPOLATION_METHOD_VERSION ? estimateLinearInterpolation(points, t)
-            : estimateSvi(fit, points, t);
+            : method === SVI_METHOD_VERSION ? estimateSvi(fit, points, t)
+              : estimateSsvi(ssviTotalVarianceAt(ssvi, expiry, t.logMoneyness), points, t,
+                {maturity_count: ssvi.maturity_count},
+                ssvi.unavailable_reason === null ? null : "fit_economically_invalid");
       const shortEstimate = estimateLeg(shortTarget, String((shortTruth as Row).instrument_name));
       const longEstimate = estimateLeg(longTarget, String((longTruth as Row).instrument_name));
       const both = shortEstimate.status === "available" && longEstimate.status === "available"
@@ -427,6 +475,7 @@ async function main() {
       composition: composition as unknown as Row,
     },
     call_put_compatibility_sample: compatibility,
+    ssvi_fit_diagnostics_sample: ssviDiagnostics,
     svi_fit_diagnostics_sample: fitDiagnostics,
     overall,
     cohorts: {

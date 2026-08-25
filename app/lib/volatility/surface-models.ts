@@ -35,6 +35,7 @@ import type {AggregatedStrikeObservation} from "./strike-aggregation.ts";
 export const LOCAL_IV_ANCHOR_METHOD_VERSION = "local_iv_anchor_v1" as const;
 export const LINEAR_INTERPOLATION_METHOD_VERSION = "same_expiry_linear_interpolation_v1" as const;
 export const SVI_METHOD_VERSION = "same_expiry_svi_v1" as const;
+export const SSVI_ESTIMATE_METHOD_VERSION = "ssvi_power_law_v1" as const;
 
 /**
  * The production pricing-anchor age bound, mirrored from research-valuation.ts
@@ -506,6 +507,38 @@ export function estimateSvi(
     return unavailable(SVI_METHOD_VERSION, "non_positive_total_variance", fit.observation_count, diagnostics);
   const iv = Math.sqrt(w / target.timeToExpiryYears);
   return priced(SVI_METHOD_VERSION, iv, target, isExtrapolation, fit.observation_count, {
+    ...diagnostics,
+    extrapolation_distance_log_moneyness: isExtrapolation
+      ? Math.min(Math.abs(target.logMoneyness - Math.min(...strikes)),
+        Math.abs(target.logMoneyness - Math.max(...strikes)))
+      : 0,
+  });
+}
+
+/* ==================== 4. SSVI, the wing competitor ==================== */
+
+/**
+ * Evaluate a fitted SSVI surface at one target.
+ *
+ * Structurally identical to the SVI evaluator so the comparison is fair: same
+ * pricing function, same extrapolation labelling, same refusal on an
+ * economically invalid fit. Only the source of the total variance differs.
+ */
+export function estimateSsvi(
+  totalVariance: number | null,
+  points: readonly AggregatedStrikeObservation[],
+  target: EstimationTarget,
+  diagnostics: Record<string, unknown>,
+  unavailableReason: EstimateUnavailableReason | null,
+): SurfaceEstimate {
+  if (unavailableReason !== null || totalVariance === null)
+    return unavailable(SSVI_ESTIMATE_METHOD_VERSION,
+      unavailableReason ?? "non_positive_total_variance", points.length, diagnostics);
+  const strikes = points.map(p => p.log_moneyness);
+  const isExtrapolation = strikes.length > 0
+    && (target.logMoneyness < Math.min(...strikes) || target.logMoneyness > Math.max(...strikes));
+  const iv = Math.sqrt(totalVariance / target.timeToExpiryYears);
+  return priced(SSVI_ESTIMATE_METHOD_VERSION, iv, target, isExtrapolation, points.length, {
     ...diagnostics,
     extrapolation_distance_log_moneyness: isExtrapolation
       ? Math.min(Math.abs(target.logMoneyness - Math.min(...strikes)),

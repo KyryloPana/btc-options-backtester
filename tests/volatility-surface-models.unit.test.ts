@@ -7,9 +7,14 @@ import {
 } from "../app/lib/volatility/strike-aggregation.ts";
 import {
   LINEAR_INTERPOLATION_METHOD_VERSION, LOCAL_IV_ANCHOR_METHOD_VERSION, SVI_METHOD_VERSION,
-  SVI_MINIMUM_STRIKES, durrlemanG, estimateLinearInterpolation, estimateLocalIvAnchor,
-  estimateSvi, fitSvi, sviTotalVariance, type EstimationTarget, type SviParameters,
+  SSVI_ESTIMATE_METHOD_VERSION, SVI_MINIMUM_STRIKES, durrlemanG, estimateLinearInterpolation,
+  estimateLocalIvAnchor, estimateSsvi, estimateSvi, fitSvi, sviTotalVariance,
+  type EstimationTarget, type SviParameters,
 } from "../app/lib/volatility/surface-models.ts";
+import {
+  SSVI_MINIMUM_MATURITIES, atmTotalVariance, fitSsvi, ssviConstraintsSatisfied,
+  ssviTotalVariance, ssviTotalVarianceAt,
+} from "../app/lib/volatility/ssvi.ts";
 import {
   MINIMUM_PRICE_FOR_RELATIVE_ERROR_BTC, leaveOneEventOut, summarizeBy, summarizeErrors,
   summarizeMethod, summarizeSpreads, type ScoredCase, type ScoredSpread,
@@ -409,4 +414,88 @@ test("SCORING: breakdowns partition the cases exactly once", () => {
   const byDte = summarizeBy(cases, c => c.actual_dte_days < 1 ? "0-1d" : c.actual_dte_days < 14 ? "1-14d" : "14d+");
   assert.deepEqual(Object.keys(byDte).sort(), ["0-1d", "14d+", "1-14d"].sort());
   assert.equal(Object.values(byDte).reduce((sum, r) => sum + r.total_cohort, 0), cases.length);
+});
+
+/* ==================== SSVI ==================== */
+
+test("SSVI: it reproduces a surface generated from its own parameterization", () => {
+  const rho = -0.3, eta = 1.2, gamma = 0.4;
+  const maturities = [0.02, 0.08, 0.25].map(years => {
+    const theta = 0.16 * years;
+    return {
+      expiryTimestampMs: Math.round(T + years * 365 * 24 * 3_600_000),
+      timeToExpiryYears: years,
+      points: [-0.2, -0.1, -0.03, 0, 0.03, 0.1, 0.2].map(k => {
+        const w = ssviTotalVariance(k, theta, rho, eta, gamma);
+        return {...point(k, Math.sqrt(w / years)), time_to_expiry_years: years,
+          total_implied_variance: w};
+      }),
+    };
+  });
+  const fit = fitSsvi(maturities);
+  assert.equal(fit.converged, true);
+  assert.equal(fit.maturity_count, 3);
+  assert.equal(fit.calendar_monotone, true, "ATM total variance rises with maturity here");
+  assert.ok(fit.rms_residual_iv! < 0.02, `rms IV residual ${fit.rms_residual_iv}`);
+  // Global shape parameters are shared across every maturity -- that sharing is
+  // the only thing SSVI offers over a per-expiry fit.
+  assert.equal(Object.keys(fit.parameters!.theta).length, 3);
+});
+
+test("SSVI: fewer than two maturities is unavailable — there is no term structure to borrow", () => {
+  const one = [{expiryTimestampMs: EXPIRY, timeToExpiryYears: YEARS,
+    points: [-0.1, 0, 0.1].map(k => point(k, 0.5))}];
+  const fit = fitSsvi(one);
+  assert.equal(fit.parameters, null);
+  assert.equal(fit.unavailable_reason, "insufficient_maturities");
+  assert.equal(SSVI_MINIMUM_MATURITIES, 2);
+  assert.equal(ssviTotalVarianceAt(fit, EXPIRY, 0), null);
+});
+
+test("SSVI: a maturity whose ATM is not bracketed contributes no theta", () => {
+  // Every strike above the money: theta would have to be extrapolated, and the
+  // whole slice shape hangs off theta, so the maturity is dropped instead.
+  assert.equal(atmTotalVariance([point(0.05, 0.5), point(0.10, 0.5), point(0.20, 0.5)]), null);
+  assert.equal(atmTotalVariance([point(-0.20, 0.5), point(-0.10, 0.5)]), null);
+  const bracketed = atmTotalVariance([point(-0.05, 0.40), point(0.05, 0.60)]);
+  assert.ok(bracketed !== null && bracketed > 0);
+  assert.equal(atmTotalVariance([point(0, 0.5)]), null, "one point is not a bracket");
+});
+
+test("SSVI: static-arbitrage conditions are enforced, not merely recorded", () => {
+  const good = {rho: -0.3, eta: 1.0, gamma: 0.4, theta: {"1": 0.01}};
+  assert.equal(ssviConstraintsSatisfied(good).ok, true);
+  // eta far too large: theta*phi^2*(1+|rho|) blows past 4.
+  const bad = {rho: -0.3, eta: 500, gamma: 0.9, theta: {"1": 0.05}};
+  const verdict = ssviConstraintsSatisfied(bad);
+  assert.equal(verdict.ok, false);
+  assert.ok(verdict.violations.some(v => v.includes("theta*phi")), verdict.violations.join("; "));
+  // Out-of-domain shape parameters are refused outright.
+  assert.equal(ssviConstraintsSatisfied({rho: 1.5, eta: 1, gamma: 0.4, theta: {"1": 0.01}}).ok, false);
+  assert.equal(ssviConstraintsSatisfied({rho: 0, eta: 1, gamma: 1.5, theta: {"1": 0.01}}).ok, false);
+  assert.equal(ssviConstraintsSatisfied({rho: 0, eta: 1, gamma: 0.4, theta: {}}).ok, false);
+});
+
+test("SSVI: an economically invalid surface yields no estimate", () => {
+  const invalid = {
+    parameters: {rho: -0.3, eta: 500, gamma: 0.9, theta: {[String(EXPIRY)]: 0.05}},
+    converged: true, objective: 0, maturity_count: 2, observation_count: 20,
+    rms_residual_total_variance: 0, rms_residual_iv: 0, calendar_monotone: true,
+    constraint_violations: ["theta*phi^2"], warnings: [], method_version: "ssvi_power_law_v1",
+    unavailable_reason: "fit_economically_invalid",
+  };
+  assert.equal(ssviTotalVarianceAt(invalid, EXPIRY, 0), null);
+  const estimate = estimateSsvi(null, [point(0, 0.5)], targetAt(0), {}, "fit_economically_invalid");
+  assert.equal(estimate.status, "unavailable");
+  assert.equal(estimate.iv_decimal, null);
+  assert.equal(estimate.method_version, SSVI_ESTIMATE_METHOD_VERSION);
+});
+
+test("SSVI: wing evaluations are labelled extrapolation, exactly as SVI's are", () => {
+  const points = [-0.1, -0.05, 0, 0.05, 0.1].map(k => point(k, 0.5));
+  const inside = estimateSsvi(0.5 * 0.5 * YEARS, points, targetAt(0.02), {}, null);
+  const outside = estimateSsvi(0.5 * 0.5 * YEARS, points, targetAt(0.40), {}, null);
+  assert.equal(inside.is_extrapolation, false);
+  assert.equal(outside.is_extrapolation, true);
+  assert.ok((outside.diagnostics.extrapolation_distance_log_moneyness as number) > 0.25);
 });
