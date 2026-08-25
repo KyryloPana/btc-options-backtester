@@ -7,6 +7,7 @@ import {
 } from "../app/lib/volatility/realized-volatility.ts";
 import {
   MINIMUM_PRIOR_OBSERVATIONS, causalIvPercentile, empiricalPercentile,
+  type ReferenceObservation,
 } from "../app/lib/volatility/iv-percentile.ts";
 
 /**
@@ -115,12 +116,21 @@ test("RV: every result carries its underlying source and method version", () => 
 
 /* ---------------- causal expanding percentile ---------------- */
 
-const history = (count: number, end: number, iv = (i: number) => 0.30 + i * 0.0002) =>
-  Array.from({length: count}, (_, i) => ({timestampMs: end - (count - i) * HOUR_MS, ivDecimal: iv(i)}));
+const history = (
+  count: number, end: number,
+  iv = (i: number) => 0.30 + i * 0.0002,
+  tenor: ReferenceObservation["tenor"] = "7d",
+): ReferenceObservation[] =>
+  Array.from({length: count}, (_, i) => ({
+    timestampMs: end - (count - i) * HOUR_MS, ivDecimal: iv(i), tenor,
+  }));
 
-const percentile = (subject: number | null, rows: {timestampMs: number; ivDecimal: number}[], min?: number) =>
+const percentile = (
+  subject: number | null, rows: readonly ReferenceObservation[],
+  min?: number, tenor: ReferenceObservation["tenor"] = "7d",
+) =>
   causalIvPercentile({
-    subjectIvDecimal: subject, targetTimestampMs: T, history: rows,
+    subjectIvDecimal: subject, targetTimestampMs: T, history: rows, tenor,
     referenceSeriesId: "series-1", referenceSeriesContentHash: "hash-1",
     ...(min === undefined ? {} : {minimumPriorObservations: min}),
   });
@@ -177,4 +187,71 @@ test("PERCENTILE: identity and missingness travel with the result", () => {
   const noHistory = percentile(0.35, []);
   assert.equal(noHistory.unavailableReason, "no_prior_observations");
   assert.equal(noHistory.historyStartMs, null);
+  assert.equal(noHistory.tenor, "7d", "the ranked tenor travels with the result");
+});
+
+/* ------- REGRESSION: the distribution is per tenor, never pooled ------- */
+
+test("PERCENTILE REGRESSION: a 7D subject is never ranked against pooled 7D+14D+30D history", () => {
+  // A textbook contango term structure: 7D cheapest, 30D dearest. Every tenor
+  // sits at its own median WITHIN its own history, so a correct per-tenor
+  // percentile returns ~0.5 for all three at the same target.
+  const pooled: ReferenceObservation[] = [
+    ...history(MINIMUM_PRIOR_OBSERVATIONS, T, i => 0.30 + (i % 2) * 0.002, "7d"),
+    ...history(MINIMUM_PRIOR_OBSERVATIONS, T, i => 0.45 + (i % 2) * 0.002, "14d"),
+    ...history(MINIMUM_PRIOR_OBSERVATIONS, T, i => 0.60 + (i % 2) * 0.002, "30d"),
+  ];
+  const seven = percentile(0.301, pooled, undefined, "7d");
+  const thirty = percentile(0.601, pooled, undefined, "30d");
+
+  assert.equal(seven.status, "available");
+  assert.equal(seven.priorObservationCount, MINIMUM_PRIOR_OBSERVATIONS,
+    "only the matching tenor may enter the distribution");
+  assert.equal(seven.otherTenorObservationsExcluded, 2 * MINIMUM_PRIOR_OBSERVATIONS,
+    "the discarded rows are counted, not silently dropped");
+  assert.ok(seven.percentile! > 0.4 && seven.percentile! < 0.6,
+    `a mid-range 7D reading must sit mid-range, got ${seven.percentile}`);
+  // Pooled, this same subject would be the cheapest third of the sample (~0.17).
+  assert.ok(seven.percentile! > 0.3, "pooling would drag a 7D reading toward zero");
+  assert.ok(thirty.percentile! > 0.4 && thirty.percentile! < 0.6,
+    `a mid-range 30D reading must sit mid-range, got ${thirty.percentile}`);
+  assert.ok(thirty.percentile! < 0.7, "pooling would push a 30D reading toward one");
+  // The decisive property: term structure must not drive the ranking.
+  assert.ok(Math.abs(seven.percentile! - thirty.percentile!) < 0.1,
+    "two mid-regime readings of different tenors must rank alike");
+});
+
+test("PERCENTILE REGRESSION: history of only other tenors is unavailable, with its own reason", () => {
+  const wrongTenorOnly = history(MINIMUM_PRIOR_OBSERVATIONS, T, undefined, "30d");
+  const r = percentile(0.35, wrongTenorOnly, undefined, "7d");
+  assert.equal(r.status, "unavailable");
+  assert.equal(r.percentile, null, "never fall back to another tenor's distribution");
+  assert.equal(r.unavailableReason, "no_matching_tenor_observations");
+  assert.equal(r.priorObservationCount, 0);
+  assert.equal(r.otherTenorObservationsExcluded, MINIMUM_PRIOR_OBSERVATIONS);
+});
+
+test("PERCENTILE REGRESSION: the tenor filter cannot be satisfied by borrowing across tenors", () => {
+  // 719 matching + plenty of non-matching still fails the minimum: the other
+  // tenors must not be allowed to make up the shortfall.
+  const mixed: ReferenceObservation[] = [
+    ...history(MINIMUM_PRIOR_OBSERVATIONS - 1, T, undefined, "7d"),
+    ...history(MINIMUM_PRIOR_OBSERVATIONS, T, undefined, "14d"),
+  ];
+  const r = percentile(0.35, mixed, undefined, "7d");
+  assert.equal(r.status, "unavailable");
+  assert.equal(r.unavailableReason, "insufficient_prior_history");
+  assert.equal(r.priorObservationCount, MINIMUM_PRIOR_OBSERVATIONS - 1);
+});
+
+test("PERCENTILE REGRESSION: observations from another series throw rather than pooling", () => {
+  const foreign: ReferenceObservation[] = [
+    ...history(MINIMUM_PRIOR_OBSERVATIONS, T),
+    {timestampMs: T - HOUR_MS, ivDecimal: 0.31, tenor: "7d", referenceSeriesId: "series-2"},
+  ];
+  assert.throws(() => percentile(0.35, foreign), /pooled across series/);
+  // Matching series identity is accepted.
+  const same: ReferenceObservation[] = history(MINIMUM_PRIOR_OBSERVATIONS, T)
+    .map(o => ({...o, referenceSeriesId: "series-1"}));
+  assert.equal(percentile(0.35, same).status, "available");
 });

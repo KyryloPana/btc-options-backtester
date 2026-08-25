@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import {
   MARKET_IV_MAX_AGE_MINUTES, MARKET_IV_METHOD_VERSION, MODEL_ONLY_IV_SOURCES,
   admitMarketIvTrade, assertMarketEvidence, isMarketEvidence,
-  resolveReferenceIv, resolveTenor, type AdmittedIvTrade, type RawIvTradeCandidate,
+  assertSingleExpiry, resolveReferenceIv, resolveTenor,
+  type AdmittedIvTrade, type RawIvTradeCandidate,
 } from "../app/lib/volatility/market-iv-evidence.ts";
 import {
   DVOL_HOST, DVOL_SERIES_ID, OPTION_HISTORY_HOST, REFERENCE_SERIES_ID,
@@ -205,6 +206,60 @@ test("HIERARCHY: no qualifying observation stays unavailable with a reason", () 
   assert.equal(r.status, "unavailable");
   assert.equal(r.reasonCode, "no_qualifying_observation");
   assert.equal(r.passesMarketStateRule, false);
+});
+
+/* ------- REGRESSION: same-expiry resolution rejects a mixed-expiry input ------- */
+
+const LATER_EXPIRY = Date.UTC(2025, 6, 25, 8); // ~5 weeks further out
+
+test("SAME-EXPIRY REGRESSION: a mixed-expiry input throws instead of resolving", () => {
+  // A caller reading a multi-expiry cache without grouping first. Without the
+  // guard this resolves happily and returns ONE expiry label for a blend.
+  const observations = [
+    admitted({strike: 104_000, instrumentName: "near", tradeId: "n-1", ivApiPercent: 40}),
+    admitted({strike: 106_000, instrumentName: "far", tradeId: "f-1", ivApiPercent: 62,
+      expiryTimestampMs: LATER_EXPIRY}),
+  ];
+  assert.throws(() => resolveReferenceIv(observations, {underlyingPrice: SPOT, listedStrikes: strikes}),
+    /requires a single expiry, received 2/);
+});
+
+test("SAME-EXPIRY REGRESSION: interpolation cannot blend across expiries", () => {
+  // The dangerous case: two bracketing strikes that WOULD interpolate cleanly,
+  // but sit on different expiries. A 40-vol 7-day print and a 62-vol 5-week
+  // print average to a number that no listed contract ever traded at.
+  const below = admitted({strike: 90_000, instrumentName: "lo", tradeId: "lo-1", ivApiPercent: 40});
+  const above = admitted({strike: 125_000, instrumentName: "hi", tradeId: "hi-1", ivApiPercent: 62,
+    expiryTimestampMs: LATER_EXPIRY});
+  assert.throws(() => resolveReferenceIv([below, above], {underlyingPrice: SPOT, listedStrikes: []}),
+    /Group observations by expiry/);
+  // Same two strikes on ONE expiry remain a legitimate interpolation.
+  const sameExpiry = resolveReferenceIv(
+    [below, admitted({strike: 125_000, instrumentName: "hi", tradeId: "hi-1", ivApiPercent: 62})],
+    {underlyingPrice: SPOT, listedStrikes: []});
+  assert.equal(sameExpiry.observationClass, "local_interpolation");
+  assert.equal(sameExpiry.expiryTimestampMs, EXPIRY);
+});
+
+test("SAME-EXPIRY REGRESSION: the optional expiry pin catches a wholesale wrong-expiry group", () => {
+  // Every observation agrees with itself but the whole group is the wrong
+  // expiry -- undetectable from the observations alone.
+  const wrongGroup = [admitted({strike: 105_000, instrumentName: "atm", expiryTimestampMs: LATER_EXPIRY})];
+  assert.throws(() => resolveReferenceIv(wrongGroup,
+    {underlyingPrice: SPOT, listedStrikes: strikes, expectedExpiryTimestampMs: EXPIRY}),
+    /expected expiry/);
+  // The pin passes when it matches, and is optional.
+  const right = resolveReferenceIv([admitted({strike: 105_000, instrumentName: "atm"})],
+    {underlyingPrice: SPOT, listedStrikes: strikes, expectedExpiryTimestampMs: EXPIRY});
+  assert.equal(right.status, "available");
+  assert.equal(right.expiryTimestampMs, EXPIRY);
+});
+
+test("SAME-EXPIRY REGRESSION: single-expiry and empty inputs are unaffected", () => {
+  assert.doesNotThrow(() => assertSingleExpiry([]));
+  assert.doesNotThrow(() => assertSingleExpiry([admitted(), admitted({strike: 104_000, instrumentName: "b"})]));
+  // An empty group cannot contradict a pin it has no observations for.
+  assert.doesNotThrow(() => assertSingleExpiry([], EXPIRY));
 });
 
 /* ---------------- tenor resolution on actual DTE ---------------- */

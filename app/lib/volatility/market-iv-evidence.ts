@@ -301,6 +301,39 @@ const unavailableReference = (code: MarketIvRejectionCode, maxAge: number, ownLe
 });
 
 /**
+ * Same-expiry invariant.
+ *
+ * Every branch of the resolution hierarchy below -- exact ATM, nearest strike,
+ * and above all the two-point interpolation -- is only meaningful along ONE
+ * expiry. Interpolating between a 7-day print and a 30-day print produces a
+ * number that corresponds to no traded contract, and because the result carries
+ * a single `expiryTimestampMs` taken from one input, the blend would be labelled
+ * with an expiry it does not describe.
+ *
+ * This is a caller contract, not a data condition: a multi-expiry input means
+ * the caller grouped its evidence wrongly. It therefore THROWS rather than
+ * returning `unavailable`, so the mistake cannot be absorbed as ordinary
+ * missing coverage.
+ */
+export function assertSingleExpiry(
+  observations: readonly AdmittedIvTrade[],
+  expectedExpiryTimestampMs?: number,
+): void {
+  const distinct = [...new Set(observations.map(o => o.expiryTimestampMs))].sort((a, b) => a - b);
+  if (distinct.length > 1)
+    throw new Error(
+      `resolveReferenceIv requires a single expiry, received ${distinct.length}: ` +
+      `${distinct.map(e => new Date(e).toISOString()).join(", ")}. ` +
+      "Group observations by expiry before resolving a same-expiry reference.",
+    );
+  if (expectedExpiryTimestampMs !== undefined && distinct.length === 1 && distinct[0] !== expectedExpiryTimestampMs)
+    throw new Error(
+      `resolveReferenceIv expected expiry ${new Date(expectedExpiryTimestampMs).toISOString()} ` +
+      `but the observations belong to ${new Date(distinct[0]!).toISOString()}.`,
+    );
+}
+
+/**
  * Resolve the reference IV for one expiry at one target, by the locked
  * hierarchy: exact ATM strike, then nearest admissible strike inside the
  * moneyness envelope, then interpolation between two bracketing observations.
@@ -317,12 +350,19 @@ export function resolveReferenceIv(
     readonly maxAgeMinutes?: number;
     readonly moneynessTolerance?: number;
     readonly ownLegsExcluded?: boolean;
+    /**
+     * Optional pin. When supplied, every observation must belong to exactly this
+     * expiry, so a caller reading from a multi-expiry cache cannot silently
+     * resolve against whichever expiry happened to trade most recently.
+     */
+    readonly expectedExpiryTimestampMs?: number;
   },
 ): ReferenceIvResult {
   const maxAge = input.maxAgeMinutes ?? MARKET_IV_MAX_AGE_MINUTES;
   const tolerance = input.moneynessTolerance ?? MARKET_IV_MONEYNESS_TOLERANCE;
   const ownLegsExcluded = input.ownLegsExcluded ?? false;
   for (const o of observations) assertMarketEvidence(o, "resolveReferenceIv");
+  assertSingleExpiry(observations, input.expectedExpiryTimestampMs);
 
   const usable = observations.filter(o => o.ageMinutes <= maxAge && o.ageMinutes >= 0);
   if (!usable.length) return unavailableReference("no_qualifying_observation", maxAge, ownLegsExcluded);
