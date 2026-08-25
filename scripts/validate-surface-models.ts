@@ -26,8 +26,10 @@ import {fitSsvi, ssviTotalVarianceAt, type SsviMaturityInput} from "../app/lib/v
 import {
   LINEAR_INTERPOLATION_METHOD_VERSION, LOCAL_IV_ANCHOR_METHOD_VERSION, SVI_METHOD_VERSION,
   PRIOR_ANCHOR_MAX_AGE_MINUTES, SSVI_ESTIMATE_METHOD_VERSION,
-  estimateLinearInterpolation, estimateLocalIvAnchor, estimateSsvi, estimateSvi, fitSvi,
-  type EstimationTarget, type PriorAnchor, type SurfaceEstimate,
+  HYBRID_GEOMETRY_RULES, HYBRID_METHOD_VERSION,
+  estimateHybrid, estimateLinearInterpolation, estimateLocalIvAnchor, estimateSsvi, estimateSvi, fitSvi,
+  type EstimationTarget, type HybridEstimate, type HybridGeometryRule,
+  type PriorAnchor, type SurfaceEstimate,
 } from "../app/lib/volatility/surface-models.ts";
 import {
   MINIMUM_PRICE_FOR_RELATIVE_ERROR_BTC, ageBucketOf, dteBucketOf, leaveOneEventOut,
@@ -46,9 +48,12 @@ type Row = Record<string, unknown>;
 const str = (v: unknown): string | null => typeof v === "string" && v ? v : null;
 const num = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) ? v : null;
 
+/** One scored method per hybrid eligibility rule, so the family is comparable. */
+const hybridLabel = (rule: HybridGeometryRule) => `${HYBRID_METHOD_VERSION}~${rule}`;
+const HYBRID_METHODS = HYBRID_GEOMETRY_RULES.map(hybridLabel);
 const METHODS = [LOCAL_IV_ANCHOR_METHOD_VERSION, LINEAR_INTERPOLATION_METHOD_VERSION,
-  SVI_METHOD_VERSION, SSVI_ESTIMATE_METHOD_VERSION] as const;
-type Method = (typeof METHODS)[number];
+  SVI_METHOD_VERSION, SSVI_ESTIMATE_METHOD_VERSION, ...HYBRID_METHODS] as const;
+type Method = string;
 
 async function loadSnapshots(): Promise<Map<number, SurfaceSnapshot>> {
   const out = new Map<number, SurfaceSnapshot>();
@@ -228,13 +233,10 @@ async function main() {
   /* ---------- score single-contract holdouts ---------- */
 
   const smileCache = new Map<string, ReturnType<typeof buildSmile>>();
-  const scored: Record<Method, ScoredCase[]> = {
-    [LOCAL_IV_ANCHOR_METHOD_VERSION]: [],
-    [LINEAR_INTERPOLATION_METHOD_VERSION]: [],
-    [SVI_METHOD_VERSION]: [],
-    [SSVI_ESTIMATE_METHOD_VERSION]: [],
-  };
+  const scored: Record<Method, ScoredCase[]> = Object.fromEntries(METHODS.map(m => [m, []]));
   const ssviDiagnostics: Row[] = [];
+  /** Tier and fallback composition per hybrid rule. */
+  const hybridComposition: Record<string, Row[]> = Object.fromEntries(HYBRID_METHODS.map(m => [m, []]));
   const fitDiagnostics: Row[] = [];
   const compatibility: Row[] = [];
   let processed = 0;
@@ -291,8 +293,33 @@ async function main() {
             : ssvi.unavailable_reason === "fit_economically_invalid"
               ? "fit_economically_invalid" : "fit_did_not_converge"),
     };
+    // The hybrid, one scored series per predeclared eligibility rule. Both tiers
+    // are called exactly as Phase 2B scored them, so any win cannot come from
+    // quietly improving a component.
+    for (const rule of HYBRID_GEOMETRY_RULES) {
+      const hybrid: HybridEstimate = estimateHybrid({
+        points, anchor, target, rule,
+        anchorMaxAgeMinutes: PRIOR_ANCHOR_MAX_AGE_MINUTES,
+        isFinalDay: holdout.actual_dte_days < FINAL_DAY_DTE_DAYS,
+      });
+      estimates[hybridLabel(rule)] = hybrid;
+      hybridComposition[hybridLabel(rule)]!.push({
+        case_id: holdout.case_id, event_id: context.eventId,
+        tier: hybrid.tier, status: hybrid.status,
+        fallback_reason: hybrid.fallback_reason,
+        unavailable_reason: hybrid.unavailable_reason,
+        bracketed: hybrid.eligibility.bracketed,
+        unique_strike_count: hybrid.eligibility.unique_strike_count,
+        neighbour_distance_below: hybrid.eligibility.neighbour_distance_below,
+        neighbour_distance_above: hybrid.eligibility.neighbour_distance_above,
+        max_observation_age_minutes: hybrid.eligibility.max_observation_age_minutes,
+        actual_dte_days: holdout.actual_dte_days,
+        is_extrapolation: hybrid.is_extrapolation,
+        readiness: readinessClass,
+      });
+    }
     for (const method of METHODS)
-      scored[method].push(scoreOne(method, estimates[method], holdout, target,
+      scored[method]!.push(scoreOne(method, estimates[method]!, holdout, target,
         truthIv, truthPrice, readinessClass, strikeCount, truthAge, context));
 
     if (processed % 25 === 0) {
@@ -324,12 +351,7 @@ async function main() {
   /* ---------- score vertical-spread holdouts ---------- */
 
   const spreadRows = readiness.spread_holdouts;
-  const spreadScored: Record<Method, ScoredSpread[]> = {
-    [LOCAL_IV_ANCHOR_METHOD_VERSION]: [],
-    [LINEAR_INTERPOLATION_METHOD_VERSION]: [],
-    [SVI_METHOD_VERSION]: [],
-    [SSVI_ESTIMATE_METHOD_VERSION]: [],
-  };
+  const spreadScored: Record<Method, ScoredSpread[]> = Object.fromEntries(METHODS.map(m => [m, []]));
 
   for (const row of spreadRows) {
     const target = Date.parse(String(row.target_timestamp_utc));
@@ -342,7 +364,7 @@ async function main() {
     const observedCredit = num(row.observed_spread_credit_native);
 
     if (!usable || observedCredit === null) {
-      for (const method of METHODS) spreadScored[method].push({
+      for (const method of METHODS) spreadScored[method]!.push({
         case_id: String(row.case_id), method_version: method,
         event_id: str(row.event_id), candidate_id: str(row.candidate_id),
         snapshot_id: String(row.snapshot_id), target_timestamp_ms: target,
@@ -389,9 +411,16 @@ async function main() {
         method === LOCAL_IV_ANCHOR_METHOD_VERSION ? estimateLocalIvAnchor(anchorFor(instrument), t, PRIOR_ANCHOR_MAX_AGE_MINUTES)
           : method === LINEAR_INTERPOLATION_METHOD_VERSION ? estimateLinearInterpolation(points, t)
             : method === SVI_METHOD_VERSION ? estimateSvi(fit, points, t)
-              : estimateSsvi(ssviTotalVarianceAt(ssvi, expiry, t.logMoneyness), points, t,
-                {maturity_count: ssvi.maturity_count},
-                ssvi.unavailable_reason === null ? null : "fit_economically_invalid");
+              : method === SSVI_ESTIMATE_METHOD_VERSION
+                ? estimateSsvi(ssviTotalVarianceAt(ssvi, expiry, t.logMoneyness), points, t,
+                  {maturity_count: ssvi.maturity_count},
+                  ssvi.unavailable_reason === null ? null : "fit_economically_invalid")
+                : estimateHybrid({
+                  points, anchor: anchorFor(instrument), target: t,
+                  rule: method.split("~")[1] as HybridGeometryRule,
+                  anchorMaxAgeMinutes: PRIOR_ANCHOR_MAX_AGE_MINUTES,
+                  isFinalDay: (num(row.actual_dte_days) ?? 99) < FINAL_DAY_DTE_DAYS,
+                });
       const shortEstimate = estimateLeg(shortTarget, String((shortTruth as Row).instrument_name));
       const longEstimate = estimateLeg(longTarget, String((longTruth as Row).instrument_name));
       const both = shortEstimate.status === "available" && longEstimate.status === "available"
@@ -399,7 +428,7 @@ async function main() {
       // Credit is short premium minus long premium, matching the observed truth.
       const estimated = both ? shortEstimate.price_btc! - longEstimate.price_btc! : null;
       const error = estimated !== null ? estimated - observedCredit : null;
-      spreadScored[method].push({
+      spreadScored[method]!.push({
         case_id: String(row.case_id), method_version: method,
         event_id: str(row.event_id), candidate_id: str(row.candidate_id),
         snapshot_id: String(row.snapshot_id), target_timestamp_ms: target,
@@ -476,6 +505,29 @@ async function main() {
     },
     call_put_compatibility_sample: compatibility,
     ssvi_fit_diagnostics_sample: ssviDiagnostics,
+    hybrid_composition: Object.fromEntries(Object.entries(hybridComposition).map(([rule, rows]) => {
+      const tiers: Record<string, number> = {}, fallbacks: Record<string, number> = {};
+      for (const r of rows) {
+        tiers[String(r.tier)] = (tiers[String(r.tier)] ?? 0) + 1;
+        if (r.fallback_reason) fallbacks[String(r.fallback_reason)] = (fallbacks[String(r.fallback_reason)] ?? 0) + 1;
+      }
+      const interpolated = rows.filter(r => r.tier === "interpolation");
+      const distances = interpolated.flatMap(r =>
+        [r.neighbour_distance_below, r.neighbour_distance_above].filter((x): x is number => typeof x === "number"))
+        .sort((a, b) => a - b);
+      const strikeCounts = interpolated.map(r => Number(r.unique_strike_count)).sort((a, b) => a - b);
+      const ages = interpolated.map(r => Number(r.max_observation_age_minutes)).filter(Number.isFinite).sort((a, b) => a - b);
+      const mid = (xs: number[]) => xs.length ? xs[Math.floor(xs.length / 2)]! : null;
+      return [rule, {
+        total_cases: rows.length, tiers, fallback_reasons: fallbacks,
+        interpolation_extrapolated: interpolated.filter(r => r.is_extrapolation === true).length,
+        median_strike_count: mid(strikeCounts),
+        median_neighbour_distance: mid(distances),
+        p95_neighbour_distance: distances.length
+          ? distances[Math.min(distances.length - 1, Math.ceil(0.95 * distances.length) - 1)]! : null,
+        median_max_observation_age_minutes: mid(ages),
+      }];
+    })),
     svi_fit_diagnostics_sample: fitDiagnostics,
     overall,
     cohorts: {

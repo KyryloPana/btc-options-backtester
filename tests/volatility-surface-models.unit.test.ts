@@ -8,6 +8,7 @@ import {
 import {
   LINEAR_INTERPOLATION_METHOD_VERSION, LOCAL_IV_ANCHOR_METHOD_VERSION, SVI_METHOD_VERSION,
   SSVI_ESTIMATE_METHOD_VERSION, SVI_MINIMUM_STRIKES, durrlemanG, estimateLinearInterpolation,
+  HYBRID_GEOMETRY_RULES, HYBRID_METHOD_VERSION, estimateHybrid, hybridEligibility,
   estimateLocalIvAnchor, estimateSsvi, estimateSvi, fitSvi, sviTotalVariance,
   type EstimationTarget, type SviParameters,
 } from "../app/lib/volatility/surface-models.ts";
@@ -498,4 +499,126 @@ test("SSVI: wing evaluations are labelled extrapolation, exactly as SVI's are", 
   assert.equal(inside.is_extrapolation, false);
   assert.equal(outside.is_extrapolation, true);
   assert.ok((outside.diagnostics.extrapolation_distance_log_moneyness as number) > 0.25);
+});
+
+/* ==================== the candidate hybrid ==================== */
+
+const anchorAt = (iv: number, ageMinutes: number) => ({
+  instrument_name: "BTC-23JUN25-105500-C", iv_decimal: iv,
+  timestamp_ms: T - ageMinutes * MIN, age_minutes: ageMinutes,
+});
+const LADDER = [-0.10, -0.05, 0, 0.05, 0.10].map(k => point(k, 0.50));
+
+test("HYBRID: interpolation wins when the target is bracketed and the geometry qualifies", () => {
+  const h = estimateHybrid({points: LADDER, anchor: anchorAt(0.90, 300), target: targetAt(0.02),
+    rule: "rule_c_min_5_strikes"});
+  assert.equal(h.tier, "interpolation");
+  assert.equal(h.status, "available");
+  assert.equal(h.fallback_reason, null);
+  assert.equal(h.method_version, HYBRID_METHOD_VERSION);
+  // The anchor's 90-vol reading is available but must not have been used.
+  assert.ok(Math.abs(h.iv_decimal! - 0.50) < 1e-9, "the bracketing observations decide, not the stale anchor");
+  assert.equal(h.diagnostics.tier, "interpolation");
+});
+
+test("HYBRID: the local anchor serves when the target is not bracketed", () => {
+  const oneSided = [0.02, 0.05, 0.10, 0.15, 0.20].map(k => point(k, 0.50));
+  const h = estimateHybrid({points: oneSided, anchor: anchorAt(0.61, 300), target: targetAt(-0.05),
+    rule: "rule_a_bracketed"});
+  assert.equal(h.tier, "local_anchor");
+  assert.equal(h.status, "available");
+  assert.equal(h.eligibility.bracketed, false);
+  assert.equal(h.fallback_reason, "target_not_bracketed");
+  assert.equal(h.iv_decimal, 0.61);
+  assert.equal(h.is_extrapolation, false, "the anchor is an exact-contract reading, never an extrapolation");
+});
+
+test("HYBRID: it NEVER extrapolates, whichever rule is in force", () => {
+  for (const rule of HYBRID_GEOMETRY_RULES) {
+    const h = estimateHybrid({points: LADDER, anchor: null, target: targetAt(0.40), rule});
+    assert.notEqual(h.tier, "interpolation", `${rule} must refuse a target outside the observed range`);
+    assert.equal(h.status, "unavailable", "with no anchor there is nothing left to report");
+    assert.equal(h.iv_decimal, null);
+    assert.equal(h.eligibility.bracketed, false);
+  }
+});
+
+test("HYBRID: the geometry rule genuinely gates the interpolation tier", () => {
+  // Bracketed, but only three distinct strikes.
+  const thin = [-0.05, 0, 0.05].map(k => point(k, 0.50));
+  const target = targetAt(0.02);
+  assert.equal(estimateHybrid({points: thin, anchor: anchorAt(0.61, 300), target,
+    rule: "rule_a_bracketed"}).tier, "interpolation");
+  assert.equal(estimateHybrid({points: thin, anchor: anchorAt(0.61, 300), target,
+    rule: "rule_b_min_3_strikes"}).tier, "interpolation", "three strikes satisfies rule B exactly");
+  const ruleC = estimateHybrid({points: thin, anchor: anchorAt(0.61, 300), target, rule: "rule_c_min_5_strikes"});
+  assert.equal(ruleC.tier, "local_anchor", "rule C requires five, so the anchor serves");
+  assert.equal(ruleC.fallback_reason, "unique_strike_count_below_5");
+  assert.equal(ruleC.eligibility.unique_strike_count, 3);
+  assert.deepEqual([...HYBRID_GEOMETRY_RULES], ["rule_a_bracketed", "rule_b_min_3_strikes", "rule_c_min_5_strikes"]);
+});
+
+test("HYBRID: unavailable when neither tier qualifies, with an explicit reason", () => {
+  const h = estimateHybrid({points: [], anchor: null, target: targetAt(0.02), rule: "rule_a_bracketed"});
+  assert.equal(h.tier, "unavailable");
+  assert.equal(h.status, "unavailable");
+  assert.equal(h.iv_decimal, null, "never zero, never fabricated");
+  assert.equal(h.unavailable_reason, "no_causal_anchor");
+  assert.equal(h.fallback_reason, "no_qualifying_same_expiry_observations");
+});
+
+test("HYBRID: the final day reports its own reason rather than a generic miss", () => {
+  const h = estimateHybrid({points: [], anchor: null, target: targetAt(0.02),
+    rule: "rule_a_bracketed", isFinalDay: true});
+  assert.equal(h.unavailable_reason, "surface_not_identifiable_final_day");
+  // A missing pre-expiry mark is not a missing settlement payoff.
+  assert.equal(h.diagnostics.final_day, true);
+  // With genuine local evidence the final day still values normally.
+  const withAnchor = estimateHybrid({points: [], anchor: anchorAt(0.61, 120), target: targetAt(0.02),
+    rule: "rule_a_bracketed", isFinalDay: true});
+  assert.equal(withAnchor.tier, "local_anchor");
+  assert.equal(withAnchor.status, "available");
+});
+
+test("HYBRID: a stale anchor beyond 720 minutes cannot rescue an unbracketed target", () => {
+  const oneSided = [0.05, 0.10, 0.15].map(k => point(k, 0.50));
+  const h = estimateHybrid({points: oneSided, anchor: anchorAt(0.61, 900),
+    target: targetAt(-0.05), rule: "rule_a_bracketed"});
+  assert.equal(h.tier, "unavailable");
+  assert.equal(h.unavailable_reason, "no_causal_anchor");
+});
+
+test("HYBRID: no SVI or SSVI branch exists in the hierarchy", () => {
+  const versions = new Set<string>();
+  for (const rule of HYBRID_GEOMETRY_RULES)
+    for (const [points, anchor] of [[LADDER, anchorAt(0.61, 300)], [[], anchorAt(0.61, 300)], [[], null]] as const)
+      versions.add(estimateHybrid({points, anchor, target: targetAt(0.02), rule}).method_version);
+  assert.deepEqual([...versions], [HYBRID_METHOD_VERSION]);
+  // The tier vocabulary itself admits only the three validated outcomes.
+  const tiers = new Set(HYBRID_GEOMETRY_RULES.map(rule =>
+    estimateHybrid({points: LADDER, anchor: null, target: targetAt(0.02), rule}).tier));
+  for (const tier of tiers) assert.ok(["interpolation", "local_anchor", "unavailable"].includes(tier));
+});
+
+test("HYBRID: provenance is deterministic and states the geometry it relied on", () => {
+  const h = estimateHybrid({points: LADDER, anchor: anchorAt(0.61, 300), target: targetAt(0.02),
+    rule: "rule_c_min_5_strikes"});
+  const again = estimateHybrid({points: [...LADDER].reverse(), anchor: anchorAt(0.61, 300),
+    target: targetAt(0.02), rule: "rule_c_min_5_strikes"});
+  assert.equal(again.iv_decimal, h.iv_decimal, "input order must not change the estimate");
+  assert.equal(h.geometry_rule, "rule_c_min_5_strikes");
+  assert.equal(h.eligibility.unique_strike_count, 5);
+  assert.equal(h.eligibility.nearest_below_strike, LADDER[2]!.strike);
+  assert.equal(h.eligibility.nearest_above_strike, LADDER[3]!.strike);
+  assert.ok(h.eligibility.neighbour_distance_below! > 0 && h.eligibility.neighbour_distance_above! > 0);
+  assert.ok(h.eligibility.max_observation_age_minutes !== null);
+});
+
+test("HYBRID: an exact observed strike counts as bracketed and is not extrapolation", () => {
+  const e = hybridEligibility(LADDER, targetAt(0), "rule_c_min_5_strikes");
+  assert.equal(e.bracketed, true);
+  assert.equal(e.eligible, true);
+  const h = estimateHybrid({points: LADDER, anchor: null, target: targetAt(0), rule: "rule_c_min_5_strikes"});
+  assert.equal(h.tier, "interpolation");
+  assert.equal(h.is_extrapolation, false);
 });

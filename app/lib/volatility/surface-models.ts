@@ -546,3 +546,156 @@ export function estimateSsvi(
       : 0,
   });
 }
+
+/* ==================== 5. the candidate hybrid ==================== */
+
+export const HYBRID_METHOD_VERSION = "hybrid_bracketed_interpolation_anchor_v1" as const;
+
+/**
+ * Structural eligibility rules for the interpolation tier.
+ *
+ * A small PREDECLARED family, not a hyperparameter search. Phase 2B observed
+ * that interpolation behaves badly below about five same-expiry strikes, but
+ * that observation came out of the validation results — so hard-coding five and
+ * calling it validated would be fitting the rule to the answer. Testing three
+ * simple rules answers a different and better question: does the hybrid stay
+ * superior across a broad range of reasonable definitions, or only at one
+ * number?
+ *
+ * If the conclusion reverses between adjacent rules, no rule is promoted.
+ */
+export type HybridGeometryRule = "rule_a_bracketed" | "rule_b_min_3_strikes" | "rule_c_min_5_strikes";
+
+export const HYBRID_GEOMETRY_RULES: readonly HybridGeometryRule[] =
+  ["rule_a_bracketed", "rule_b_min_3_strikes", "rule_c_min_5_strikes"];
+
+export const HYBRID_RULE_MINIMUM_STRIKES: Readonly<Record<HybridGeometryRule, number>> = {
+  rule_a_bracketed: 2,
+  rule_b_min_3_strikes: 3,
+  rule_c_min_5_strikes: 5,
+};
+
+export type HybridTier = "interpolation" | "local_anchor" | "unavailable";
+
+export interface HybridEligibility {
+  readonly eligible: boolean;
+  readonly bracketed: boolean;
+  readonly unique_strike_count: number;
+  readonly minimum_required: number;
+  readonly nearest_below_strike: number | null;
+  readonly nearest_above_strike: number | null;
+  readonly neighbour_distance_below: number | null;
+  readonly neighbour_distance_above: number | null;
+  readonly max_observation_age_minutes: number | null;
+  readonly reason: string | null;
+}
+
+/**
+ * Is the interpolation tier structurally eligible?
+ *
+ * Bracketing is required on BOTH sides — an exact strike match counts, since the
+ * observation is then the answer. Anything else would be extrapolation wearing
+ * an interpolation label, which §7 forbids outright and which Phase 2B measured
+ * as unreliable under every method.
+ */
+export function hybridEligibility(
+  points: readonly AggregatedStrikeObservation[],
+  target: EstimationTarget,
+  rule: HybridGeometryRule,
+): HybridEligibility {
+  const usable = points
+    .filter(p => Number.isFinite(p.total_implied_variance) && p.total_implied_variance > 0)
+    .sort((a, b) => a.log_moneyness - b.log_moneyness);
+  const strikes = [...new Set(usable.map(p => p.strike))];
+  const minimum = HYBRID_RULE_MINIMUM_STRIKES[rule];
+  const k = target.logMoneyness;
+
+  const exact = usable.some(p => p.log_moneyness === k);
+  const below = usable.filter(p => p.log_moneyness < k).at(-1) ?? null;
+  const above = usable.find(p => p.log_moneyness > k) ?? null;
+  const bracketed = exact || (below !== null && above !== null);
+  const ages = usable.map(p => p.effective_age_minutes);
+
+  const base = {
+    bracketed, unique_strike_count: strikes.length, minimum_required: minimum,
+    nearest_below_strike: below?.strike ?? null, nearest_above_strike: above?.strike ?? null,
+    neighbour_distance_below: below ? Math.abs(target.strike - below.strike) : null,
+    neighbour_distance_above: above ? Math.abs(above.strike - target.strike) : null,
+    max_observation_age_minutes: ages.length ? Math.max(...ages) : null,
+  } as const;
+
+  if (!usable.length) return {...base, eligible: false, reason: "no_qualifying_same_expiry_observations"};
+  if (!bracketed) return {...base, eligible: false, reason: "target_not_bracketed"};
+  if (strikes.length < minimum)
+    return {...base, eligible: false, reason: `unique_strike_count_below_${minimum}`};
+  return {...base, eligible: true, reason: null};
+}
+
+export interface HybridEstimate extends SurfaceEstimate {
+  readonly tier: HybridTier;
+  readonly geometry_rule: HybridGeometryRule;
+  readonly eligibility: HybridEligibility;
+  /** Why the interpolation tier was not used, when the anchor served instead. */
+  readonly fallback_reason: string | null;
+}
+
+/**
+ * The candidate: bracketed same-expiry interpolation, then the existing local
+ * exact-contract anchor, then unavailable.
+ *
+ * The hierarchy is fixed and reads no outcome, PnL or strategy result. Neither
+ * tier's own logic is altered — `estimateLinearInterpolation` and
+ * `estimateLocalIvAnchor` are called exactly as Phase 2B scored them, so a win
+ * here cannot come from quietly improving a component.
+ *
+ * No SVI, no SSVI, no DVOL, no cross-expiry or wing extrapolation, no fabricated
+ * constant IV, no future data.
+ */
+export function estimateHybrid(input: {
+  readonly points: readonly AggregatedStrikeObservation[];
+  readonly anchor: PriorAnchor | null;
+  readonly target: EstimationTarget;
+  readonly rule: HybridGeometryRule;
+  readonly anchorMaxAgeMinutes?: number;
+  /** Remaining DTE < 1 day, which changes only the terminal unavailable reason. */
+  readonly isFinalDay?: boolean;
+}): HybridEstimate {
+  const eligibility = hybridEligibility(input.points, input.target, input.rule);
+  const shared = {geometry_rule: input.rule, eligibility} as const;
+
+  if (eligibility.eligible) {
+    const interpolated = estimateLinearInterpolation(input.points, input.target);
+    // Defence in depth, and deliberately redundant TODAY: the interpolator
+    // already refuses an out-of-range target, so this branch is unreachable
+    // under the current implementation and a mutation removing it changes no
+    // test. It stays because §7's no-extrapolation rule is methodological, and
+    // the tier must not start extrapolating if the interpolator ever does.
+    if (interpolated.status === "available" && !interpolated.is_extrapolation)
+      return {...interpolated, method_version: HYBRID_METHOD_VERSION, ...shared,
+        tier: "interpolation", fallback_reason: null,
+        diagnostics: {...interpolated.diagnostics, tier: "interpolation",
+          interpolation_method: LINEAR_INTERPOLATION_METHOD_VERSION}};
+  }
+
+  const fallbackReason = eligibility.eligible
+    ? "interpolation_tier_returned_no_value" : eligibility.reason;
+  const anchored = estimateLocalIvAnchor(input.anchor, input.target,
+    input.anchorMaxAgeMinutes ?? PRIOR_ANCHOR_MAX_AGE_MINUTES);
+  if (anchored.status === "available")
+    return {...anchored, method_version: HYBRID_METHOD_VERSION, ...shared,
+      tier: "local_anchor", fallback_reason: fallbackReason,
+      diagnostics: {...anchored.diagnostics, tier: "local_anchor",
+        anchor_method: LOCAL_IV_ANCHOR_METHOD_VERSION, fallback_reason: fallbackReason}};
+
+  return {
+    method_version: HYBRID_METHOD_VERSION, status: "unavailable",
+    iv_decimal: null, total_implied_variance: null, price_btc: null, price_usd: null,
+    is_extrapolation: false, observation_count: input.points.length,
+    // The final-day distinction is about a missing pre-expiry MARK, never about
+    // a missing settlement payoff, which needs no IV at all.
+    unavailable_reason: input.isFinalDay ? "surface_not_identifiable_final_day" : "no_causal_anchor",
+    diagnostics: {tier: "unavailable", fallback_reason: fallbackReason,
+      anchor_reason: anchored.unavailable_reason, final_day: Boolean(input.isFinalDay)},
+    ...shared, tier: "unavailable", fallback_reason: fallbackReason,
+  };
+}
