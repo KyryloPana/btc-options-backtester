@@ -676,6 +676,31 @@ export function buildSurfaceSnapshot(input: {
   };
 }
 
+/**
+ * Rebuild a snapshot from already-admitted cached observations.
+ *
+ * The shard cache stores the snapshot header and its observations separately,
+ * so a later phase can reconstitute the exact evidence a snapshot was built
+ * from. Admission is NOT re-run: these rows already passed it, and re-admitting
+ * them against a freshly supplied underlying could silently change the set.
+ * The content hash is recomputed and must match the stored one, which is what
+ * makes "the frozen cohort" a checkable claim rather than an assertion.
+ */
+export function snapshotFromObservations(
+  header: Omit<SurfaceSnapshot, "observations" | "slices">,
+  observations: readonly CrossSectionObservation[],
+): SurfaceSnapshot {
+  const byExpiry = new Map<number, CrossSectionObservation[]>();
+  for (const o of observations) {
+    const list = byExpiry.get(o.expiry_timestamp_ms);
+    if (list) list.push(o); else byExpiry.set(o.expiry_timestamp_ms, [o]);
+  }
+  const slices = [...byExpiry.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, group]) => expirySliceDiagnostics(group, header.underlying_price));
+  return {...header, observations, slices};
+}
+
 /** The slice for one expiry, or null when that expiry produced no observations. */
 export const sliceFor = (snapshot: SurfaceSnapshot, expiryMs: number): ExpirySliceDiagnostics | null =>
   snapshot.slices.find(s => s.expiry_timestamp_ms === expiryMs) ?? null;

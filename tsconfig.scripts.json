@@ -8,7 +8,9 @@
     "scripts/volatility-reference-cache.ts",
     "scripts/measure-volatility-coverage.ts",
     "scripts/measure-percentile-proof.ts",
-    "scripts/measure-surface-readiness.ts"
+    "scripts/measure-surface-readiness.ts",
+    "scripts/fetch-prior-anchors.ts",
+    "scripts/validate-surface-models.ts"
   ],
   "exclude": ["node_modules"]
 }
