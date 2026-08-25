@@ -156,6 +156,9 @@ export function buildReferenceSeriesRows(input: ReferenceSeriesBuildInput): Refe
     const reference = resolveReferenceIv(observations, {
       underlyingPrice: input.underlyingPrice,
       listedStrikes: expiry?.strikes ?? [],
+      // Observations are already grouped by expiry above; the pin makes that
+      // guarantee explicit rather than relying on the grouping staying correct.
+      expectedExpiryTimestampMs: tenor.actualExpiryTimestampMs,
       maxAgeMinutes: maxAge,
       moneynessTolerance: MARKET_IV_MONEYNESS_TOLERANCE,
       ownLegsExcluded: Boolean(input.excludedInstruments?.length),
@@ -328,5 +331,80 @@ export function refuseDvolSubstitution(nominal: NominalTenor): {
   return {
     status: "unavailable", reasonCode: "dvol_cannot_substitute",
     detail: `DVOL is a broad whole-surface index and cannot serve as the ${nominal} same-expiry reference. The tenor stays unavailable.`,
+  };
+}
+
+/**
+ * Reference row for a KNOWN expiry, with no nominal-tenor resolution.
+ *
+ * A selected structure's expiry is not an approximation of a 7/14/30-day label
+ * -- it is the exact expiry the structure trades. Putting it through tenor
+ * resolution would judge it against a tolerance that does not apply and mark a
+ * perfectly good 27-day reference unavailable for failing to be a 7-day one.
+ *
+ * `nominal_tenor` is still stamped for row shape, but the tolerance is reported
+ * as passed by construction: there is nothing to approximate.
+ */
+export function buildExpiryReferenceRow(input: {
+  readonly timestampMs: number;
+  readonly underlyingInstrument: string;
+  readonly underlyingPrice: number;
+  readonly expiry: ListedExpiry;
+  readonly candidates: readonly RawIvTradeCandidate[];
+  readonly excludedInstruments?: readonly string[];
+  readonly maxAgeMinutes?: number;
+  readonly nominalTenorLabel?: NominalTenor;
+}): ReferenceSeriesRow {
+  const maxAge = input.maxAgeMinutes ?? MARKET_IV_MAX_AGE_MINUTES;
+  const admitted: AdmittedIvTrade[] = [];
+  for (const candidate of input.candidates) {
+    if (candidate.expiryTimestampMs !== input.expiry.expiryTimestampMs) continue;
+    const result = admitMarketIvTrade(candidate, {
+      targetTimestampMs: input.timestampMs, underlyingPrice: input.underlyingPrice,
+      maxAgeMinutes: maxAge, excludedInstruments: input.excludedInstruments,
+    });
+    if (result.admitted) admitted.push(result.observation);
+  }
+
+  const actualDteDays = (input.expiry.expiryTimestampMs - input.timestampMs) / 86_400_000;
+  const shared = {
+    series_id: REFERENCE_SERIES_ID, method_version: REFERENCE_SERIES_METHOD_VERSION,
+    timestamp_utc: new Date(input.timestampMs).toISOString(), timestamp_ms: input.timestampMs,
+    underlying_instrument: input.underlyingInstrument, underlying_price: input.underlyingPrice,
+    nominal_tenor: input.nominalTenorLabel ?? "7d",
+    reference_expiry_timestamp_utc: iso(input.expiry.expiryTimestampMs),
+    actual_dte_days: actualDteDays,
+    // The expiry is given, so there is no tenor approximation to fail.
+    tenor_tolerance_passed: true,
+    max_age_minutes: maxAge, own_legs_excluded: Boolean(input.excludedInstruments?.length),
+  } as const;
+
+  const reference = resolveReferenceIv(admitted, {
+    underlyingPrice: input.underlyingPrice, listedStrikes: input.expiry.strikes,
+    expectedExpiryTimestampMs: input.expiry.expiryTimestampMs,
+    maxAgeMinutes: maxAge, moneynessTolerance: MARKET_IV_MONEYNESS_TOLERANCE,
+    ownLegsExcluded: Boolean(input.excludedInstruments?.length),
+  });
+  if (reference.status !== "available") return {
+    ...shared, reference_iv_decimal: null, iv_units: null, reference_strike: null, log_moneyness: null,
+    observation_class: "unavailable", observation_source: null, observation_timestamp_utc: null,
+    age_minutes: null, passes_market_state_rule: false, diagnostic_age_minutes: null,
+    source_trade_ids: [], interpolation_inputs: [],
+    contract_settlement_period: input.expiry.settlementPeriod ?? null,
+    quality: "unavailable", unavailable_reason_code: reference.reasonCode ?? "no_qualifying_observation",
+  };
+  return {
+    ...shared,
+    reference_iv_decimal: reference.ivDecimal, iv_units: "decimal",
+    reference_strike: reference.referenceStrike, log_moneyness: reference.logMoneyness,
+    observation_class: reference.observationClass ?? "unavailable",
+    observation_source: reference.observationClass === "local_interpolation" ? "interpolation" : "deribit_trade_iv",
+    observation_timestamp_utc: iso(reference.observationTimestampMs),
+    age_minutes: reference.ageMinutes, passes_market_state_rule: reference.passesMarketStateRule,
+    diagnostic_age_minutes: reference.ageMinutes,
+    source_trade_ids: reference.sourceTradeIds, interpolation_inputs: reference.interpolationInputs,
+    contract_settlement_period: input.expiry.settlementPeriod ?? null,
+    quality: reference.observationClass === "local_interpolation" ? "interpolated" : "observed",
+    unavailable_reason_code: null,
   };
 }
