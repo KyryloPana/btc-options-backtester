@@ -49,6 +49,8 @@ export interface AggregatedStrikeObservation {
   readonly total_implied_variance: number;
   /** Freshness-weighted mean observation time of the contributing prints. */
   readonly effective_timestamp_ms: number;
+  /** Full-precision weighted mean retained for diagnostics, never used as a Unix-ms identity. */
+  readonly effective_timestamp_raw_ms?: number;
   readonly effective_age_minutes: number;
   readonly print_count: number;
   readonly outliers_excluded: number;
@@ -97,8 +99,11 @@ export function aggregateStrike(
   // Degenerate weights (every print at the extreme edge) fall back to the
   // unweighted mean rather than dividing by zero.
   const iv = weightSum > 0 ? ivSum / weightSum : kept.reduce((s, p) => s + p.iv_decimal, 0) / kept.length;
-  const effectiveMs = weightSum > 0 ? timeSum / weightSum
+  const effectiveRawMs = weightSum > 0 ? timeSum / weightSum
     : kept.reduce((s, p) => s + p.timestamp_ms, 0) / kept.length;
+  // Canonical Unix milliseconds are integral. Flooring (rather than rounding)
+  // ensures an aggregate can never claim evidence later than its weighted time.
+  const effectiveMs = Math.floor(effectiveRawMs);
 
   const years = first.time_to_expiry_years;
   return {
@@ -107,6 +112,7 @@ export function aggregateStrike(
     log_moneyness: first.log_moneyness, time_to_expiry_years: years,
     iv_decimal: iv, total_implied_variance: iv * iv * years,
     effective_timestamp_ms: effectiveMs,
+    effective_timestamp_raw_ms: effectiveRawMs,
     effective_age_minutes: (first.target_timestamp_ms - effectiveMs) / 60_000,
     print_count: prints.length, outliers_excluded: prints.length - kept.length,
     iv_mad: mad, iv_min: ivs[0]!, iv_max: ivs[ivs.length - 1]!,
