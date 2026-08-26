@@ -10,7 +10,9 @@
     "scripts/measure-percentile-proof.ts",
     "scripts/measure-surface-readiness.ts",
     "scripts/fetch-prior-anchors.ts",
-    "scripts/validate-surface-models.ts"
+    "scripts/validate-surface-models.ts",
+    "scripts/validate-selection-store.ts",
+    "scripts/measure-reference-tier-usage.ts"
   ],
   "exclude": ["node_modules"]
 }
