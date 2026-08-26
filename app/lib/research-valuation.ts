@@ -22,7 +22,7 @@ export function modelHistoricalEvidenceWindows(){return{entryMinutes:[MODEL_IV_A
 export type PricingAssumption = "research-estimate" | "conservative-tape-check";
 export type EstimateQuality = QualityFlag | "unavailable";
 export type ResearchPriceSource = "direct-vwap" | "model-reconstructed";
-export type ModelIvSource = "local-observed-IV" | "constant-entry-IV" | "intrinsic-at-expiry" | "unavailable";
+export type ModelIvSource = "same-expiry-interpolation" | "local-observed-IV" | "constant-entry-IV" | "intrinsic-at-expiry" | "unavailable";
 export type PathUnavailableReason = "missing-target-index" | "missing-short-entry-iv" | "missing-long-entry-iv" | "short-model-input-invalid" | "long-model-input-invalid" | "model-output-invalid" | "after-expiry" | "contract-unresolved" | "invalid-contract-amount";
 export interface ResolvedUnderlyingIndex { index:number; sourceCandleTimestamp:number; lookupMethod:"exact-timestamp"|"containing-candle"|"preceding-completed-candle"; distanceMs:number }
 
@@ -45,7 +45,12 @@ export function resolveUnderlyingIndex(candles:Candle[],targetTimestamp:number):
 export interface ModelEvidence { instrument:string; strike:number; optionType:"C"|"P"; anchorTimestamp:number; anchorTradeId:string|null; anchorDirection:string; anchorAgeMinutes:number; anchorIvApiPercent:number; anchorIvDecimal:number; anchorIndex:number; targetIndex:number; dte:number; forwardPrice:number; rate:number; forwardRateAssumption:string; modelPriceBtc:number; modelName:string }
 export interface ResearchLegEstimate { instrumentName:string; economicSide:"sold"|"bought"; priceBtcPerContract:number; unslippedPriceBtcPerContract:number; source:ResearchPriceSource; supportingTrades:ContractTrade[]; supportingTimestamps:number[]; observedAmount:number; nearestGapMinutes:number; model?:ModelEvidence }
 /** Which Reference tier produced each leg, and why the others declined. */
-export interface ReferenceProvenance { methodVersion:string; geometryRule:string; short:ReferenceLegValuation; long:ReferenceLegValuation }
+export interface ReferenceProvenance {
+ methodVersion:string; geometryRule:string;
+ short:ReferenceLegValuation; long:ReferenceLegValuation;
+ /** Set when the preferred tiers were incoherent and a synchronized anchor pair resolved it. */
+ coherenceFallback:{reason:string;gapMinutes:number|null;resolvedWith:string}|null;
+}
 export interface ResearchEstimate { referenceProvenance?:ReferenceProvenance; valuationMode:"research-estimate"; executionMode:ExecutionMode; intent?:"open"|"close"; pointRole?:"entry"|"scheduled-close"|"outcome-close"|"delayed-entry"|"settlement"; targetTimestamp:number; decisionTimestamp?:number; orderSubmissionTimestamp?:number; evidenceCompletionTimestamp?:number; valuationTimestamp:number; entryTargetIndex:number; status:"priced"; sold:ResearchLegEstimate; bought:ResearchLegEstimate; grossSpreadBtcPerContract:number; grossSpreadBtc:number; openingFeesBtc:number; netOpeningCashFlowBtc:number; amount:number; evidenceWindowMinutes:30|60|120|typeof MODEL_IV_ANCHOR_MAX_AGE_MINUTES; synchronizationGapMinutes:number; priceSource:ResearchPriceSource; estimateQuality:QualityFlag; qualityReason:string; slippageBps:number; observedAmount:number; observedAmountToRequestedRatio:number; rawStaleComparison?:{soldTimestamp:number;boughtTimestamp:number;synchronizationGapMinutes:number;soldPriceBtc:number;boughtPriceBtc:number}; liquidityWarning?:string; amountStepWarning?:string; disclaimer:string }
 export interface UnavailableResearchEstimate { referenceProvenance?:ReferenceProvenance; valuationMode:"research-estimate";executionMode:ExecutionMode;targetTimestamp:number;status:"unavailable";estimateQuality:"unavailable";reason:string;reasonCode?:string;requestedAmount?:number;shortQualifyingAmount?:number;longQualifyingAmount?:number;shortfall?:number;windowStart?:number;windowEnd?:number;disclaimer:string }
 export type ResearchValuation=ResearchEstimate|UnavailableResearchEstimate;
@@ -156,14 +161,40 @@ export function estimateModelSpread(input:{spread:RetrievedSpread;targetTimestam
  const crossSectionFor=(exclude:string[])=>ladder.length?buildReferenceCrossSection({sameExpirySeries:ladder,expiryTimestampMs:short.expiryTimestamp,targetTimestampMs:targetTimestamp,underlyingPrice:targetIndex,excludeInstruments:exclude}):null;
  const shortReference=valueReferenceLeg({leg:short,targetTimestampMs:targetTimestamp,underlyingPrice:targetIndex,crossSection:crossSectionFor([short.instrumentName]),anchor:selectIvAnchor(short,targetTimestamp)});
  const longReference=valueReferenceLeg({leg:long,targetTimestampMs:targetTimestamp,underlyingPrice:targetIndex,crossSection:crossSectionFor([long.instrumentName]),anchor:selectIvAnchor(long,targetTimestamp)});
- const referenceProvenance={methodVersion:REFERENCE_VALUATION_METHOD_VERSION,geometryRule:REFERENCE_GEOMETRY_RULE,short:shortReference,long:longReference} as const;
+ const referenceProvenance:ReferenceProvenance={methodVersion:REFERENCE_VALUATION_METHOD_VERSION,geometryRule:REFERENCE_GEOMETRY_RULE,short:shortReference,long:longReference,coherenceFallback:null};
  if(shortReference.iv_decimal===null||longReference.iv_decimal===null)return{...unavailable(targetTimestamp,"No qualifying Reference evidence: neither bracketed same-expiry interpolation nor a causal exact-contract anchor is available for both legs.","taker"),reasonCode:"reference-evidence-unavailable",referenceProvenance};
- const synchronization=referenceLegsAreSynchronized(shortReference,longReference,maxGapMs);
- if(!synchronization.synchronized)return{...unavailable(targetTimestamp,"Reference legs are not synchronized within the configured window.","taker"),reasonCode:"causal-iv-anchor-pair-unavailable",referenceProvenance};
- const sold=modelLegFromIv(short,targetTimestamp,targetIndex,"sold",input.slippageBps,shortReference.iv_decimal,shortReference.effective_evidence_timestamp_ms??targetTimestamp),bought=modelLegFromIv(long,targetTimestamp,targetIndex,"bought",input.slippageBps,longReference.iv_decimal,longReference.effective_evidence_timestamp_ms??targetTimestamp);
- if(!sold||!bought)return{...unavailable(targetTimestamp,"Reference IV does not provide valid model inputs.","taker"),reasonCode:"model-input-invalid",referenceProvenance};
+ let synchronization=referenceLegsAreSynchronized(shortReference,longReference,maxGapMs);
+ let shortIv=shortReference.iv_decimal,longIv=longReference.iv_decimal;
+ let shortEvidence=shortReference.effective_evidence_timestamp_ms??targetTimestamp,longEvidence=longReference.effective_evidence_timestamp_ms??targetTimestamp;
+ let shortAnchor:ContractTrade|undefined,longAnchor:ContractTrade|undefined;
+ let coherenceFallback:ReferenceProvenance["coherenceFallback"]=null;
+ if(!synchronization.synchronized){
+  // The preferred tiers disagree about WHEN the market was. That happens when
+  // one leg upgrades to fresh interpolation while the other only has a stale
+  // anchor -- a pairing this rule exists to refuse.
+  //
+  // Before refusing, look for the synchronized ANCHOR PAIR the previous
+  // methodology would have used. `selectSynchronizedIvAnchors` searches both
+  // legs' causal anchors for a pair inside the window rather than taking the
+  // latest of each, so a coherent older pair often exists where the freshest
+  // marks are incoherent. Dropping that search would lose coverage the
+  // engine already had, for no gain in coherence.
+  const pair=selectSynchronizedIvAnchors(short,long,targetTimestamp,maxGapMs);
+  if(pair?.short.ivDecimal&&pair.long.ivDecimal){
+   shortAnchor=pair.short;longAnchor=pair.long;
+   shortIv=pair.short.ivDecimal;longIv=pair.long.ivDecimal;
+   shortEvidence=pair.short.timestamp;longEvidence=pair.long.timestamp;
+   synchronization={synchronized:true,gapMinutes:pair.gapMinutes};
+   coherenceFallback={reason:"preferred_tiers_not_synchronized",gapMinutes:synchronization.gapMinutes,resolvedWith:"synchronized_anchor_pair"};
+  }
+ }
+ if(!synchronization.synchronized)return{...unavailable(targetTimestamp,"Reference legs are not synchronized within the configured window, and no synchronized causal anchor pair exists.","taker"),reasonCode:"causal-iv-anchor-pair-unavailable",referenceProvenance:{...referenceProvenance,coherenceFallback}};
+ if(shortIv===null||longIv===null)return{...unavailable(targetTimestamp,"Reference IV is unavailable after coherence resolution.","taker"),reasonCode:"reference-evidence-unavailable",referenceProvenance:{...referenceProvenance,coherenceFallback}};
+ const sold=modelLegFromIv(short,targetTimestamp,targetIndex,"sold",input.slippageBps,shortIv,shortEvidence,shortAnchor),bought=modelLegFromIv(long,targetTimestamp,targetIndex,"bought",input.slippageBps,longIv,longEvidence,longAnchor);
+ if(!sold||!bought)return{...unavailable(targetTimestamp,"Reference IV does not provide valid model inputs.","taker"),reasonCode:"model-input-invalid",referenceProvenance:{...referenceProvenance,coherenceFallback}};
  const estimate=assemble({spread,executionMode:"taker",targetTimestamp,targetIndex,amount,slippageBps:input.slippageBps,sold,bought,window:MODEL_IV_ANCHOR_MAX_AGE_MINUTES,quality:"red",reason:`Reference valuation from ${shortReference.source}/${longReference.source}; independent of execution.`});
- return estimate.grossSpreadBtcPerContract>0?{...estimate,referenceProvenance}:{...unavailable(targetTimestamp,"Reference valuation does not imply a positive credit.","taker"),reasonCode:"model-non-credit",referenceProvenance};
+ const resolved={...referenceProvenance,coherenceFallback};
+ return estimate.grossSpreadBtcPerContract>0?{...estimate,referenceProvenance:resolved}:{...unavailable(targetTimestamp,"Reference valuation does not imply a positive credit.","taker"),reasonCode:"model-non-credit",referenceProvenance:resolved};
 }
 
 /**
@@ -176,6 +207,10 @@ export function estimateModelSpread(input:{spread:RetrievedSpread;targetTimestam
 export function referenceValuationSourceOf(valuation:ResearchValuation):"same_expiry_linear_interpolation"|"local_iv_anchor"|"local_iv_interpolation"|"unavailable"{
  const provenance=valuation.referenceProvenance;
  if(!provenance)return valuation.status==="priced"?"local_iv_interpolation":"unavailable";
+ // When the coherence fallback fired, BOTH legs were priced from the
+ // synchronized anchor pair, whatever tier each leg would have preferred. The
+ // saved source must name what actually produced the mark.
+ if(provenance.coherenceFallback)return "local_iv_anchor";
  const {short,long}=provenance;
  if(short.source==="unavailable"||long.source==="unavailable")return "unavailable";
  // A spread is only an interpolation mark when BOTH legs interpolated; a mixed
@@ -202,7 +237,26 @@ export function evaluateResearchEntryLayers(input:{spread:RetrievedSpread;target
 
 function modelMark(input:{spread:RetrievedSpread;timestamp:number;index:number;entry:ResearchEstimate;slippageBps:number;executionRoute?:ExecutionRoute}):{estimate?:ResearchEstimate;source:ModelIvSource;soldSource:ModelIvSource;longSource:ModelIvSource;reason?:PathUnavailableReason}{
  const {spread,timestamp,index,entry}=input;if(!spread.soldContract||!spread.boughtContract)return{source:"unavailable",soldSource:"unavailable",longSource:"unavailable",reason:"contract-unresolved"};if(timestamp>spread.soldContract.expiryTimestamp)return{source:"unavailable",soldSource:"unavailable",longSource:"unavailable",reason:"after-expiry"};
- const expired=timestamp===spread.soldContract.expiryTimestamp,pair=selectSynchronizedIvAnchors(spread.soldContract,spread.boughtContract,timestamp);let soldAnchor=pair?.short,boughtAnchor=pair?.long;let soldSource:ModelIvSource=pair?"local-observed-IV":"constant-entry-IV",longSource:ModelIvSource=soldSource;
+ const expired=timestamp===spread.soldContract.expiryTimestamp;
+ // Tier 1 on the PATH, identical to entry. Without this the promoted hierarchy
+ // would price the entry one way and every subsequent mark another, which is
+ // precisely the split the methodology is supposed to eliminate. Both legs read
+ // one snapshot at this timestamp, so an interpolated pair is coherent by
+ // construction and needs no synchronization search.
+ if(!expired&&spread.sameExpiryCrossSection?.length){
+  const short=spread.soldContract,long=spread.boughtContract;
+  const crossSectionFor=(exclude:string[])=>buildReferenceCrossSection({sameExpirySeries:spread.sameExpiryCrossSection!,expiryTimestampMs:short.expiryTimestamp,targetTimestampMs:timestamp,underlyingPrice:index,excludeInstruments:exclude});
+  const shortReference=valueReferenceLeg({leg:short,targetTimestampMs:timestamp,underlyingPrice:index,crossSection:crossSectionFor([short.instrumentName]),anchor:undefined});
+  const longReference=valueReferenceLeg({leg:long,targetTimestampMs:timestamp,underlyingPrice:index,crossSection:crossSectionFor([long.instrumentName]),anchor:undefined});
+  if(shortReference.source==="same_expiry_linear_interpolation"&&longReference.source==="same_expiry_linear_interpolation"
+   &&shortReference.iv_decimal!==null&&longReference.iv_decimal!==null){
+   const soldLeg=modelLegFromIv(short,timestamp,index,"bought",input.slippageBps,shortReference.iv_decimal,shortReference.effective_evidence_timestamp_ms??timestamp);
+   const boughtLeg=modelLegFromIv(long,timestamp,index,"sold",input.slippageBps,longReference.iv_decimal,longReference.effective_evidence_timestamp_ms??timestamp);
+   if(soldLeg&&boughtLeg)return{source:"same-expiry-interpolation",soldSource:"same-expiry-interpolation",longSource:"same-expiry-interpolation",
+    estimate:assemble({...input,executionMode:entry.executionMode,targetIndex:index,targetTimestamp:timestamp,amount:entry.amount,sold:soldLeg,bought:boughtLeg,window:MODEL_IV_ANCHOR_MAX_AGE_MINUTES,quality:"red",reason:"Path mark from bracketed same-expiry interpolation; independent of execution."})};
+  }
+ }
+ const pair=selectSynchronizedIvAnchors(spread.soldContract,spread.boughtContract,timestamp);let soldAnchor=pair?.short,boughtAnchor=pair?.long;let soldSource:ModelIvSource=pair?"local-observed-IV":"constant-entry-IV",longSource:ModelIvSource=soldSource;
  // Fallback is paired and entry-causal: never mix a fresh leg with a stale leg.
  if(!pair&&entry.sold.model&&entry.bought.model){soldAnchor={...entry.sold.supportingTrades[0],timestamp:entry.sold.model.anchorTimestamp,indexPrice:entry.sold.model.anchorIndex,ivDecimal:entry.sold.model.anchorIvDecimal,ivApiPercent:entry.sold.model.anchorIvApiPercent,instrumentName:entry.sold.model.instrument};boughtAnchor={...entry.bought.supportingTrades[0],timestamp:entry.bought.model.anchorTimestamp,indexPrice:entry.bought.model.anchorIndex,ivDecimal:entry.bought.model.anchorIvDecimal,ivApiPercent:entry.bought.model.anchorIvApiPercent,instrumentName:entry.bought.model.instrument};if(Math.abs(soldAnchor.timestamp-boughtAnchor.timestamp)>60*60_000||soldAnchor.timestamp>timestamp||boughtAnchor.timestamp>timestamp){soldAnchor=boughtAnchor=undefined;}}
  if(!soldAnchor?.ivDecimal)return{source:"unavailable",soldSource,longSource,reason:"missing-short-entry-iv"};if(!boughtAnchor?.ivDecimal)return{source:"unavailable",soldSource,longSource,reason:"missing-long-entry-iv"};if(expired)soldSource=longSource="intrinsic-at-expiry";

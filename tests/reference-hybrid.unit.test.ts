@@ -408,3 +408,47 @@ test("PROVENANCE: the saved source distinguishes the new tiers from the historic
   assert.equal(referenceValuationSourceOf({...both, referenceProvenance: undefined} as never),
     "local_iv_interpolation");
 });
+
+/* ============ coherence fallback to the synchronized anchor pair ============ */
+
+test("COHERENCE FALLBACK: an incoherent tier pair resolves to the synchronized anchor pair", () => {
+  // The short leg would interpolate from a fresh ladder; the long leg is far
+  // out of range and only has old prints. Their preferred marks are hours
+  // apart -- but both legs DO have causal anchors that are synchronized with
+  // each other, which is exactly what the previous methodology used. Refusing
+  // here would lose coverage the engine already had, for no gain in coherence.
+  const soldAnchors = [tradeAt("BTC-23JUN25-106000-C", 44, 300, 1), tradeAt("BTC-23JUN25-106000-C", 43, 305, 2)];
+  const sold = series(106_000, "C", soldAnchors);
+  const bought = series(130_000, "C", [tradeAt("BTC-23JUN25-130000-C", 38, 310)]);
+  const result = value(spreadOf(sold, bought, [...denseLadder(), sold, bought]));
+
+  assert.equal(result.status, "priced", "a synchronized anchor pair exists and must be used");
+  const provenance = result.referenceProvenance!;
+  assert.ok(provenance.coherenceFallback, "the fallback must be recorded, not silent");
+  assert.equal(provenance.coherenceFallback!.resolvedWith, "synchronized_anchor_pair");
+  assert.equal(provenance.coherenceFallback!.reason, "preferred_tiers_not_synchronized");
+  assert.ok(provenance.coherenceFallback!.gapMinutes! <= 60);
+
+  // And the saved source names what actually priced it, not the tier the short
+  // leg would have preferred.
+  assert.equal(referenceValuationSourceOf(result), "local_iv_anchor");
+});
+
+test("COHERENCE FALLBACK: with no synchronized pair available the mark is still refused", () => {
+  // The long leg's only print is ten hours from the short leg's. No pair inside
+  // the window exists, so the refusal stands.
+  const sold = series(106_000, "C", [tradeAt("BTC-23JUN25-106000-C", 44, 5)]);
+  const bought = series(130_000, "C", [tradeAt("BTC-23JUN25-130000-C", 38, 600)]);
+  const result = value(spreadOf(sold, bought, [...denseLadder(), sold, bought]));
+  assert.equal(result.status, "unavailable");
+  assert.equal(result.reasonCode, "causal-iv-anchor-pair-unavailable");
+  assert.match(String(result.reason), /no synchronized causal anchor pair/);
+});
+
+test("COHERENCE FALLBACK: it never fires when the preferred tiers already agree", () => {
+  const result = value(spreadOf(series(106_000, "C", []), series(108_000, "C", []), denseLadder()));
+  assert.equal(result.status, "priced");
+  assert.equal(result.referenceProvenance!.coherenceFallback, null,
+    "two interpolated legs are already coherent; nothing should fall back");
+  assert.equal(referenceValuationSourceOf(result), "same_expiry_linear_interpolation");
+});
