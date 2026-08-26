@@ -9,6 +9,12 @@ export const RESEARCH_ESTIMATE_DISCLAIMER = "Theoretical estimate; not an actual
 export const MODEL_TOOLTIP = "The model reprices each exact option at the target BTC index using a synchronized pair of causal implied-volatility anchors observed at or before that point. It estimates a theoretical mark, not an executable historical quote.";
 export const FORWARD_ASSUMPTION = "Forward unavailable — using forward = index and rate = 0";
 /** Maximum causal age of an IV observation used by the reference/model reconstruction. */
+import {
+  REFERENCE_GEOMETRY_RULE, REFERENCE_VALUATION_METHOD_VERSION,
+  buildReferenceCrossSection, referenceLegsAreSynchronized, valueReferenceLeg,
+  type ReferenceLegValuation,
+} from "./volatility/reference-hybrid.ts";
+
 export const MODEL_IV_ANCHOR_MAX_AGE_MINUTES = 720;
 export const RESEARCH_WINDOWS_MINUTES = [30, 60, 120] as const;
 /** Declared model methodology; deliberately independent of observed/priced candidates. */
@@ -38,8 +44,10 @@ export function resolveUnderlyingIndex(candles:Candle[],targetTimestamp:number):
 
 export interface ModelEvidence { instrument:string; strike:number; optionType:"C"|"P"; anchorTimestamp:number; anchorTradeId:string|null; anchorDirection:string; anchorAgeMinutes:number; anchorIvApiPercent:number; anchorIvDecimal:number; anchorIndex:number; targetIndex:number; dte:number; forwardPrice:number; rate:number; forwardRateAssumption:string; modelPriceBtc:number; modelName:string }
 export interface ResearchLegEstimate { instrumentName:string; economicSide:"sold"|"bought"; priceBtcPerContract:number; unslippedPriceBtcPerContract:number; source:ResearchPriceSource; supportingTrades:ContractTrade[]; supportingTimestamps:number[]; observedAmount:number; nearestGapMinutes:number; model?:ModelEvidence }
-export interface ResearchEstimate { valuationMode:"research-estimate"; executionMode:ExecutionMode; intent?:"open"|"close"; pointRole?:"entry"|"scheduled-close"|"outcome-close"|"delayed-entry"|"settlement"; targetTimestamp:number; decisionTimestamp?:number; orderSubmissionTimestamp?:number; evidenceCompletionTimestamp?:number; valuationTimestamp:number; entryTargetIndex:number; status:"priced"; sold:ResearchLegEstimate; bought:ResearchLegEstimate; grossSpreadBtcPerContract:number; grossSpreadBtc:number; openingFeesBtc:number; netOpeningCashFlowBtc:number; amount:number; evidenceWindowMinutes:30|60|120|typeof MODEL_IV_ANCHOR_MAX_AGE_MINUTES; synchronizationGapMinutes:number; priceSource:ResearchPriceSource; estimateQuality:QualityFlag; qualityReason:string; slippageBps:number; observedAmount:number; observedAmountToRequestedRatio:number; rawStaleComparison?:{soldTimestamp:number;boughtTimestamp:number;synchronizationGapMinutes:number;soldPriceBtc:number;boughtPriceBtc:number}; liquidityWarning?:string; amountStepWarning?:string; disclaimer:string }
-export interface UnavailableResearchEstimate { valuationMode:"research-estimate";executionMode:ExecutionMode;targetTimestamp:number;status:"unavailable";estimateQuality:"unavailable";reason:string;reasonCode?:string;requestedAmount?:number;shortQualifyingAmount?:number;longQualifyingAmount?:number;shortfall?:number;windowStart?:number;windowEnd?:number;disclaimer:string }
+/** Which Reference tier produced each leg, and why the others declined. */
+export interface ReferenceProvenance { methodVersion:string; geometryRule:string; short:ReferenceLegValuation; long:ReferenceLegValuation }
+export interface ResearchEstimate { referenceProvenance?:ReferenceProvenance; valuationMode:"research-estimate"; executionMode:ExecutionMode; intent?:"open"|"close"; pointRole?:"entry"|"scheduled-close"|"outcome-close"|"delayed-entry"|"settlement"; targetTimestamp:number; decisionTimestamp?:number; orderSubmissionTimestamp?:number; evidenceCompletionTimestamp?:number; valuationTimestamp:number; entryTargetIndex:number; status:"priced"; sold:ResearchLegEstimate; bought:ResearchLegEstimate; grossSpreadBtcPerContract:number; grossSpreadBtc:number; openingFeesBtc:number; netOpeningCashFlowBtc:number; amount:number; evidenceWindowMinutes:30|60|120|typeof MODEL_IV_ANCHOR_MAX_AGE_MINUTES; synchronizationGapMinutes:number; priceSource:ResearchPriceSource; estimateQuality:QualityFlag; qualityReason:string; slippageBps:number; observedAmount:number; observedAmountToRequestedRatio:number; rawStaleComparison?:{soldTimestamp:number;boughtTimestamp:number;synchronizationGapMinutes:number;soldPriceBtc:number;boughtPriceBtc:number}; liquidityWarning?:string; amountStepWarning?:string; disclaimer:string }
+export interface UnavailableResearchEstimate { referenceProvenance?:ReferenceProvenance; valuationMode:"research-estimate";executionMode:ExecutionMode;targetTimestamp:number;status:"unavailable";estimateQuality:"unavailable";reason:string;reasonCode?:string;requestedAmount?:number;shortQualifyingAmount?:number;longQualifyingAmount?:number;shortfall?:number;windowStart?:number;windowEnd?:number;disclaimer:string }
 export type ResearchValuation=ResearchEstimate|UnavailableResearchEstimate;
 export type StructuralStatus="resolved"|"unresolved";
 export type LayerAvailability="available"|"unavailable"|"not_evaluated";
@@ -73,6 +81,26 @@ export function selectSynchronizedIvAnchors(short:ContractSeries,long:ContractSe
  while(i<shorts.length&&j<longs.length){const s=shorts[i],l=longs[j],delta=s.timestamp-l.timestamp;if(Math.abs(delta)<=maxGapMs)return{short:s,long:l,gapMinutes:Math.abs(delta)/60_000};if(delta>maxGapMs)i++;else j++;}
 }
 function modelLeg(series:ContractSeries,target:number,targetIndex:number,side:"sold"|"bought",slippageBps:number,anchorOverride?:ContractTrade):ResearchLegEstimate|undefined{const anchor=anchorOverride??selectIvAnchor(series,target);if(!anchor?.ivDecimal||anchor.timestamp>target)return;const result=priceInverseOption({optionType:series.optionType==="C"?"call":"put",indexPrice:targetIndex,strike:series.strike,valuationTimestamp:target,expiryTimestamp:series.expiryTimestamp,ivDecimal:anchor.ivDecimal});if(result.status==="unavailable")return;const factor=side==="sold"?1-slippageBps/10_000:1+slippageBps/10_000;return{instrumentName:series.instrumentName,economicSide:side,priceBtcPerContract:result.priceBtc*factor,unslippedPriceBtcPerContract:result.priceBtc,source:"model-reconstructed",supportingTrades:[anchor],supportingTimestamps:[anchor.timestamp],observedAmount:anchor.amount,nearestGapMinutes:(target-anchor.timestamp)/60_000,model:{instrument:series.instrumentName,strike:series.strike,optionType:series.optionType,anchorTimestamp:anchor.timestamp,anchorTradeId:anchor.tradeId??null,anchorDirection:anchor.direction,anchorAgeMinutes:(target-anchor.timestamp)/60_000,anchorIvApiPercent:anchor.ivApiPercent??anchor.ivDecimal*100,anchorIvDecimal:anchor.ivDecimal,anchorIndex:anchor.indexPrice,targetIndex,dte:result.timeYears*365,forwardPrice:result.forwardPrice,rate:result.rate,forwardRateAssumption:FORWARD_ASSUMPTION,modelPriceBtc:result.priceBtc,modelName:INVERSE_OPTION_MODEL}};}
+/**
+ * Price one leg from an already-selected Reference IV.
+ *
+ * Same pricing function, same slippage convention and same model block as
+ * `modelLeg`; only the source of the IV differs. Anchor provenance is carried
+ * when an anchor produced the IV, and is genuinely absent when interpolation
+ * did -- an interpolated mark has no single supporting print, and inventing one
+ * would make the provenance unauditable.
+ */
+function modelLegFromIv(series:ContractSeries,target:number,targetIndex:number,side:"sold"|"bought",slippageBps:number,ivDecimal:number,evidenceTimestamp:number,anchor?:ContractTrade):ResearchLegEstimate|undefined{
+ if(!(ivDecimal>0)||!Number.isFinite(ivDecimal)||evidenceTimestamp>target)return;
+ const result=priceInverseOption({optionType:series.optionType==="C"?"call":"put",indexPrice:targetIndex,strike:series.strike,valuationTimestamp:target,expiryTimestamp:series.expiryTimestamp,ivDecimal});
+ if(result.status==="unavailable")return;
+ const factor=side==="sold"?1-slippageBps/10_000:1+slippageBps/10_000;
+ return{instrumentName:series.instrumentName,economicSide:side,priceBtcPerContract:result.priceBtc*factor,unslippedPriceBtcPerContract:result.priceBtc,source:"model-reconstructed",
+  supportingTrades:anchor?[anchor]:[],supportingTimestamps:[evidenceTimestamp],observedAmount:anchor?.amount??0,nearestGapMinutes:(target-evidenceTimestamp)/60_000,
+  model:{instrument:series.instrumentName,strike:series.strike,optionType:series.optionType,anchorTimestamp:evidenceTimestamp,anchorTradeId:anchor?.tradeId??null,anchorDirection:anchor?.direction??"model-reconstructed",
+   anchorAgeMinutes:(target-evidenceTimestamp)/60_000,anchorIvApiPercent:ivDecimal*100,anchorIvDecimal:ivDecimal,anchorIndex:anchor?.indexPrice??targetIndex,targetIndex,
+   dte:result.timeYears*365,forwardPrice:result.forwardPrice,rate:result.rate,forwardRateAssumption:FORWARD_ASSUMPTION,modelPriceBtc:result.priceBtc,modelName:INVERSE_OPTION_MODEL}};}
+
 function retainModelAnchor(leg:ResearchLegEstimate,series:ContractSeries,target:number,targetIndex:number){
  const anchor=selectIvAnchor(series,target);if(!anchor?.ivDecimal)return leg;
  const modeled=modelLeg(series,target,targetIndex,leg.economicSide,0,anchor);
@@ -100,15 +128,60 @@ export function estimateResearchSpread(input:{spread:RetrievedSpread;targetTimes
 
 
 /** The execution-independent theoretical entry. It never consumes fill/VWAP evidence. */
+/**
+ * Reference (economic) fair value, on the validated hybrid hierarchy.
+ *
+ * Phase 2B/2C scored four estimators on 3,475 frozen holdouts and promoted this
+ * one. Per leg: bracketed same-expiry interpolation under Rule C, else the
+ * existing local exact-contract anchor unchanged, else unavailable.
+ *
+ * The pre-existing leg-coherence requirement is preserved and generalized. It
+ * used to compare two causal anchors; it now compares whichever evidence each
+ * tier actually used, so an interpolated leg cannot be paired with a
+ * twelve-hour-old anchor by a rule that was written to catch exactly that.
+ *
+ * This is Reference fair value only. Execution -- maker, taker, delayed,
+ * modeled -- is untouched, and a missing Reference mark never falls back to
+ * execution evidence.
+ */
 export function estimateModelSpread(input:{spread:RetrievedSpread;targetTimestamp:number;targetIndex:number;amount?:number;slippageBps:number;synchronizationThresholdMs?:number}):ResearchValuation{
  const {spread,targetTimestamp,targetIndex}=input,amount=input.amount??1;
  if(!spread.soldContract||!spread.boughtContract||spread.retrievalStatus!=="ready"||spread.dataStatus==="data-unavailable")return unavailable(targetTimestamp,"Both exact contracts must be resolved before model valuation.","taker");
- const anchors=selectSynchronizedIvAnchors(spread.soldContract,spread.boughtContract,targetTimestamp,input.synchronizationThresholdMs??60*60_000);
- if(!anchors)return{...unavailable(targetTimestamp,"A synchronized causal IV-anchor pair is unavailable.","taker"),reasonCode:"causal-iv-anchor-pair-unavailable"};
- const sold=modelLeg(spread.soldContract,targetTimestamp,targetIndex,"sold",input.slippageBps,anchors.short),bought=modelLeg(spread.boughtContract,targetTimestamp,targetIndex,"bought",input.slippageBps,anchors.long);
- if(!sold||!bought)return{...unavailable(targetTimestamp,"Causal IV anchors do not provide valid model inputs.","taker"),reasonCode:"model-input-invalid"};
- const estimate=assemble({spread,executionMode:"taker",targetTimestamp,targetIndex,amount,slippageBps:input.slippageBps,sold,bought,window:MODEL_IV_ANCHOR_MAX_AGE_MINUTES,quality:"red",reason:"Theoretical IV-normalized valuation from synchronized causal anchors; independent of execution."});
- return estimate.grossSpreadBtcPerContract>0?estimate:{...unavailable(targetTimestamp,"Model valuation does not imply a positive credit.","taker"),reasonCode:"model-non-credit"};
+ const maxGapMs=input.synchronizationThresholdMs??60*60_000;
+ const short=spread.soldContract,long=spread.boughtContract;
+ const ladder=spread.sameExpiryCrossSection??[];
+ // One smile per (target, expiry), built once and read by both legs. Each leg
+ // excludes its OWN prints so an interpolated mark is never partly a restatement
+ // of the contract it is valuing.
+ const crossSectionFor=(exclude:string[])=>ladder.length?buildReferenceCrossSection({sameExpirySeries:ladder,expiryTimestampMs:short.expiryTimestamp,targetTimestampMs:targetTimestamp,underlyingPrice:targetIndex,excludeInstruments:exclude}):null;
+ const shortReference=valueReferenceLeg({leg:short,targetTimestampMs:targetTimestamp,underlyingPrice:targetIndex,crossSection:crossSectionFor([short.instrumentName]),anchor:selectIvAnchor(short,targetTimestamp)});
+ const longReference=valueReferenceLeg({leg:long,targetTimestampMs:targetTimestamp,underlyingPrice:targetIndex,crossSection:crossSectionFor([long.instrumentName]),anchor:selectIvAnchor(long,targetTimestamp)});
+ const referenceProvenance={methodVersion:REFERENCE_VALUATION_METHOD_VERSION,geometryRule:REFERENCE_GEOMETRY_RULE,short:shortReference,long:longReference} as const;
+ if(shortReference.iv_decimal===null||longReference.iv_decimal===null)return{...unavailable(targetTimestamp,"No qualifying Reference evidence: neither bracketed same-expiry interpolation nor a causal exact-contract anchor is available for both legs.","taker"),reasonCode:"reference-evidence-unavailable",referenceProvenance};
+ const synchronization=referenceLegsAreSynchronized(shortReference,longReference,maxGapMs);
+ if(!synchronization.synchronized)return{...unavailable(targetTimestamp,"Reference legs are not synchronized within the configured window.","taker"),reasonCode:"causal-iv-anchor-pair-unavailable",referenceProvenance};
+ const sold=modelLegFromIv(short,targetTimestamp,targetIndex,"sold",input.slippageBps,shortReference.iv_decimal,shortReference.effective_evidence_timestamp_ms??targetTimestamp),bought=modelLegFromIv(long,targetTimestamp,targetIndex,"bought",input.slippageBps,longReference.iv_decimal,longReference.effective_evidence_timestamp_ms??targetTimestamp);
+ if(!sold||!bought)return{...unavailable(targetTimestamp,"Reference IV does not provide valid model inputs.","taker"),reasonCode:"model-input-invalid",referenceProvenance};
+ const estimate=assemble({spread,executionMode:"taker",targetTimestamp,targetIndex,amount,slippageBps:input.slippageBps,sold,bought,window:MODEL_IV_ANCHOR_MAX_AGE_MINUTES,quality:"red",reason:`Reference valuation from ${shortReference.source}/${longReference.source}; independent of execution.`});
+ return estimate.grossSpreadBtcPerContract>0?{...estimate,referenceProvenance}:{...unavailable(targetTimestamp,"Reference valuation does not imply a positive credit.","taker"),reasonCode:"model-non-credit",referenceProvenance};
+}
+
+/**
+ * Which Reference tier produced this valuation, for the saved provenance.
+ *
+ * Derived from the valuation itself rather than assumed, so a saved structure
+ * always names the tier that actually won. A mark with no provenance predates
+ * the hybrid and keeps the historical label.
+ */
+export function referenceValuationSourceOf(valuation:ResearchValuation):"same_expiry_linear_interpolation"|"local_iv_anchor"|"local_iv_interpolation"|"unavailable"{
+ const provenance=valuation.referenceProvenance;
+ if(!provenance)return valuation.status==="priced"?"local_iv_interpolation":"unavailable";
+ const {short,long}=provenance;
+ if(short.source==="unavailable"||long.source==="unavailable")return "unavailable";
+ // A spread is only an interpolation mark when BOTH legs interpolated; a mixed
+ // pair is reported by its weaker tier rather than by its better one.
+ return short.source==="same_expiry_linear_interpolation"&&long.source==="same_expiry_linear_interpolation"
+  ?"same_expiry_linear_interpolation":"local_iv_anchor";
 }
 
 /** Evaluate construction, theoretical value, maker tape and taker tape without inference between layers. */

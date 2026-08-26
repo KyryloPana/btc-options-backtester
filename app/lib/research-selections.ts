@@ -49,7 +49,16 @@ export interface EvidenceTradeDto { evidenceId:string; venue:Venue; instrument:s
 export interface EvidenceUsageDto { evidenceId:string; candidateId:string; role:string; valuationTimestamp:number|null; pricingTrack:string|null; leg:string|null; executionScenario:"maker"|"taker"|null; }
 export type ExecutionScenarioEvaluationStatus = "evaluated" | "unavailable" | "not_evaluated";
 export type ContractResolutionStatus = "exact_resolved"|"nearest_listed_resolved"|"confirmed_not_listed"|"retrieval_failure"|"metadata_unavailable";
-export type ReferenceValuationSource = "causal_exact_trade_anchor"|"historical_mark"|"local_iv_interpolation"|"surface_interpolation"|"surface_extrapolation"|"dvol_anchored_smile_proxy"|"unavailable";
+/**
+ * What actually produced a Reference valuation.
+ *
+ * `same_expiry_linear_interpolation` and `local_iv_anchor` are the two tiers of
+ * the validated hybrid promoted in Phase 2C. They are deliberately NOT folded
+ * into the older `local_iv_interpolation` label: that label names the historical
+ * estimator, and overloading it would make it impossible to tell which
+ * methodology priced any given saved structure.
+ */
+export type ReferenceValuationSource = "causal_exact_trade_anchor"|"historical_mark"|"same_expiry_linear_interpolation"|"local_iv_anchor"|"local_iv_interpolation"|"surface_interpolation"|"surface_extrapolation"|"dvol_anchored_smile_proxy"|"unavailable";
 export interface ContractMetadataSnapshot {instrumentName:string|null;creationTimestamp:number|null;expirationTimestamp:number|null;strike:number|null;optionType:string|null;contractSize:number|null;source:string|null;retrievedAtUtc:string|null;authoritative:boolean;}
 export interface ContractResolutionSnapshot {status:ContractResolutionStatus;reason:string|null;short:ContractMetadataSnapshot|null;long:ContractMetadataSnapshot|null;}
 export interface IndependentTrackSnapshot {status:"valued"|"unavailable"|"not_evaluated";reason:string|null;source:ReferenceValuationSource;entrySnapshot:JsonValue;valuationPathSnapshot:JsonValue[];outcomeSnapshots:JsonValue[];provenance:JsonValue;}

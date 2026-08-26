@@ -3,7 +3,7 @@ import { buildExecutionCalibrationRecords, buildModeledExecution } from "./model
 import { buildResearchMarginSnapshot, LEGACY_MARGIN_NOT_COMPUTED_REASON } from "./research-margin.ts";
 
 export const CURRENT_RESEARCH_ENGINE_VERSIONS={
- immediateExecution:"immediate-scenario-v2",referenceValuation:"causal-reference-v1",
+ immediateExecution:"immediate-scenario-v2",referenceValuation:"causal-reference-v2-hybrid-interpolation",
  delayedExecution:"causal-delayed-v2",modeledExecution:"modeled-execution-v2",
  settlementAccounting:"inverse-settlement-v2",margin:"deribit-standard-margin-v2",
 } as const;

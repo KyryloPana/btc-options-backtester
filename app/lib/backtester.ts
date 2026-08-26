@@ -247,6 +247,13 @@ export interface RetrievedSpread extends DesiredSpread {
   actualWidth?: number;
   soldContract?: ContractSeries;
   boughtContract?: ContractSeries;
+  /**
+   * Listed strikes surrounding this structure on the SAME expiry, retrieved once
+   * per event and expiry and shared by every candidate on it. Reference fair
+   * value reads this for the validated bracketed-interpolation tier; execution
+   * never touches it.
+   */
+  sameExpiryCrossSection?: ContractSeries[];
   soldExistedAtEntry: boolean;
   boughtExistedAtEntry: boolean;
   soldListingStatus?: "listed" | "listing-plausible" | "listing-unknown" | "not-listed";
@@ -1067,6 +1074,15 @@ export function buildExpiryCandidates(
   pricingAssumption: "research-estimate" | "conservative-tape-check" = "conservative-tape-check",
 ): RetrievedSpread[] {
   const inventoryByName = new Map(inventory.map(series => [series.instrumentName, series]));
+  // The same-expiry ladder, grouped ONCE and shared by reference across every
+  // candidate on that expiry. Reference fair value reads it for the validated
+  // bracketed-interpolation tier; the 1k, 2k and 3k width variants and the maker
+  // and taker scenarios all point at the same array rather than rebuilding it.
+  const inventoryByExpiry = new Map<number, ContractSeries[]>();
+  for (const series of inventory) {
+    const group = inventoryByExpiry.get(series.expiryTimestamp);
+    if (group) group.push(series); else inventoryByExpiry.set(series.expiryTimestamp, [series]);
+  }
   const byRequest = new Map<string, ContractCandidateManifest[]>();
   for (const manifest of manifests) {
     const group = byRequest.get(manifest.requestId) ?? [];
@@ -1086,6 +1102,7 @@ export function buildExpiryCandidates(
         ...combo,
         venue: "deribit",
         id: `${combo.id}-${manifest.expiryTimestamp}`,
+        sameExpiryCrossSection: inventoryByExpiry.get(manifest.expiryTimestamp),
         expiryTimestamp: manifest.expiryTimestamp,
         expiryLabel: manifest.expiryLabel,
         actualDte: manifest.actualDte,
