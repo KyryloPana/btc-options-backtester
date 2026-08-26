@@ -45,6 +45,95 @@ export interface DeribitCandidateManifest extends Omit<DesiredRequest, "soldStri
 interface ApiTrade { timestamp: number; price: number; mark_price?: number; iv?: number; instrument_name: string; index_price: number; direction: "buy" | "sell"; amount: number; trade_id?: string; trade_seq: number }
 
 function expiryLabel(timestamp: number) { return new Date(timestamp).toISOString().slice(0, 10); }
+
+/* ==================== same-expiry cross-section retrieval ==================== */
+
+export const CROSS_SECTION_RETRIEVAL_VERSION = "same-expiry-ladder-v1";
+
+/**
+ * How many LISTED strikes either side of the structure's own strikes to retrieve.
+ *
+ * The validated interpolation tier needs the target strike genuinely bracketed
+ * and at least five unique qualifying strikes on the expiry. Fetching only the
+ * two chosen legs -- which is what production did before this -- makes that rule
+ * unsatisfiable by construction, so the ladder is anchored on the STRUCTURE's
+ * strikes rather than on spot: bracketing is a property of the leg, and as the
+ * underlying drifts the leg is exactly what stops being near the traded region.
+ *
+ * Six per side comfortably clears the five-strike rule while bounding retrieval
+ * to roughly thirty instruments per expiry. Chosen from coverage and retrieval
+ * cost, never from pricing error or strategy results.
+ */
+export const LADDER_NEIGHBOUR_DEPTH = 6;
+
+/**
+ * Hard cap on how far the ladder may reach, in log-moneyness relative to the
+ * nearest structure strike. On a sparse ladder six listed strikes can span an
+ * absurd distance; a strike that far away carries no information about the
+ * target and would only cost a retrieval.
+ */
+export const LADDER_MAX_LOG_MONEYNESS = 0.35;
+
+export interface SameExpiryLadder {
+  expiryTimestamp: number;
+  expiryLabel: string;
+  /** The structure strikes this ladder was built around. */
+  targetStrikes: number[];
+  strikes: number[];
+  instrumentNames: string[];
+  neighbourDepth: number;
+  maxLogMoneyness: number;
+  version: string;
+}
+
+/**
+ * Listed strikes surrounding a structure's own strikes on one expiry.
+ *
+ * `chain` must already be gated on `creationTimestamp <= target`: a contract
+ * that did not exist yet is not evidence, and including it here would smuggle a
+ * causality breach into the pricing input.
+ *
+ * Both option types are returned. Under the project's forward = index, rate = 0
+ * convention put-call parity makes a put and a call on one strike observations
+ * of the same total-variance curve, and out-of-the-money puts populate the
+ * downside where out-of-the-money calls simply do not trade.
+ */
+export function sameExpiryLadder(
+  chain: DeribitInstrumentManifest[],
+  targetStrikes: number[],
+  neighbourDepth = LADDER_NEIGHBOUR_DEPTH,
+  maxLogMoneyness = LADDER_MAX_LOG_MONEYNESS,
+): SameExpiryLadder {
+  const targets = [...new Set(targetStrikes.filter(s => Number.isFinite(s) && s > 0))].sort((a, b) => a - b);
+  const listed = [...new Set(chain.map(x => x.strike))].sort((a, b) => a - b);
+  const empty: SameExpiryLadder = {
+    expiryTimestamp: chain[0]?.expiryTimestamp ?? 0,
+    expiryLabel: chain[0]?.expiryLabel ?? "",
+    targetStrikes: targets, strikes: [], instrumentNames: [],
+    neighbourDepth, maxLogMoneyness, version: CROSS_SECTION_RETRIEVAL_VERSION,
+  };
+  if (!targets.length || !listed.length) return empty;
+
+  const low = targets[0]!, high = targets[targets.length - 1]!;
+  // Index span covering the structure's own strikes, extended by `neighbourDepth`
+  // LISTED strikes each side -- listed rather than absolute, so a coarse ladder
+  // still yields neighbours instead of an empty band.
+  const belowIndex = listed.findIndex(s => s >= low);
+  const aboveIndex = listed.reduce((last, s, i) => s <= high ? i : last, -1);
+  const start = Math.max(0, (belowIndex === -1 ? listed.length : belowIndex) - neighbourDepth);
+  const end = Math.min(listed.length - 1, (aboveIndex === -1 ? -1 : aboveIndex) + neighbourDepth);
+  const strikes = listed.slice(start, end + 1)
+    // Distance is measured to the NEAREST structure strike, so a wide structure
+    // does not drag the cap outward on the far side.
+    .filter(s => Math.min(...targets.map(t => Math.abs(Math.log(s / t)))) <= maxLogMoneyness);
+
+  const keep = new Set(strikes);
+  return {
+    ...empty, strikes,
+    instrumentNames: chain.filter(x => keep.has(x.strike))
+      .map(x => x.instrumentName).sort(),
+  };
+}
 /** Resolve both legs together so nearest-strike fallback cannot collapse a spread. */
 export function resolveOrderedPair(chain: DeribitInstrumentManifest[], soldStrike: number, boughtStrike: number) {
   const expected = Math.sign(soldStrike - boughtStrike);
@@ -185,7 +274,7 @@ export class DeribitHistoryService {
     }));
   }
 
-  async resolve(entryTimestamp: number, requests: DesiredRequest[]) {
+  async resolve(entryTimestamp: number, requests: DesiredRequest[], includeCrossSection = true) {
     this.tradeDiagnostics = { receivedRows: 0, acceptedRows: 0, duplicateRows: 0, malformedRows: 0, identityUnavailableRows: 0, rejections: [] };
     await this.loadCache(); await this.waitUntilReady();
     if (!Number.isFinite(entryTimestamp) || !Array.isArray(requests)) throw new Error("A valid entry timestamp and spread requests are required.");
@@ -202,6 +291,32 @@ export class DeribitHistoryService {
         if (sensible) { selected.set(sold!.instrumentName, sold!); selected.set(bought!.instrumentName, bought!); }
       }
     }
+    // Same-expiry ladder, once per expiry and shared by every candidate on it.
+    // `selected` is keyed by instrument name and fetchTradeRange is cached by
+    // (name, start, end), so a strike shared by the 1k, 2k and 3k widths -- or by
+    // the maker and taker scenarios -- is retrieved exactly once.
+    const ladders: SameExpiryLadder[] = [];
+    if (includeCrossSection) {
+      const targetsByExpiry = new Map<number, Set<number>>();
+      for (const candidate of candidates) {
+        if (candidate.soldStrike === undefined || candidate.boughtStrike === undefined) continue;
+        const set = targetsByExpiry.get(candidate.expiryTimestamp) ?? new Set<number>();
+        set.add(candidate.soldStrike); set.add(candidate.boughtStrike);
+        targetsByExpiry.set(candidate.expiryTimestamp, set);
+      }
+      for (const [expiry, targets] of [...targetsByExpiry].sort(([a], [b]) => a - b)) {
+        // Both option types, and gated on listing time exactly as the leg chain is.
+        const chain = this.manifest!.filter(x => x.expiryTimestamp === expiry
+          && (x.creationTimestamp === undefined || x.creationTimestamp <= entryTimestamp));
+        const ladder = sameExpiryLadder(chain, [...targets]);
+        ladders.push(ladder);
+        for (const name of ladder.instrumentNames) {
+          const instrument = chain.find(x => x.instrumentName === name);
+          if (instrument) selected.set(name, instrument);
+        }
+      }
+    }
+
     const files: Array<{name:string;trades:ContractTrade[]}> = [], failures: Array<{ instrumentName: string; cause: string; retryable: boolean }> = []; let cacheHits = 0;
     const jobs = [...selected.values()]; let cursor = 0;
     await Promise.all(Array.from({ length: Math.min(this.concurrency, jobs.length) }, async () => { while (cursor < jobs.length) { const item = jobs[cursor++]; const key = `${item.instrumentName}:${entryTimestamp-7*DAY_MS}:${item.expiryTimestamp}`; if (this.tradeCache.has(key)) cacheHits += 1; try { files.push({ name: item.instrumentName, trades: await this.fetchTradeRange(item.instrumentName, entryTimestamp-7*DAY_MS, item.expiryTimestamp) }); } catch (error) { const cause = error instanceof Error ? error.message : "Unknown retrieval failure"; failures.push({ instrumentName: item.instrumentName, cause, retryable: /network|408|429|HTTP 5\d\d|after retries/i.test(cause) }); } } }));
@@ -229,7 +344,26 @@ export class DeribitHistoryService {
       if (affected.length) { candidate.failedInstruments = affected.map(failure => failure.instrumentName); candidate.retrievalErrors = affected; }
     }
     const inventory = buildInventory(files).map(series => { const manifest = selected.get(series.instrumentName); const hasAmountRules = manifest?.minimumTradeAmount !== undefined && manifest.amountStep !== undefined && manifest.amountPrecision !== undefined; return { ...series, creationTimestamp: manifest?.creationTimestamp, amountMetadata: hasAmountRules ? { minimumTradeAmount: manifest.minimumTradeAmount!, amountStep: manifest.amountStep!, amountPrecision: manifest.amountPrecision!, source: "deribit-instrument-metadata" as const } : undefined }; });
-    return { complete: failures.length === 0, inventory, candidates, failures: failures.map(failure => ({ ...failure, requestIds: candidates.filter(candidate => candidate.failedInstruments?.includes(failure.instrumentName)).map(candidate => candidate.requestId), candidateIds: candidates.filter(candidate => candidate.failedInstruments?.includes(failure.instrumentName)).map(candidate => `${candidate.requestId}:${candidate.expiryTimestamp}`) })), deliveryFailures, diagnostics: { indexedContracts: this.manifest!.length, selectedContracts: selected.size, contractsLoaded: files.length, cacheHits, apiRequestCount: this.requestCount-requestStart, failedContracts: failures.map(failure => failure.instrumentName), unavailableRequests: unavailable, candidateExpiries: candidates.length, validTrades: inventory.reduce((n,x)=>n+x.trades.length,0), tradeRows: { ...this.tradeDiagnostics, acceptedRows: inventory.reduce((n,x)=>n+x.trades.length,0) } } };
+    const legInstruments = new Set(candidates.flatMap(c =>
+      [c.soldInstrumentName, c.boughtInstrumentName].filter((x): x is string => Boolean(x))));
+    const crossSection = {
+      version: CROSS_SECTION_RETRIEVAL_VERSION,
+      enabled: includeCrossSection,
+      neighbourDepth: LADDER_NEIGHBOUR_DEPTH,
+      maxLogMoneyness: LADDER_MAX_LOG_MONEYNESS,
+      entryTimestamp,
+      ladders,
+      // Reuse evidence: distinct instruments actually retrieved against the
+      // number of candidate legs that consume them.
+      expiriesCovered: ladders.length,
+      ladderInstrumentCount: new Set(ladders.flatMap(l => l.instrumentNames)).size,
+      legInstrumentCount: legInstruments.size,
+      candidateLegSlots: candidates.length * 2,
+      instrumentsRetrieved: selected.size,
+      tradeCacheHits: cacheHits,
+      apiRequests: this.requestCount - requestStart,
+    };
+    return { complete: failures.length === 0, inventory, candidates, crossSection, failures: failures.map(failure => ({ ...failure, requestIds: candidates.filter(candidate => candidate.failedInstruments?.includes(failure.instrumentName)).map(candidate => candidate.requestId), candidateIds: candidates.filter(candidate => candidate.failedInstruments?.includes(failure.instrumentName)).map(candidate => `${candidate.requestId}:${candidate.expiryTimestamp}`) })), deliveryFailures, diagnostics: { indexedContracts: this.manifest!.length, selectedContracts: selected.size, contractsLoaded: files.length, cacheHits, apiRequestCount: this.requestCount-requestStart, failedContracts: failures.map(failure => failure.instrumentName), unavailableRequests: unavailable, candidateExpiries: candidates.length, validTrades: inventory.reduce((n,x)=>n+x.trades.length,0), tradeRows: { ...this.tradeDiagnostics, acceptedRows: inventory.reduce((n,x)=>n+x.trades.length,0) } } };
   }
 }
 
@@ -237,5 +371,5 @@ function sendJson(response: ServerResponse, status: number, payload: unknown) { 
 async function body(request: IncomingMessage) { const chunks: Buffer[]=[]; for await (const chunk of request) chunks.push(Buffer.from(chunk)); return chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {}; }
 export function deribitHistoryApiPlugin(options: { baseUrl: string; cachePath: string; fetcher?: FetchLike }): Plugin {
   const service = new DeribitHistoryService(options.baseUrl, options.cachePath, options.fetcher);
-  return { name: "deribit-history-api", apply: "serve", configureServer(server) { server.middlewares.use(API_PREFIX, async (req,res,next) => { const path=new URL(req.url??"/","http://localhost").pathname.replace(API_PREFIX,"")||"/"; try { if(req.method==="GET"&&path==="/status") return sendJson(res,200,await service.status()); if(req.method==="POST"&&path==="/index") { const data=await body(req); return sendJson(res,202,await service.startIndex(data.force===true)); } if(req.method==="POST"&&path==="/resolve") { const data=await body(req); return sendJson(res,200,await service.resolve(Number(data.entryTimestamp),(data.requests??[]) as DesiredRequest[])); } next(); } catch(error) { sendJson(res,400,{error:error instanceof Error?error.message:"Deribit history request failed"}); } }); } };
+  return { name: "deribit-history-api", apply: "serve", configureServer(server) { server.middlewares.use(API_PREFIX, async (req,res,next) => { const path=new URL(req.url??"/","http://localhost").pathname.replace(API_PREFIX,"")||"/"; try { if(req.method==="GET"&&path==="/status") return sendJson(res,200,await service.status()); if(req.method==="POST"&&path==="/index") { const data=await body(req); return sendJson(res,202,await service.startIndex(data.force===true)); } if(req.method==="POST"&&path==="/resolve") { const data=await body(req); return sendJson(res,200,await service.resolve(Number(data.entryTimestamp),(data.requests??[]) as DesiredRequest[],data.includeCrossSection!==false)); } next(); } catch(error) { sendJson(res,400,{error:error instanceof Error?error.message:"Deribit history request failed"}); } }); } };
 }
