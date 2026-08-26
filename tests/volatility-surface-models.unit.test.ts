@@ -132,6 +132,17 @@ test("AGGREGATION: total variance is IV^2 * T and carries the slice maturity", (
   assert.equal(aggregateStrike([]), null);
 });
 
+test("AGGREGATION: a fractional weighted evidence time is floored without losing diagnostic precision", () => {
+  const points = aggregateSlice(observationsOf([
+    print({timestampMs: T - 5 * MIN, tradeId: "fraction-a"}),
+    print({timestampMs: T - 5 * MIN + 1, tradeId: "fraction-b"}),
+  ]));
+  const point = points[0]!;
+  assert.ok(!Number.isInteger(point.effective_timestamp_raw_ms));
+  assert.equal(point.effective_timestamp_ms, Math.floor(point.effective_timestamp_raw_ms!));
+  assert.ok(point.effective_timestamp_ms <= point.effective_timestamp_raw_ms!);
+});
+
 test("COMPATIBILITY: matched call/put strikes are measured rather than assumed equal", () => {
   const compat = assessCallPutCompatibility(aggregateSlice(observationsOf([
     print({strike: 104_000, instrumentName: "BTC-23JUN25-104000-C", optionType: "C", tradeId: "c1", ivApiPercent: 40}),
