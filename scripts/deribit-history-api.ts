@@ -170,6 +170,9 @@ export class DeribitHistoryService {
     this.baseUrl = baseUrl.replace(/\/$/, "");
   }
 
+  /** Total upstream requests issued, for retrieval auditing. */
+  get totalRequestCount(): number { return this.requestCount; }
+
   private async api(method: string, params: Record<string, string | number | boolean>) {
     return deribitApiRequest(this.fetcher, this.baseUrl, method, params, () => { this.requestCount += 1; });
   }

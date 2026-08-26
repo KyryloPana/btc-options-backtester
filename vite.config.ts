@@ -10,6 +10,8 @@ import { deribitHistoryApiPlugin } from "./scripts/deribit-history-api";
 import { deribitPerpetualApiPlugin, PERPETUAL_FUNDING_HOST } from "./scripts/deribit-perpetual-history";
 import { tradeDatasetApiPlugin } from "./scripts/trade-dataset-service";
 import { researchSelectionApiPlugin } from "./scripts/research-selection-service";
+import { DeribitHistoryService } from "./scripts/deribit-history-api";
+import { createResearchRecomputeEngine } from "./scripts/research-recompute-engine";
 import { researchBundleApiPlugin } from "./scripts/research-bundle-service";
 
 async function exists(path: string): Promise<boolean> {
@@ -124,7 +126,19 @@ export default defineConfig(async ({ mode }) => {
     plugins: [
       vinext(),
       tradeDatasetApiPlugin(),
-      researchSelectionApiPlugin(),
+      // The recompute engine is injected here so the route can rebuild derived
+      // research for selections that already exist, against the same Deribit
+      // history service the rest of the app uses.
+      researchSelectionApiPlugin(undefined, async store => {
+        const service = new DeribitHistoryService(
+          localEnv.DERIBIT_HISTORY_API_URL || process.env.DERIBIT_HISTORY_API_URL || "https://history.deribit.com/api/v2/public",
+          resolve(process.cwd(), ".local-cache", "deribit-instruments.json"));
+        await service.startIndex();
+        await service.waitUntilReady();
+        const {engine, prime} = createResearchRecomputeEngine({service});
+        prime(store);
+        return engine;
+      }),
       researchBundleApiPlugin(),
       deribitHistoryApiPlugin({
         baseUrl: localEnv.DERIBIT_HISTORY_API_URL || process.env.DERIBIT_HISTORY_API_URL || "https://history.deribit.com/api/v2/public",
