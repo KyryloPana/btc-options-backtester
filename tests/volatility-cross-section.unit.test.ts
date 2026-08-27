@@ -17,6 +17,7 @@ import {
   readCrossSectionObservations, readCrossSectionSnapshots, writeCrossSectionShards,
 } from "../scripts/cross-section-cache.ts";
 import {OPTION_HISTORY_HOST} from "../app/lib/volatility/reference-series.ts";
+import {priceInverseOption} from "../app/lib/inverse-option-pricing.ts";
 
 /**
  * The causal cross-sectional IV observation layer.
@@ -164,7 +165,7 @@ test("DEDUPE: duplicates are removed BEFORE counting, so no diagnostic is inflat
 test("COORDINATES: log-moneyness, actual DTE and total implied variance are exact", () => {
   const snapshot = snapshotOf([print({strike: 110_000, instrumentName: "BTC-23JUN25-110000-C", ivApiPercent: 50})]);
   const o = snapshot.observations[0]!;
-  assert.ok(Math.abs(o.log_moneyness - Math.log(110_000 / SPOT)) < 1e-12);
+  assert.ok(Math.abs(o.log_moneyness - Math.log(110_000 / o.forward_price)) < 1e-12);
   assert.ok(Math.abs(o.actual_dte_days - (EXPIRY - T) / 86_400_000) < 1e-12);
   const years = (EXPIRY - T) / YEAR_MS;
   assert.ok(Math.abs(o.time_to_expiry_years - years) < 1e-15);
@@ -178,7 +179,7 @@ test("COORDINATES: log-moneyness, actual DTE and total implied variance are exac
 test("COORDINATES: the forward convention is stated, not implied", () => {
   const snapshot = snapshotOf([print()]);
   assert.equal(snapshot.forward_convention, FORWARD_CONVENTION);
-  assert.equal(snapshot.observations[0]!.forward_convention, "forward_equals_index_rate_zero");
+  assert.equal(snapshot.observations[0]!.forward_convention, "causal_option_trade_implied_expiry_forward");
   assert.equal(snapshot.observations[0]!.dataset_id, HISTORICAL_OPTION_IV_DATASET_ID);
   assert.equal(snapshot.observations[0]!.method_version, CROSS_SECTION_METHOD_VERSION);
 });
@@ -316,10 +317,10 @@ const readinessOf = (legStrikes: readonly [number, number], observed: readonly n
   adjacent: readonly number[][] = []) => {
   const snapshot = snapshotOf([
     ...ladder(observed),
-    ...adjacent.flatMap((strikes, i) => strikes.map(strike => print({
-      strike, expiryTimestampMs: FAR_EXPIRY + i * 86_400_000,
+    ...adjacent.flatMap((strikes, i) => strikes.map(strike => {const expiry=FAR_EXPIRY+i*86_400_000,priced=priceInverseOption({optionType:"call",indexPrice:SPOT,strike,valuationTimestamp:T-10*MIN,expiryTimestamp:expiry,ivDecimal:.42,forwardPrice:SPOT});return print({
+      strike, expiryTimestampMs: expiry, price:priced.status==="priced"?priced.priceBtc:null,
       instrumentName: `BTC-ADJ${i}-${strike}-C`, tradeId: `adj-${i}-${strike}`,
-    }))),
+    })})),
   ]);
   const slice = sliceFor(snapshot, EXPIRY);
   const observations = observationsFor(snapshot, EXPIRY);

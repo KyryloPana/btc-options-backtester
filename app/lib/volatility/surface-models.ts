@@ -32,8 +32,8 @@
 import {priceInverseOption} from "../inverse-option-pricing.ts";
 import type {AggregatedStrikeObservation} from "./strike-aggregation.ts";
 
-export const LOCAL_IV_ANCHOR_METHOD_VERSION = "local_iv_anchor_v1" as const;
-export const LINEAR_INTERPOLATION_METHOD_VERSION = "same_expiry_linear_interpolation_v1" as const;
+export const LOCAL_IV_ANCHOR_METHOD_VERSION = "local_iv_anchor_v2_expiry_forward" as const;
+export const LINEAR_INTERPOLATION_METHOD_VERSION = "same_expiry_linear_interpolation_v2_expiry_forward" as const;
 export const SVI_METHOD_VERSION = "same_expiry_svi_v1" as const;
 export const SSVI_ESTIMATE_METHOD_VERSION = "ssvi_power_law_v1" as const;
 
@@ -52,6 +52,7 @@ export type EstimateUnavailableReason =
   | "fit_economically_invalid"
   | "non_positive_total_variance"
   | "pricing_unavailable"
+  | "forward_unavailable"
   | "surface_not_identifiable_final_day";
 
 export interface SurfaceEstimate {
@@ -74,6 +75,7 @@ export interface EstimationTarget {
   readonly logMoneyness: number;
   readonly timeToExpiryYears: number;
   readonly underlyingPrice: number;
+  readonly forwardPrice?: number;
   readonly targetTimestampMs: number;
   readonly expiryTimestampMs: number;
 }
@@ -99,11 +101,13 @@ function priced(
 ): SurfaceEstimate {
   if (!Number.isFinite(iv) || iv <= 0)
     return unavailable(methodVersion, "non_positive_total_variance", observationCount, diagnostics);
+  if (!(target.forwardPrice && Number.isFinite(target.forwardPrice) && target.forwardPrice > 0))
+    return unavailable(methodVersion, "forward_unavailable", observationCount, diagnostics);
   const result = priceInverseOption({
     optionType: target.optionType === "C" ? "call" : "put",
     indexPrice: target.underlyingPrice, strike: target.strike,
     valuationTimestamp: target.targetTimestampMs, expiryTimestamp: target.expiryTimestampMs,
-    ivDecimal: iv,
+    ivDecimal: iv, forwardPrice: target.forwardPrice,
   });
   if (result.status !== "priced")
     return unavailable(methodVersion, "pricing_unavailable", observationCount,
@@ -549,7 +553,7 @@ export function estimateSsvi(
 
 /* ==================== 5. the candidate hybrid ==================== */
 
-export const HYBRID_METHOD_VERSION = "hybrid_bracketed_interpolation_anchor_v1" as const;
+export const HYBRID_METHOD_VERSION = "hybrid_bracketed_interpolation_anchor_v2_expiry_forward" as const;
 
 /**
  * Structural eligibility rules for the interpolation tier.

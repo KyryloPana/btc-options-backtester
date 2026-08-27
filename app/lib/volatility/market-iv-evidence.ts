@@ -84,6 +84,7 @@ export type MarketIvRejectionCode =
   | "missing_iv"
   | "non_positive_iv"
   | "missing_index_price"
+  | "forward_unavailable"
   | "self_leg_excluded"
   | "moneyness_outside_tolerance"
   | "no_qualifying_observation"
@@ -160,6 +161,8 @@ export interface AdmissionContext {
   readonly targetTimestampMs: number;
   /** Causal underlying at the target. Used for log-moneyness. */
   readonly underlyingPrice: number;
+  /** Causal forward for this candidate's expiry; required for forward moneyness. */
+  readonly forwardPrice?: number;
   readonly maxAgeMinutes?: number;
   /**
    * Instruments excluded to keep a reference self-reference-safe -- typically
@@ -239,7 +242,7 @@ export function admitMarketIvTrade(candidate: RawIvTradeCandidate, context: Admi
       ivApiPercent: percent ?? decimal * 100,
       indexPrice: index,
       underlyingPrice: underlying,
-      logMoneyness: Math.log(strike / underlying),
+      logMoneyness: Math.log(strike / (finite(context.forwardPrice) ?? underlying)),
       actualDteDays: (expiry - target) / 86_400_000,
     },
   };

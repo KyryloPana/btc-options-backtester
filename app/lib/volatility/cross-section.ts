@@ -31,20 +31,20 @@ import {
   type AdmittedIvTrade, type MarketIvRejectionCode, type RawIvTradeCandidate,
 } from "./market-iv-evidence.ts";
 import {contentHash} from "./reference-series.ts";
+import {resolveExpiryForward,EXPIRY_FORWARD_METHOD_VERSION,type ExpiryForwardEstimate} from "./expiry-forward.ts";
 
-export const HISTORICAL_OPTION_IV_DATASET_ID = "deribit-btc-historical-option-iv-v1" as const;
-export const CROSS_SECTION_METHOD_VERSION = "cross-sectional-iv-observations-v1" as const;
-export const SURFACE_READINESS_METHOD_VERSION = "surface-readiness-v1" as const;
+export const HISTORICAL_OPTION_IV_DATASET_ID = "deribit-btc-historical-option-iv-v2-expiry-forward" as const;
+export const CROSS_SECTION_METHOD_VERSION = "cross-sectional-iv-observations-v2-forward-moneyness" as const;
+export const SURFACE_READINESS_METHOD_VERSION = "surface-readiness-v2-forward-moneyness" as const;
 
 /**
  * Forward convention, stated explicitly so it stays comparable later.
  *
- * Current research pricing uses forward = index and rate = 0 when a forward is
- * unavailable. This module preserves exactly that and introduces NO new
- * interest-rate or forward convention. When a real forward curve arrives it must
- * arrive as a new method version, not as a silent change here.
+ * Forward is reconstructed causally from same-expiry option trades. Missing
+ * forward evidence makes the authoritative cross-section unavailable; it is
+ * never silently replaced by the index.
  */
-export const FORWARD_CONVENTION = "forward_equals_index_rate_zero" as const;
+export const FORWARD_CONVENTION = "causal_option_trade_implied_expiry_forward" as const;
 
 export const YEAR_MS = 365 * 24 * 3_600_000;
 
@@ -94,6 +94,10 @@ export interface CrossSectionObservation {
   readonly within_diagnostic_window: boolean;
   /* surface coordinates */
   readonly underlying_price: number;
+  readonly forward_price: number;
+  readonly forward_method_version: string;
+  readonly forward_evidence_timestamp_ms: number | null;
+  readonly forward_observation_count: number;
   readonly forward_convention: string;
   readonly log_moneyness: number;
   readonly time_to_expiry_years: number;
@@ -199,16 +203,20 @@ export function admitCrossSection(input: {
   const {prints, duplicatesRemoved} = dedupePrints(input.prints);
   const rejected: Partial<Record<MarketIvRejectionCode, number>> = {};
   const observations: CrossSectionObservation[] = [];
+  const forwardByExpiry=new Map<number,ExpiryForwardEstimate>();
   let admitted = 0, excludedByEnvelope = 0;
 
   for (const print of prints) {
+    let forward=forwardByExpiry.get(print.expiryTimestampMs);if(!forward){forward=resolveExpiryForward({trades:prints,targetTimestampMs:input.targetTimestampMs,expiryTimestampMs:print.expiryTimestampMs,indexPrice:input.underlyingPrice,excludedInstruments:input.excludedInstruments,maxAgeMinutes:maxAge});forwardByExpiry.set(print.expiryTimestampMs,forward)}
     const result = admitMarketIvTrade(print, {
       targetTimestampMs: input.targetTimestampMs,
       underlyingPrice: input.underlyingPrice,
       maxAgeMinutes: maxAge,
       excludedInstruments: input.excludedInstruments,
+      forwardPrice: forward.status==="available" ? forward.forwardPrice ?? undefined : undefined,
     });
     if (!result.admitted) { rejected[result.code] = (rejected[result.code] ?? 0) + 1; continue; }
+    if(forward.status!=="available"||forward.forwardPrice===null){rejected.forward_unavailable=(rejected.forward_unavailable??0)+1;continue}
     const o = result.observation;
     if (input.logMoneynessEnvelope != null && Math.abs(o.logMoneyness) > input.logMoneynessEnvelope) {
       excludedByEnvelope += 1;
@@ -247,7 +255,10 @@ export function admitCrossSection(input: {
       // is precisely the contamination the diagnostic window exists to avoid.
       passes_market_state_rule: o.ageMinutes >= 0 && o.ageMinutes <= MARKET_IV_MAX_AGE_MINUTES,
       within_diagnostic_window: o.ageMinutes >= 0 && o.ageMinutes <= diagnosticAge,
-      underlying_price: o.underlyingPrice, forward_convention: FORWARD_CONVENTION,
+      underlying_price: o.underlyingPrice, forward_price: forward.forwardPrice,
+      forward_method_version: EXPIRY_FORWARD_METHOD_VERSION, forward_convention: FORWARD_CONVENTION,
+      forward_evidence_timestamp_ms: forward.evidenceTimestampMs,
+      forward_observation_count: forward.observationCount,
       log_moneyness: coords.logMoneyness,
       time_to_expiry_years: coords.timeToExpiryYears,
       total_implied_variance: coords.totalImpliedVariance,
@@ -308,6 +319,7 @@ export function expirySliceDiagnostics(
   underlyingPrice: number,
 ): ExpirySliceDiagnostics {
   const first = observations[0];
+  const geometryForward = first?.forward_price ?? underlyingPrice;
   const ages = observations.map(o => o.age_minutes).sort((a, b) => a - b);
   const byStrike = new Map<number, CrossSectionObservation[]>();
   for (const o of observations) {
@@ -317,15 +329,15 @@ export function expirySliceDiagnostics(
   const strikes: StrikeGeometry[] = [...byStrike.entries()]
     .sort(([a], [b]) => a - b)
     .map(([strike, group]) => ({
-      strike, log_moneyness: Math.log(strike / underlyingPrice),
+      strike, log_moneyness: Math.log(strike / geometryForward),
       observation_count: group.length,
       call_count: group.filter(o => o.option_type === "C").length,
       put_count: group.filter(o => o.option_type === "P").length,
       freshest_age_minutes: Math.min(...group.map(o => o.age_minutes)),
     }));
   const logMoneyness = observations.map(o => o.log_moneyness);
-  const below = strikes.filter(s => s.strike < underlyingPrice).length;
-  const above = strikes.filter(s => s.strike > underlyingPrice).length;
+  const below = strikes.filter(s => s.strike < geometryForward).length;
+  const above = strikes.filter(s => s.strike > geometryForward).length;
 
   return {
     expiry_timestamp_utc: first?.expiry_timestamp_utc ?? new Date(0).toISOString(),
@@ -401,7 +413,8 @@ export function classifyLeg(input: {
   readonly minimumStrikesPerSide?: number;
 }): LegEvidence {
   const minimumPerSide = input.minimumStrikesPerSide ?? 1;
-  const logMoneyness = Math.log(input.strike / input.underlyingPrice);
+  const forward = input.observations[0]?.forward_price;
+  const logMoneyness = forward && forward > 0 ? Math.log(input.strike / forward) : Number.NaN;
   const base = {
     leg: input.leg, strike: input.strike, option_type: input.optionType,
     instrument_name: input.instrumentName, log_moneyness: logMoneyness,
@@ -616,7 +629,7 @@ export interface SurfaceSnapshot {
  */
 export function snapshotContentHash(observations: readonly CrossSectionObservation[]): string {
   return contentHash([...observations]
-    .map(o => [o.instrument_name, o.trade_id, o.timestamp_ms, o.iv_api_percentage, o.index_price])
+    .map(o => [o.instrument_name, o.trade_id, o.timestamp_ms, o.iv_api_percentage, o.index_price,o.forward_price])
     .sort((a, b) => String(a).localeCompare(String(b))));
 }
 

@@ -42,7 +42,7 @@ import {
  * estimator. Reusing it for different economics would make every historical
  * bundle silently claim to have been priced this way.
  */
-export const REFERENCE_VALUATION_METHOD_VERSION = "causal-reference-v2-hybrid-interpolation" as const;
+export const REFERENCE_VALUATION_METHOD_VERSION = "causal-reference-v3-expiry-forward-hybrid" as const;
 export const LEGACY_REFERENCE_VALUATION_METHOD_VERSION = "causal-reference-v1" as const;
 
 /** Rule C, as validated in Phase 2C. Not a tuned number: a validated one. */
@@ -114,6 +114,14 @@ export interface ReferenceLegValuation {
   readonly target_timestamp_utc: string;
   readonly expiry_timestamp_utc: string;
   readonly underlying_price: number;
+  readonly forward_price: number | null;
+  readonly forward_source: string;
+  readonly forward_method_version: string | null;
+  readonly forward_evidence_timestamp_ms: number | null;
+  readonly forward_observation_count: number;
+  readonly rate: number | null;
+  readonly forward_moneyness: number | null;
+  readonly forward_unavailable_reason: string | null;
   /* interpolation provenance */
   readonly lower_strike: number | null;
   readonly upper_strike: number | null;
@@ -174,6 +182,11 @@ export interface ReferenceCrossSection {
   readonly observationCount: number;
   readonly maxAgeMinutes: number;
   readonly underlyingPrice: number;
+  readonly forwardPrice: number | null;
+  readonly forwardMethodVersion: string | null;
+  readonly forwardEvidenceTimestampMs: number | null;
+  readonly forwardObservationCount: number;
+  readonly forwardUnavailableReason: string | null;
 }
 
 /**
@@ -211,6 +224,11 @@ export function buildReferenceCrossSection(input: {
     observationCount: admitted.observations.length,
     maxAgeMinutes: maxAge,
     underlyingPrice: input.underlyingPrice,
+    forwardPrice: admitted.observations[0]?.forward_price ?? null,
+    forwardMethodVersion: admitted.observations[0]?.forward_method_version ?? null,
+    forwardEvidenceTimestampMs: admitted.observations[0]?.forward_evidence_timestamp_ms ?? null,
+    forwardObservationCount: admitted.observations[0]?.forward_observation_count ?? 0,
+    forwardUnavailableReason: admitted.observations.length?null:"no_causal_forward_evidence",
   };
 }
 
@@ -242,6 +260,14 @@ export function valueReferenceLeg(input: ReferenceLegInput): ReferenceLegValuati
     target_timestamp_utc: new Date(input.targetTimestampMs).toISOString(),
     expiry_timestamp_utc: new Date(leg.expiryTimestamp).toISOString(),
     underlying_price: input.underlyingPrice,
+    forward_price: input.crossSection?.forwardPrice ?? null,
+    forward_source: input.crossSection?.forwardPrice ? "option_trade_implied_forward" : "unavailable",
+    forward_method_version: input.crossSection?.forwardMethodVersion ?? null,
+    forward_evidence_timestamp_ms: input.crossSection?.forwardEvidenceTimestampMs ?? null,
+    forward_observation_count: input.crossSection?.forwardObservationCount ?? 0,
+    rate: input.crossSection?.forwardPrice ? Math.log(input.crossSection.forwardPrice/input.underlyingPrice)/((leg.expiryTimestamp-input.targetTimestampMs)/(365*24*3_600_000)) : null,
+    forward_moneyness: input.crossSection?.forwardPrice ? Math.log(leg.strike/input.crossSection.forwardPrice) : null,
+    forward_unavailable_reason: input.crossSection?.forwardPrice ? null : input.crossSection?.forwardUnavailableReason ?? "no_causal_forward_evidence",
     max_evidence_age_minutes: input.crossSection?.maxAgeMinutes ?? MARKET_IV_MAX_AGE_MINUTES,
     unique_qualifying_strike_count: input.crossSection?.uniqueStrikeCount ?? 0,
     qualifying_observation_count: input.crossSection?.observationCount ?? 0,
@@ -249,9 +275,10 @@ export function valueReferenceLeg(input: ReferenceLegInput): ReferenceLegValuati
 
   const target: EstimationTarget = {
     strike: leg.strike, optionType,
-    logMoneyness: Math.log(leg.strike / input.underlyingPrice),
+    logMoneyness: input.crossSection?.forwardPrice ? Math.log(leg.strike / input.crossSection.forwardPrice) : Number.NaN,
     timeToExpiryYears: (leg.expiryTimestamp - input.targetTimestampMs) / (365 * 24 * 3_600_000),
     underlyingPrice: input.underlyingPrice,
+    forwardPrice: input.crossSection?.forwardPrice ?? undefined,
     targetTimestampMs: input.targetTimestampMs,
     expiryTimestampMs: leg.expiryTimestamp,
   };
