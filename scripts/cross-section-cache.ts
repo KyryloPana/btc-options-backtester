@@ -40,6 +40,8 @@ export interface InstrumentMeta {
   readonly expiryTimestampMs: number;
   readonly createdAtMs: number;
   readonly settlementPeriod: string;
+  readonly contractSize: number | null;
+  readonly minimumTradeAmount: number | null;
 }
 
 export interface RetrievalOptions {
@@ -110,6 +112,7 @@ export class CrossSectionRetrieval {
         instrumentName: name, strike, optionType: r.option_type === "put" ? "P" : "C",
         expiryTimestampMs: expiry, createdAtMs: created,
         settlementPeriod: str(r.settlement_period) ?? "unknown",
+        contractSize: num(r.contract_size), minimumTradeAmount: num(r.min_trade_amount),
       });
     }
     this.#manifest = out;

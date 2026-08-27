@@ -15,7 +15,9 @@
     "scripts/measure-reference-tier-usage.ts",
     "scripts/research-recompute-engine.ts",
     "scripts/run-research-recompute.ts",
-    "scripts/audit-recompute-migration.ts"
+    "scripts/audit-recompute-migration.ts",
+    "app/lib/execution-calibration.ts",
+    "scripts/build-execution-calibration.ts"
   ],
   "exclude": ["node_modules"]
 }

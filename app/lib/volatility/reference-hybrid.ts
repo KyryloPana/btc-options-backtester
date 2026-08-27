@@ -32,7 +32,7 @@ import {admitCrossSection, type RawOptionPrint} from "./cross-section.ts";
 import {aggregateSlice, type AggregatedStrikeObservation} from "./strike-aggregation.ts";
 import {
   LINEAR_INTERPOLATION_METHOD_VERSION, LOCAL_IV_ANCHOR_METHOD_VERSION,
-  estimateLinearInterpolation, type EstimationTarget,
+  estimateLinearInterpolation, type EstimationTarget, type SurfaceEstimate,
 } from "./surface-models.ts";
 
 /**
@@ -48,6 +48,42 @@ export const LEGACY_REFERENCE_VALUATION_METHOD_VERSION = "causal-reference-v1" a
 /** Rule C, as validated in Phase 2C. Not a tuned number: a validated one. */
 export const RULE_C_MINIMUM_UNIQUE_STRIKES = 5 as const;
 export const REFERENCE_GEOMETRY_RULE = "rule_c_bracketed_min_5_unique_strikes" as const;
+
+export interface RuleCInterpolationEvaluation {
+  readonly estimate: SurfaceEstimate | null;
+  readonly declineReason: ReferenceDeclineReason | null;
+  readonly uniqueStrikeCount: number;
+  readonly lower: AggregatedStrikeObservation | null;
+  readonly upper: AggregatedStrikeObservation | null;
+  readonly contributors: readonly AggregatedStrikeObservation[];
+}
+
+/** Authoritative production Rule-C gate plus the validated interpolation. */
+export function evaluateRuleCInterpolation(
+  points: readonly AggregatedStrikeObservation[], target: EstimationTarget,
+  minimumUniqueStrikes: number = RULE_C_MINIMUM_UNIQUE_STRIKES,
+): RuleCInterpolationEvaluation {
+  const uniqueStrikeCount = new Set(points.map(point => point.strike)).size;
+  const lower = [...points].filter(point => point.log_moneyness < target.logMoneyness)
+    .sort((a, b) => a.log_moneyness - b.log_moneyness).at(-1) ?? null;
+  const upper = [...points].filter(point => point.log_moneyness > target.logMoneyness)
+    .sort((a, b) => a.log_moneyness - b.log_moneyness)[0] ?? null;
+  const exact = points.filter(point => point.log_moneyness === target.logMoneyness);
+  const contributors = exact.length ? exact : [lower, upper].filter(
+    (point): point is AggregatedStrikeObservation => point !== null);
+  if (!points.length) return {estimate: null, declineReason: "no_qualifying_same_expiry_observations",
+    uniqueStrikeCount, lower, upper, contributors};
+  if (uniqueStrikeCount < minimumUniqueStrikes)
+    return {estimate: null, declineReason: "unique_strike_count_below_minimum",
+      uniqueStrikeCount, lower, upper, contributors};
+  const estimate = estimateLinearInterpolation(points, target);
+  if (estimate.status === "available" && estimate.iv_decimal !== null)
+    return {estimate, declineReason: null, uniqueStrikeCount, lower, upper, contributors};
+  const declineReason = estimate.unavailable_reason === "target_outside_observed_strike_range"
+    ? "target_not_bracketed" : estimate.unavailable_reason === "insufficient_observations"
+      ? "unique_strike_count_below_minimum" : "interpolation_returned_no_value";
+  return {estimate, declineReason, uniqueStrikeCount, lower, upper, contributors};
+}
 
 export type ReferenceValuationSource =
   | "same_expiry_linear_interpolation"
@@ -225,17 +261,11 @@ export function valueReferenceLeg(input: ReferenceLegInput): ReferenceLegValuati
   let decline: ReferenceDeclineReason | null = null;
   const points = input.crossSection?.points ?? [];
   if (!input.crossSection) decline = "cross_section_unavailable";
-  else if (!points.length) decline = "no_qualifying_same_expiry_observations";
-  else if (input.crossSection.uniqueStrikeCount < minimumStrikes) decline = "unique_strike_count_below_minimum";
   else {
-    const estimate = estimateLinearInterpolation(points, target);
-    if (estimate.status === "available" && estimate.iv_decimal !== null) {
-      const below = [...points].filter(p => p.log_moneyness < target.logMoneyness)
-        .sort((a, b) => a.log_moneyness - b.log_moneyness).at(-1) ?? null;
-      const above = [...points].filter(p => p.log_moneyness > target.logMoneyness)
-        .sort((a, b) => a.log_moneyness - b.log_moneyness)[0] ?? null;
-      const exact = points.filter(p => p.log_moneyness === target.logMoneyness);
-      const contributors = exact.length ? exact : [below, above].filter((x): x is AggregatedStrikeObservation => x !== null);
+    const ruleC = evaluateRuleCInterpolation(points, target, minimumStrikes);
+    const estimate = ruleC.estimate;
+    if (ruleC.declineReason === null && estimate?.status === "available" && estimate.iv_decimal !== null) {
+      const {lower: below, upper: above, contributors} = ruleC;
       const freshest = contributors.length
         ? Math.max(...contributors.map(p => p.effective_timestamp_ms)) : null;
       return {
@@ -254,10 +284,7 @@ export function valueReferenceLeg(input: ReferenceLegInput): ReferenceLegValuati
     }
     // The estimator refuses to extrapolate; that refusal is the validated
     // behaviour and is recorded as such rather than as a failure.
-    decline = estimate.unavailable_reason === "target_outside_observed_strike_range"
-      ? "target_not_bracketed"
-      : estimate.unavailable_reason === "insufficient_observations"
-        ? "unique_strike_count_below_minimum" : "interpolation_returned_no_value";
+    decline = ruleC.declineReason;
   }
 
   /* ---- Tier 2: existing local exact-contract anchor, unchanged ---- */
