@@ -30,11 +30,24 @@ export function validateTradeDataset(value: unknown): { ok: true; dataset: Trade
     if (typeof trade.label !== "string" || !trade.label.trim()) add("label", "Label is required.");
     if (trade.direction !== "long" && trade.direction !== "short") add("direction", "Direction must be long or short.");
     if (!validDate(trade.entryDate)) add("entryDate", "A valid YYYY-MM-DD date is required.");
-    if (trade.exitDate !== undefined && !validDate(trade.exitDate)) add("exitDate", "A valid YYYY-MM-DD date is required when present.");
+    for (const field of ["exitDate", "extremeDate", "vpocDate"] as const) if (trade[field] !== undefined && !validDate(trade[field])) add(field, "A valid YYYY-MM-DD date is required when present.");
     if (!finite(trade.entryPrice)) add("entryPrice", "A finite number is required.");
     if (trade.exitPrice !== undefined && !finite(trade.exitPrice)) add("exitPrice", "A finite number is required when present.");
-    for (const field of ["extremePrice", "vpocPrice", "vpocTimestamp", "invalidationPrice", "rangeLow", "rangeHigh", "entryTimestamp", "exitTimestamp"] as const) if (trade[field] !== undefined && !finite(trade[field])) add(field, "Must be a finite number when present.");
-    if (trade.entryTimestamp !== undefined && validDate(trade.entryDate)) { const start=Date.parse(`${trade.entryDate}T00:00:00Z`), end=start+86_400_000; if (trade.entryTimestamp < start || trade.entryTimestamp >= end) add("entryTimestamp", "First-touch timestamp must fall on the entry date."); }
+    for (const field of ["extremePrice", "extremeTimestamp", "vpocPrice", "vpocTimestamp", "invalidationPrice", "rangeLow", "rangeHigh", "entryTimestamp", "exitTimestamp"] as const) if (trade[field] !== undefined && !finite(trade[field])) add(field, "Must be a finite number when present.");
+    // A date and a timestamp describing the SAME semantic point must agree on the
+    // UTC day. Timestamps are never inferred from dates, nor dates from
+    // timestamps -- disagreement is reported, not repaired.
+    for (const [dateField, timeField, label] of [
+      ["entryDate", "entryTimestamp", "First-touch timestamp must fall on the entry date."],
+      ["exitDate", "exitTimestamp", "Exit timestamp must fall on the exit date."],
+      ["extremeDate", "extremeTimestamp", "Extreme timestamp must fall on the extreme date."],
+      ["vpocDate", "vpocTimestamp", "VPOC timestamp must fall on the VPOC date."],
+    ] as const) {
+      const day = trade[dateField], instant = trade[timeField];
+      if (instant === undefined || !finite(instant) || !validDate(day)) continue;
+      const start = Date.parse(`${day}T00:00:00Z`);
+      if (instant < start || instant >= start + 86_400_000) add(timeField, label);
+    }
     if (validDate(trade.entryDate) && validDate(trade.exitDate) && Date.parse(`${trade.exitDate}T00:00:00Z`) < Date.parse(`${trade.entryDate}T00:00:00Z`)) add("exitDate", "Exit cannot precede entry.");
     if (trade.entryTimestamp !== undefined && trade.exitTimestamp !== undefined && trade.exitTimestamp < trade.entryTimestamp) add("exitTimestamp", "Exit timestamp cannot precede first touch.");
     if (trade.entryTimeSource !== undefined && !["manual", "resolved", "provisional"].includes(trade.entryTimeSource)) add("entryTimeSource", "Unknown entry time source.");

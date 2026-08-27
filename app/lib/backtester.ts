@@ -93,6 +93,10 @@ export interface BacktestEvent {
   exitPrice?: number;
   exitTimestamp?: number;
   extremePrice?: number;
+  /** UTC calendar day the extreme was recorded on. First-class, not incidental JSON. */
+  extremeDate?: string;
+  /** Exact instant of the extreme, UTC ms. Never inferred from `extremeDate`. */
+  extremeTimestamp?: number;
   vpocPrice?: number;
   vpocDate?: string;
   vpocTimestamp?: number;
