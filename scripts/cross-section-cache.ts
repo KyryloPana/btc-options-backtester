@@ -56,6 +56,7 @@ export class CrossSectionRetrieval {
   readonly #windows = new Map<string, RawOptionPrint[]>();
   #manifest: InstrumentMeta[] | null = null;
   #requests = 0;
+  #incompleteLeafWindows: Array<{fromMs:number;toMs:number;count:number}> = [];
 
   constructor(options: RetrievalOptions = {}) {
     this.#fetch = options.fetcher ?? fetch;
@@ -71,6 +72,7 @@ export class CrossSectionRetrieval {
    */
   clearWindowCache(): void { this.#windows.clear(); }
   get host(): string { return this.#host; }
+  get incompleteLeafWindows(): readonly {fromMs:number;toMs:number;count:number}[] { return this.#incompleteLeafWindows; }
 
   async #get(method: string, params: Record<string, string | number>): Promise<unknown> {
     const query = new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]));
@@ -143,9 +145,10 @@ export class CrossSectionRetrieval {
     }) as {trades?: Row[]} | undefined;
     const trades = result?.trades ?? [];
 
-    // Depth cap: below a minute of span, splitting further cannot help and would
-    // spin. Truncation at that resolution is reported by the caller's counts.
-    if (trades.length >= TRADE_PAGE_LIMIT && depth < 6 && toMs - fromMs > 60_000) {
+    // Split down to an individual millisecond. A fixed recursion-depth cap can
+    // silently truncate a busy month/day; only a saturated 1ms leaf is truly
+    // indivisible and is explicitly reported as incomplete below.
+    if (trades.length >= TRADE_PAGE_LIMIT && depth < 64 && toMs > fromMs) {
       const middle = Math.floor((fromMs + toMs) / 2);
       const [older, newer] = await Promise.all([
         this.#pagedTrades(fromMs, middle, byName, depth + 1),
@@ -153,6 +156,8 @@ export class CrossSectionRetrieval {
       ]);
       return [...older, ...newer];
     }
+    if (trades.length >= TRADE_PAGE_LIMIT)
+      this.#incompleteLeafWindows.push({fromMs,toMs,count:trades.length});
     return trades.flatMap(t => {
       const name = str(t.instrument_name);
       const meta = name ? byName.get(name) : undefined;
