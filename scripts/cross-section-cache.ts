@@ -33,6 +33,10 @@ type Row = Record<string, unknown>;
 const num = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) ? v : null;
 const str = (v: unknown): string | null => typeof v === "string" && v ? v : null;
 
+/** Backoff floor and ceiling for HTTP 429 / 5xx, in milliseconds. */
+const THROTTLE_BACKOFF_BASE_MS = 1_000;
+const THROTTLE_BACKOFF_CEILING_MS = 30_000;
+
 export interface InstrumentMeta {
   readonly instrumentName: string;
   readonly strike: number;
@@ -63,7 +67,7 @@ export class CrossSectionRetrieval {
   constructor(options: RetrievalOptions = {}) {
     this.#fetch = options.fetcher ?? fetch;
     this.#host = options.host ?? OPTION_HISTORY_HOST;
-    this.#maxRetries = options.maxRetries ?? 3;
+    this.#maxRetries = options.maxRetries ?? 6;
   }
 
   get requestCount(): number { return this.#requests; }
@@ -79,14 +83,29 @@ export class CrossSectionRetrieval {
   async #get(method: string, params: Record<string, string | number>): Promise<unknown> {
     const query = new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]));
     let lastError: unknown = null;
-    for (let attempt = 0; attempt < this.#maxRetries; attempt += 1) {
+    // Throttling and transient server errors get their own, longer budget:
+    // a multi-year materialization fans out enough concurrent windows to be
+    // rate-limited eventually, and dying on the first 429 would abandon hours
+    // of otherwise-complete work. Deterministic backoff, no jitter, so a rerun
+    // behaves identically.
+    const attempts = this.#maxRetries;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       this.#requests += 1;
+      let throttled = false, retryAfterMs: number | null = null;
       try {
         const response = await this.#fetch(`${this.#host}/${method}?${query}`);
         if (response.ok) return (await response.json() as {result?: unknown}).result;
+        throttled = response.status === 429 || response.status >= 500;
+        const header = response.headers?.get?.("retry-after");
+        const seconds = header === null || header === undefined ? Number.NaN : Number(header);
+        retryAfterMs = Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null;
         lastError = new Error(`${method} -> HTTP ${response.status}`);
-      } catch (error) { lastError = error; }
-      await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
+      } catch (error) { lastError = error; throttled = true; }
+      if (attempt === attempts - 1) break;
+      const backoff = throttled
+        ? Math.min(THROTTLE_BACKOFF_CEILING_MS, THROTTLE_BACKOFF_BASE_MS * 2 ** attempt)
+        : 400 * (attempt + 1);
+      await new Promise(resolve => setTimeout(resolve, Math.max(retryAfterMs ?? 0, backoff)));
     }
     throw lastError instanceof Error ? lastError : new Error(`${method} failed`);
   }

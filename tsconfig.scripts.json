@@ -23,6 +23,7 @@
     "scripts/audit-recompute-migration.ts",
     "app/lib/execution-calibration.ts",
     "scripts/build-execution-calibration.ts",
+    "scripts/validate-expiry-forward-pricing.ts",
     "scripts/execution-calibration-cache.ts",
     "scripts/build-execution-calibration-range.ts",
     "scripts/aggregate-execution-calibration.ts"
