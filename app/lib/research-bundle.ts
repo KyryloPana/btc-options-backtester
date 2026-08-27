@@ -9,11 +9,12 @@ import { buildResearchMarginSnapshot, canonicalMarginReason, LEGACY_MARGIN_NOT_C
 import { CANONICAL_TRACKS, describeCanonicalTracks, legVolatility } from "./research-tracks.ts";
 import type { ExpiryPayoffInput } from "./expiry-payoff.ts";
 import { STRUCTURAL_LOSS_SIGN_CONVENTION, canonicalStructuralLoss, type CanonicalStructuralLoss } from "./maximum-economic-loss.ts";
+import { EVENT_VOLATILITY_STATE_METHOD_VERSION, STRUCTURE_VOLATILITY_STATE_METHOD_VERSION, type EventVolatilityStateRow, type StructureVolatilityStateRow } from "./volatility/volatility-state.ts";
 
-export const RESEARCH_BUNDLE_SCHEMA_VERSION="3.6.0" as const;
+export const RESEARCH_BUNDLE_SCHEMA_VERSION="3.7.0" as const;
 /** Bundle schema versions this app can still import (see importResearchBundle). */
-export const LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS=["1.0.0","2.0.0","2.1.0","2.2.0","2.3.0","3.0.0","3.1.0","3.2.0","3.3.0","3.4.0","3.5.0"] as const;
-export const RESEARCH_BUNDLE_FILES=["run.json","events.jsonl","underlying_path.jsonl","structure_economics.jsonl","candidates.jsonl","valuations.jsonl","outcomes.jsonl","availability.jsonl","margin_scenarios.jsonl","evidence_trades.jsonl","futures_comparisons.jsonl","futures_path.jsonl"] as const;
+export const LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS=["1.0.0","2.0.0","2.1.0","2.2.0","2.3.0","3.0.0","3.1.0","3.2.0","3.3.0","3.4.0","3.5.0","3.6.0"] as const;
+export const RESEARCH_BUNDLE_FILES=["run.json","events.jsonl","underlying_path.jsonl","structure_economics.jsonl","candidates.jsonl","valuations.jsonl","outcomes.jsonl","availability.jsonl","margin_scenarios.jsonl","evidence_trades.jsonl","futures_comparisons.jsonl","futures_path.jsonl","event_volatility_state.jsonl","structure_volatility_state.jsonl"] as const;
 export const REQUIRED_OUTCOMES=["vpoc","invalidation","credit_capture_25","credit_capture_50","credit_capture_70","fixed_3d","fixed_5d","fixed_7d","settlement"] as const;
 export const RESEARCH_REASON_CODES=["entry_priced","entry_unavailable","direct_vwap","model_reconstructed","quality_green","quality_yellow","quality_red","quality_unavailable","valuation_priced","pricing_track_unavailable","outside_executable_window","raw_source_evidence","executable_evidence","missing_target_index","missing_pricing_track","outcome_priced","outcome_not_reached","outcome_after_expiry","outcome_ambiguous_sequence","outcome_reached_but_unpriced","outcome_source_absent","outcome_source_unavailable","outcome_label_unmapped","candidate_priced","candidate_unavailable","verified_historical_margin_model_unavailable","margin_no_canonical_valuation_path","margin_missing_index","margin_missing_short_mark","margin_missing_long_mark","margin_historical_rule_unverified","margin_deployment_unsupported","margin_not_recomputed","futures_instrument_unavailable","unsupported_futures_instrument","futures_reference_series_unavailable","futures_reference_series_incomplete","futures_entry_observation_unavailable","futures_exit_observation_unavailable","futures_series_gap_at_entry_decision","futures_series_gap_at_decision","futures_entry_bar_resolution_lag","futures_direction_unavailable","futures_event_vpoc_unavailable","futures_event_invalidation_unavailable","futures_event_resolution_ambiguous","futures_vpoc_target_not_reached","futures_event_vpoc_not_configured","futures_invalidation_not_reached","futures_event_invalidation_not_configured","futures_exit_endpoint_unavailable","funding_not_evaluated","futures_invalidation_distance_unavailable","futures_fee_schedule_unavailable","futures_no_funding_interval_elapsed","matched_endpoint_unavailable","observed_futures_execution_unavailable","funding_unavailable","funding_partial","futures_margin_unavailable"] as const;
 export type ResearchReasonCode=(typeof RESEARCH_REASON_CODES)[number];
@@ -60,7 +61,22 @@ export function summarizeResearchBundleErrors(errors:readonly string[],limit=3){
  * from the ACTIVE trade dataset -- never from the selection store, and never a
  * hardcoded historic count.
  */
-export interface ResearchBundleContext {tradeDatasetMrEventCount?:number|null}
+/**
+ * Volatility state is computed by the asynchronous, network-backed volatility
+ * pipeline and INJECTED here as a snapshot. The bundle stays synchronous and
+ * reproducible: the rows embed the values actually used plus the series
+ * identity that produced them, and years of reference history stay in the
+ * standalone cache rather than in every bundle.
+ *
+ * Omitting it exports both tables empty and marks them `unavailable`. That is
+ * the honest state for a bundle built without the volatility pipeline -- never
+ * a table of zeroes.
+ */
+export interface ResearchVolatilityStates {
+ events?:readonly EventVolatilityStateRow[];
+ structures?:readonly StructureVolatilityStateRow[];
+}
+export interface ResearchBundleContext {tradeDatasetMrEventCount?:number|null;volatility?:ResearchVolatilityStates}
 export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toISOString(),datasetUpdatedAt?:string,context:ResearchBundleContext={}):ResearchBundle{
  // migrateResearchSelectionStore validates AND normalizes any known schema
  // version (including legacy ones) to the current SelectedStructure shape, so
@@ -380,10 +396,24 @@ export function buildResearchBundle(value:unknown,generatedAtUtc=new Date().toIS
  const futuresBuilt=store.events.map(e=>buildEventFuturesBaseline(e,"vpoc"));
  const futures=futuresBuilt.map(({comparison},i)=>row({run_id:runId,source_run_id:sourceIds.get(store.events[i].eventId),venue:"deribit",...comparison}));
  const futuresPath=futuresBuilt.flatMap(({path},i)=>path.map(p=>row({run_id:runId,source_run_id:sourceIds.get(store.events[i].eventId),venue:"deribit",...p})));
+ // Volatility state, attached from the injected snapshot. Rows for events or
+ // candidates this store does not contain are dropped rather than exported
+ // with a broken foreign key; nothing is synthesized for a missing one.
+ const eventIdSet=new Set(store.events.map(e=>e.eventId));
+ const selectedByCandidate=new Map(selected.map(({e,s})=>[s.candidateId,{e,s}]));
+ const eventVolatility:Row[]=(context.volatility?.events??[])
+  .filter(v=>eventIdSet.has(v.event_id))
+  .map(v=>row({run_id:runId,source_run_id:sourceIds.get(v.event_id),venue:store.events.find(e=>e.eventId===v.event_id)?.selectedStructures[0]?.venue??"deribit",...(v as unknown as Record<string,unknown>)}))
+  .sort((a,b)=>String(a.event_id).localeCompare(String(b.event_id)));
+ const structureVolatility:Row[]=(context.volatility?.structures??[])
+  .filter(v=>selectedByCandidate.has(v.candidate_id))
+  .map(v=>{const hit=selectedByCandidate.get(v.candidate_id)!;return row({run_id:runId,source_run_id:sourceIds.get(hit.e.eventId),venue:hit.s.venue,...(v as unknown as Record<string,unknown>)})})
+  .sort((a,b)=>String(a.candidate_id).localeCompare(String(b.candidate_id)));
+
  const sourceRuns=store.events.map(e=>({source_run_id:sourceIds.get(e.eventId),venue:e.selectedStructures[0]?.venue??e.generationSnapshot.candidates[0]?.venue??"deribit",event_id:e.eventId,configuration:e.generationSnapshot.configuration,effective_configuration_hash:configurationHashes.get(e.eventId),configuration_identity_version:CONFIGURATION_IDENTITY_VERSION,application_build:e.generationSnapshot.configuration.applicationBuild??BUILD_PROVENANCE_UNAVAILABLE,generation_timestamp_utc:e.generationSnapshot.generatedAtUtc}));
  const migratedValuationWindowDiagnostics=selected.flatMap(({e,s})=>(["maker","taker"] as const).flatMap(executionScenario=>{const diagnostic=s.executionScenarios[executionScenario].valuationWindowMigration;return diagnostic?[{event_id:e.eventId,candidate_id:s.candidateId,execution_scenario:executionScenario,...diagnostic}]:[]}));
- const run=row({schema_version:RESEARCH_BUNDLE_SCHEMA_VERSION,futures_engine_version:FUTURES_ENGINE_VERSION,valuation_window_diagnostics:{migrated:migratedValuationWindowDiagnostics,builder_omitted_before_entry:omittedValuationsBeforeEntry,builder_omitted_after_expiry:omittedValuationsAfterExpiry},run_id:runId,generated_at_utc:generatedAtUtc,dataset_id:store.datasetId,dataset_version_updated_at:datasetUpdatedAt??store.updatedAtUtc,application_commit_build_id:[...new Set(sourceRuns.map(x=>x.application_build))],pricing_engine_versions:[...new Set(sourceRuns.map(x=>x.configuration.pricingEngineVersion))],quality_rules_versions:[...new Set(sourceRuns.map(x=>x.configuration.qualityRulesVersion))],valuation_methodology_version:"simple-model-reconstruction/1.0.0",valuation_intervals:[...new Set(sourceRuns.map(x=>x.configuration.valuationInterval))],timezone:"UTC",included_pricing_tracks:["raw_vwap","iv_normalized"],included_execution_scenarios:["maker","taker"],dte_windows:sourceRuns.map(x=>x.configuration.dteWindows),expiry_selection_modes:[...new Set(sourceRuns.map(x=>x.configuration.expirySelectionMode))],evidence_windows:sourceRuns.map(x=>x.configuration.historicalEvidenceWindows),synchronization_thresholds:sourceRuns.map(x=>x.configuration.synchronizationThresholds),quality_thresholds:sourceRuns.map(x=>x.configuration.qualityThresholds),model_assumptions:sourceRuns.map(x=>x.configuration.modelAssumptions),fee_assumptions:sourceRuns.map(x=>x.configuration.feeAssumptions),settlement_rules:sourceRuns.map(x=>x.configuration.settlementRules),trade_dataset_mr_event_count:num(context.tradeDatasetMrEventCount??null)??null,trade_dataset_mr_event_count_source:num(context.tradeDatasetMrEventCount??null)!==null?"active_trade_dataset":"unavailable",persisted_research_event_count:events.length,events_with_generated_candidates_count:new Set(availability.map(x=>x.event_id)).size,events_with_selected_candidates_count:new Set(candidates.map(x=>x.event_id)).size,events_with_stored_underlying_paths_count:new Set(paths.map(x=>x.event_id)).size,selected_structure_count:new Set(candidates.map(x=>x.candidate_id)).size,selected_structure_execution_row_count:candidates.length,generated_denominator_count:availability.length,venues:[...new Set(store.events.flatMap(e=>e.generationSnapshot.candidates.map(c=>c.venue))) ],venue_configuration:{deribit:economic,bybit:null,binance:null},effective_configuration_hash:distinctMethodologies[0]??null,methodology_identity:methodologyIdentity(store.events[0]?.generationSnapshot.configuration??{}) as unknown as JsonValue,build_provenance_status:buildProvenanceStatus(sourceRuns.map(x=>x.application_build)),source_runs:sourceRuns,table_availability:{underlying_path:paths.length?"available":"unavailable",structure_economics:structureEconomics.some(r=>r.maximum_structural_loss_status==="available")?"available":"unavailable",candidates:candidates.length?"available":"unavailable",availability:availability.length?"available":"unavailable",valuations:[...valuations,...independentValuations].some(v=>v.valuation_status==="priced")?"available":"unavailable",outcomes:[...outcomes,...independentOutcomes].some(o=>o.status==="evaluated")?"available":"unavailable",margin_scenarios:margins.some(m=>m.margin_status==="available")?"available":"unavailable",evidence_trades:evidence.length?"available":"unavailable",futures_comparisons:futures.some(f=>f.availability==="available")?"available":"unavailable",futures_path:futuresPath.length?"available":"unavailable"}});
- const files=Object.fromEntries(RESEARCH_BUNDLE_FILES.map(name=>[name,name==="run.json"?JSON.stringify(run)+"\n":lines(({"events.jsonl":events,"underlying_path.jsonl":paths,"structure_economics.jsonl":structureEconomics,"candidates.jsonl":candidates,"valuations.jsonl":[...valuations,...independentValuations],"outcomes.jsonl":[...outcomes,...independentOutcomes],"availability.jsonl":availability,"margin_scenarios.jsonl":margins,"evidence_trades.jsonl":evidence,"futures_comparisons.jsonl":futures,"futures_path.jsonl":futuresPath})[name]??[])])) as ResearchBundle["files"];
+ const run=row({schema_version:RESEARCH_BUNDLE_SCHEMA_VERSION,futures_engine_version:FUTURES_ENGINE_VERSION,valuation_window_diagnostics:{migrated:migratedValuationWindowDiagnostics,builder_omitted_before_entry:omittedValuationsBeforeEntry,builder_omitted_after_expiry:omittedValuationsAfterExpiry},run_id:runId,generated_at_utc:generatedAtUtc,dataset_id:store.datasetId,dataset_version_updated_at:datasetUpdatedAt??store.updatedAtUtc,application_commit_build_id:[...new Set(sourceRuns.map(x=>x.application_build))],pricing_engine_versions:[...new Set(sourceRuns.map(x=>x.configuration.pricingEngineVersion))],quality_rules_versions:[...new Set(sourceRuns.map(x=>x.configuration.qualityRulesVersion))],valuation_methodology_version:"simple-model-reconstruction/1.0.0",valuation_intervals:[...new Set(sourceRuns.map(x=>x.configuration.valuationInterval))],timezone:"UTC",included_pricing_tracks:["raw_vwap","iv_normalized"],included_execution_scenarios:["maker","taker"],dte_windows:sourceRuns.map(x=>x.configuration.dteWindows),expiry_selection_modes:[...new Set(sourceRuns.map(x=>x.configuration.expirySelectionMode))],evidence_windows:sourceRuns.map(x=>x.configuration.historicalEvidenceWindows),synchronization_thresholds:sourceRuns.map(x=>x.configuration.synchronizationThresholds),quality_thresholds:sourceRuns.map(x=>x.configuration.qualityThresholds),model_assumptions:sourceRuns.map(x=>x.configuration.modelAssumptions),fee_assumptions:sourceRuns.map(x=>x.configuration.feeAssumptions),settlement_rules:sourceRuns.map(x=>x.configuration.settlementRules),trade_dataset_mr_event_count:num(context.tradeDatasetMrEventCount??null)??null,trade_dataset_mr_event_count_source:num(context.tradeDatasetMrEventCount??null)!==null?"active_trade_dataset":"unavailable",persisted_research_event_count:events.length,events_with_generated_candidates_count:new Set(availability.map(x=>x.event_id)).size,events_with_selected_candidates_count:new Set(candidates.map(x=>x.event_id)).size,events_with_stored_underlying_paths_count:new Set(paths.map(x=>x.event_id)).size,selected_structure_count:new Set(candidates.map(x=>x.candidate_id)).size,selected_structure_execution_row_count:candidates.length,generated_denominator_count:availability.length,venues:[...new Set(store.events.flatMap(e=>e.generationSnapshot.candidates.map(c=>c.venue))) ],venue_configuration:{deribit:economic,bybit:null,binance:null},effective_configuration_hash:distinctMethodologies[0]??null,methodology_identity:methodologyIdentity(store.events[0]?.generationSnapshot.configuration??{}) as unknown as JsonValue,build_provenance_status:buildProvenanceStatus(sourceRuns.map(x=>x.application_build)),source_runs:sourceRuns,table_availability:{underlying_path:paths.length?"available":"unavailable",structure_economics:structureEconomics.some(r=>r.maximum_structural_loss_status==="available")?"available":"unavailable",candidates:candidates.length?"available":"unavailable",availability:availability.length?"available":"unavailable",valuations:[...valuations,...independentValuations].some(v=>v.valuation_status==="priced")?"available":"unavailable",outcomes:[...outcomes,...independentOutcomes].some(o=>o.status==="evaluated")?"available":"unavailable",margin_scenarios:margins.some(m=>m.margin_status==="available")?"available":"unavailable",evidence_trades:evidence.length?"available":"unavailable",futures_comparisons:futures.some(f=>f.availability==="available")?"available":"unavailable",futures_path:futuresPath.length?"available":"unavailable",event_volatility_state:eventVolatility.length?"available":"unavailable",structure_volatility_state:structureVolatility.length?"available":"unavailable"},volatility_method_versions:{event_volatility_state:EVENT_VOLATILITY_STATE_METHOD_VERSION,structure_volatility_state:STRUCTURE_VOLATILITY_STATE_METHOD_VERSION}});
+ const files=Object.fromEntries(RESEARCH_BUNDLE_FILES.map(name=>[name,name==="run.json"?JSON.stringify(run)+"\n":lines(({"events.jsonl":events,"underlying_path.jsonl":paths,"structure_economics.jsonl":structureEconomics,"candidates.jsonl":candidates,"valuations.jsonl":[...valuations,...independentValuations],"outcomes.jsonl":[...outcomes,...independentOutcomes],"availability.jsonl":availability,"margin_scenarios.jsonl":margins,"evidence_trades.jsonl":evidence,"futures_comparisons.jsonl":futures,"futures_path.jsonl":futuresPath,"event_volatility_state.jsonl":eventVolatility,"structure_volatility_state.jsonl":structureVolatility})[name]??[])])) as ResearchBundle["files"];
  const validation=validateResearchBundle(files);if(!validation.ok)throw new Error(summarizeResearchBundleErrors(validation.errors).summary);return{files,run};
 }
 
@@ -629,5 +659,136 @@ export function validateResearchBundle(files:Partial<Record<string,string>>):{ok
   if(!audit.admissible)errors.push(`Candidate ${String(id)} has no valid analytical track.${audit.referenceErrors.length?` Reference valuation: ${audit.referenceErrors.join("; ")}.`:""}`);
  }
  const close=(a:number,b:number)=>Math.abs(a-b)<=1e-12*Math.max(1,Math.abs(a),Math.abs(b));for(const c of rows("candidates.jsonl")){const legs=obj(c.entry_legs),short=num(obj(legs.short).price_native),long=num(obj(legs.long).price_native),qty=num(c.quantity),fees=num(c.opening_fees_native),gross=num(c.gross_credit_debit_native),net=num(c.net_opening_cash_flow_native);if(short!==null&&long!==null&&qty!==null&&gross!==null&&!close(gross,(short-long)*qty))errors.push(`Candidate ${String(c.candidate_id)} has unreconciled opening gross.`);if(gross!==null&&fees!==null&&net!==null&&!close(net,gross-fees))errors.push(`Candidate ${String(c.candidate_id)} has unreconciled opening total.`)}for(const v of rows("valuations.jsonl")){const pnl=num(v.net_pnl_native),index=num(v.target_underlying_index),usd=num(v.net_pnl_usd);if(pnl!==null&&index!==null&&usd!==null&&!close(usd,pnl*index))errors.push(`Valuation ${String(v.valuation_id)} has unreconciled USD PnL.`)}
+ // ---------------------------------------------------------------------------
+ // Volatility state (schema 3.7.0).
+ //
+ // These tables exist to carry MARKET evidence, so the validator's job is to
+ // make three failures impossible to serialize: a metric that reports 0 or a
+ // stale carry-forward instead of admitting it is missing; a derived quantity
+ // standing on an unavailable endpoint; and a model-produced volatility
+ // reaching a market-evidence consumer.
+ // ---------------------------------------------------------------------------
+ const volatilityMethodVersions=new Set<string>();
+ const eventVolatilityRows=rows("event_volatility_state.jsonl");
+ const structureVolatilityRows=rows("structure_volatility_state.jsonl");
+ const arr=(v:JsonValue):Record<string,JsonValue>[]=>Array.isArray(v)?v.map(x=>obj(x)):[];
+ /** A metric that is not available must be null. Never 0, never a stale value. */
+ const nullWhenUnavailable=(entry:Record<string,JsonValue>,valueKeys:readonly string[],context:string)=>{
+  if(entry.status!=="available"&&entry.status!=="unavailable"){errors.push(`${context} has unknown status: ${String(entry.status)}.`);return}
+  if(entry.status==="available"){
+   if(!entry.unavailable_reason&&!entry.unavailable_reason_code)return;
+   errors.push(`${context} is available but carries an unavailable reason.`);return;
+  }
+  for(const key of valueKeys)if(entry[key]!==null&&entry[key]!==undefined)
+   errors.push(`${context} is unavailable but still reports ${key}=${String(entry[key])}; a missing metric must be null.`);
+ };
+ const seriesIdentity=(r:Row,context:string)=>{
+  if(typeof r.reference_series_id!=="string"||!r.reference_series_id)errors.push(`${context} has no reference_series_id.`);
+  if(typeof r.reference_series_content_hash!=="string"||!r.reference_series_content_hash)errors.push(`${context} has no reference_series_content_hash.`);
+  if(typeof r.method_version==="string")volatilityMethodVersions.add(r.method_version);else errors.push(`${context} has no method_version.`);
+ };
+
+ const eventVolatilityIds=ids("event_volatility_state.jsonl","event_id");
+ for(const id of eventVolatilityIds)if(!eventIds.has(id))errors.push(`Event volatility state ${String(id)} has a broken event foreign key.`);
+ // A partially populated table would read as full coverage downstream. Either
+ // the pipeline ran for every event or the table is absent.
+ if(eventVolatilityRows.length)for(const id of eventIds)if(!eventVolatilityIds.has(id))
+  errors.push(`Event ${String(id)} has no volatility state, but the table is populated; partial coverage is not exportable.`);
+ for(const r of eventVolatilityRows){
+  const context=`Event volatility state ${String(r.event_id)}`;
+  seriesIdentity(r,context);
+  if(r.method_version!==EVENT_VOLATILITY_STATE_METHOD_VERSION)errors.push(`${context} has an unexpected method version ${String(r.method_version)}.`);
+  const tenors=arr(r.reference_iv),byTenor=new Map(tenors.map(t=>[String(t.nominal_tenor),t]));
+  for(const nominal of ["7d","14d","30d"])if(!byTenor.has(nominal))errors.push(`${context} omits the ${nominal} reference tenor.`);
+  for(const t of tenors){
+   const tenorContext=`${context} tenor ${String(t.nominal_tenor)}`;
+   nullWhenUnavailable(t,["iv_decimal","iv_units"],tenorContext);
+   // An out-of-tolerance or stale observation may never be reported available:
+   // a 39-day expiry is not a 30-day reference, however real its print was.
+   if(t.status==="available"&&t.tenor_tolerance_passed!==true)errors.push(`${tenorContext} is available with a failed tenor tolerance.`);
+   if(t.status==="available"&&t.passes_market_state_rule!==true)errors.push(`${tenorContext} is available without passing the market-state rule.`);
+   if(t.status==="available"&&t.observation_class==="unavailable")errors.push(`${tenorContext} is available with no observation class.`);
+  }
+  for(const slope of arr(r.term_structure)){
+   const slopeContext=`${context} ${String(slope.slope)}`;
+   nullWhenUnavailable(slope,["value_per_day"],slopeContext);
+   const from=byTenor.get(String(slope.from_tenor)),to=byTenor.get(String(slope.to_tenor));
+   // The decisive rule: a slope is a statement about two independently
+   // available endpoints, not an extrapolation from the one that survived.
+   if(slope.status==="available"&&(from?.status!=="available"||to?.status!=="available"))
+    errors.push(`${slopeContext} is available while an endpoint tenor is not.`);
+  }
+  const horizons=new Set<string>();
+  for(const rv of arr(r.realized_volatility)){
+   const rvContext=`${context} RV ${String(rv.horizon)}`;
+   horizons.add(String(rv.horizon));
+   nullWhenUnavailable(rv,["rv_decimal"],rvContext);
+   const coverage=num(rv.coverage_ratio);
+   if(coverage!==null&&(coverage<0||coverage>1))errors.push(`${rvContext} has a coverage ratio outside [0,1]: ${coverage}.`);
+   if(rv.status==="available"&&num(rv.annualization_factor)!==8760)errors.push(`${rvContext} is available with a non-canonical annualization factor.`);
+  }
+  for(const horizon of ["1d","3d","7d","14d","30d"])if(!horizons.has(horizon))errors.push(`${context} omits the ${horizon} realized-volatility horizon.`);
+  for(const p of arr(r.reference_iv_percentile)){
+   const percentileContext=`${context} percentile ${String(p.nominal_tenor)}`;
+   nullWhenUnavailable(p,["percentile"],percentileContext);
+   const value=num(p.percentile);
+   if(value!==null&&(value<0||value>1))errors.push(`${percentileContext} is outside [0,1]: ${value}.`);
+   const prior=num(p.prior_observation_count),minimum=num(p.minimum_prior_observations);
+   if(p.status==="available"&&prior!==null&&minimum!==null&&prior<minimum)
+    errors.push(`${percentileContext} is available on ${prior} prior observations, below the ${minimum} minimum.`);
+   if(p.other_tenor_observations_excluded===undefined)errors.push(`${percentileContext} does not record how many other-tenor observations it excluded.`);
+  }
+  for(const d of arr(r.iv_minus_rv))nullWhenUnavailable(d,["value"],`${context} iv_minus_rv ${String(d.nominal_tenor)}/${String(d.horizon)}`);
+  // DVOL is broad context. It can never fill a same-expiry reference, so the
+  // serialized row states that permanently rather than relying on a convention.
+  const broad=obj(r.broad_volatility_index);
+  if(broad.substitution_permitted!==false)errors.push(`${context} broad volatility index does not refuse substitution.`);
+  nullWhenUnavailable(broad,["value_decimal"],`${context} broad volatility index`);
+ }
+
+ const structureVolatilityIds=ids("structure_volatility_state.jsonl","candidate_id");
+ for(const id of structureVolatilityIds)if(!candidateIds.has(id))errors.push(`Structure volatility state ${String(id)} has a broken candidate foreign key.`);
+ if(structureVolatilityRows.length)for(const id of candidateIds)if(!structureVolatilityIds.has(id))
+  errors.push(`Candidate ${String(id)} has no volatility state, but the table is populated; partial coverage is not exportable.`);
+ for(const r of structureVolatilityRows){
+  const context=`Structure volatility state ${String(r.candidate_id)}`;
+  seriesIdentity(r,context);
+  if(r.method_version!==STRUCTURE_VOLATILITY_STATE_METHOD_VERSION)errors.push(`${context} has an unexpected method version ${String(r.method_version)}.`);
+  if(!eventIds.has(r.event_id))errors.push(`${context} has a broken event foreign key.`);
+  // A vertical has no single implied volatility. The contract says so.
+  if(r.synthesized_spread_iv!==null)errors.push(`${context} reports a synthesized spread IV, which does not exist for a vertical.`);
+  const legs=arr(r.legs),named=new Set(legs.map(l=>String(l.leg)));
+  for(const leg of ["short","long"])if(!named.has(leg))errors.push(`${context} omits its ${leg} leg volatility.`);
+  for(const leg of legs){
+   const legContext=`${context} ${String(leg.leg)} leg`;
+   nullWhenUnavailable(leg,["iv_decimal","iv_api_percentage","iv_units"],legContext);
+   // The circularity rule, enforced at the serialized contract: only a real
+   // market observation may be reported as available market evidence.
+   if(leg.status==="available"&&leg.observation!=="observed")
+    errors.push(`${legContext} is available on observation "${String(leg.observation)}", which is a pricing state rather than market evidence.`);
+   if(leg.status==="available"&&leg.passes_market_state_rule!==true)
+    errors.push(`${legContext} is available without passing the market-state rule.`);
+  }
+  const reference=obj(r.same_expiry_reference);
+  nullWhenUnavailable(reference,["iv_decimal"],`${context} same-expiry reference`);
+  if(reference.status==="available"&&reference.passes_market_state_rule!==true)
+   errors.push(`${context} same-expiry reference is available without passing the market-state rule.`);
+  const legByName=new Map(legs.map(l=>[String(l.leg),l]));
+  for(const d of arr(r.differentials)){
+   const kind=String(d.differential),differentialContext=`${context} ${kind}`;
+   nullWhenUnavailable(d,["value"],differentialContext);
+   if(d.status!=="available")continue;
+   const against=kind==="short_minus_reference_iv"?["short"]:kind==="long_minus_reference_iv"?["long"]:["short","long"];
+   for(const leg of against)if(legByName.get(leg)?.status!=="available")
+    errors.push(`${differentialContext} is available while its ${leg} leg is not.`);
+   if(kind!=="short_minus_long_iv"){
+    if(reference.status!=="available")errors.push(`${differentialContext} is available while its reference is not.`);
+    // Differencing a leg against a reference that included that same leg
+    // measures the structure against itself.
+    if(reference.excluded_own_legs!==true)errors.push(`${differentialContext} is available against a reference that did not exclude the structure's own legs.`);
+   }
+  }
+ }
+ void volatilityMethodVersions;
  return{ok:!errors.length,errors};
 }

@@ -1,0 +1,21 @@
+{
+  "//": "tsconfig.json excludes scripts/ and tests/ entirely, so neither is typechecked by `npm run typecheck`. That gap let a broken measurement script pass validation. This config narrows a real check onto the volatility research layer; widening it to the whole repo currently surfaces 128 pre-existing errors and is a separate job.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": ["node"], "incremental": false },
+  "include": [
+    "app/lib/volatility/**/*.ts",
+    "scripts/cross-section-cache.ts",
+    "scripts/volatility-reference-cache.ts",
+    "scripts/measure-volatility-coverage.ts",
+    "scripts/measure-percentile-proof.ts",
+    "scripts/measure-surface-readiness.ts",
+    "scripts/fetch-prior-anchors.ts",
+    "scripts/validate-surface-models.ts",
+    "scripts/validate-selection-store.ts",
+    "scripts/measure-reference-tier-usage.ts",
+    "scripts/research-recompute-engine.ts",
+    "scripts/run-research-recompute.ts",
+    "scripts/audit-recompute-migration.ts"
+  ],
+  "exclude": ["node_modules"]
+}

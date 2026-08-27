@@ -44,4 +44,8 @@ next-env.d.ts
 /.local-cache/
 /local-data/
 
-tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Runtime research-selection state. The local application server writes here,
+# and the supplied store is a 37 MB blob that would permanently bloat history.
+/data/research-selections/

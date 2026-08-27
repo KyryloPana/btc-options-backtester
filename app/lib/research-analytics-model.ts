@@ -2,6 +2,7 @@ import { delayedEconomicPathAvailable } from "./research-tracks.ts";
 import { canonicalOutcomeId, outcomeHoldingHours, outcomeSourceStatus, outcomeTriggerStatus } from "./research-outcomes.ts";
 import { indexByCandidate, readCanonicalStructuralLoss, type StructuralLossReading } from "./canonical-structural-loss.ts";
 import type { AnalysisDataset } from "./research-analysis";
+import { projectVolatilityAnalytics, type VolatilityAnalyticsProjection } from "./volatility/volatility-analytics.ts";
 
 export const ANALYTICS_STARTING_COMMIT =
   "bb78a6fd79c03c3150491596a0134e32f4afa6eb";
@@ -159,6 +160,13 @@ export interface ResearchAnalyticsModel {
   summaries: readonly TrackSummary[];
   resolution: readonly { eventId: string; state: string }[];
   warnings: readonly string[];
+  /**
+   * Market volatility evidence, read straight from the bundle and never
+   * recomputed here. Absent tables project to zero coverage, so a consumer that
+   * forgets to check availability reads zeroes in the DENOMINATOR, not a
+   * fabricated volatility.
+   */
+  volatility: VolatilityAnalyticsProjection;
 }
 
 /**
@@ -923,6 +931,7 @@ function buildResearchAnalyticsModelUncached(
       "Tracks are never pooled. One observation is event × strategyVariantId.",
       "Legacy-undifferentiated tracks are visible but excluded from matched comparisons.",
     ],
+    volatility: projectVolatilityAnalytics(t),
   };
 }
 
