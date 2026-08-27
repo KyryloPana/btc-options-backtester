@@ -1,15 +1,16 @@
 #!/usr/bin/env node
-import {mkdir,readFile,writeFile} from "node:fs/promises";
+import {readFile,writeFile} from "node:fs/promises";
 import {join} from "node:path";
-import {CrossSectionRetrieval,type InstrumentMeta} from "./cross-section-cache.ts";
-import {OPTION_HISTORY_HOST,contentHash} from "../app/lib/volatility/reference-series.ts";
+import {CrossSectionRetrieval} from "./cross-section-cache.ts";
+import {OPTION_HISTORY_HOST} from "../app/lib/volatility/reference-series.ts";
 import {
-  buildCalibrationObservation,CALIBRATION_EVIDENCE_CONTEXT_MINUTES,calibrationContentHash,
+  buildCalibrationObservation,CALIBRATION_EVIDENCE_CONTEXT_MINUTES,calibrationContentHash,CausalFeatureIndex,
   calibrationRawShardId,calibrationTargets,EXECUTION_CALIBRATION_DATASET_ID,
   EXECUTION_CALIBRATION_METHOD_VERSION,type ExecutionCalibrationObservation,
 } from "../app/lib/execution-calibration.ts";
-import {dedupePrints,type RawOptionPrint} from "../app/lib/volatility/cross-section.ts";
+import {dedupePrints} from "../app/lib/volatility/cross-section.ts";
 import {REFERENCE_VALUATION_METHOD_VERSION} from "../app/lib/volatility/reference-hybrid.ts";
+import {loadOrRetrieveRawCalibrationShard} from "./execution-calibration-cache.ts";
 
 const DAY=86_400_000,MINUTE=60_000,ROOT=".local-cache/execution-calibration";
 const DTE_MIN=1,DTE_MAX=46,ABS_LOG_MONEYNESS_MAX=.35;
@@ -24,25 +25,13 @@ async function main(){
  if(!Number.isFinite(targetStart)||!Number.isFinite(targetEnd)||targetEnd<=targetStart)throw new Error("end is exclusive and must follow start");
  const evidenceStart=targetStart-CALIBRATION_EVIDENCE_CONTEXT_MINUTES*MINUTE;
  const rawId=calibrationRawShardId(targetStart,targetEnd,evidenceStart),base=join(ROOT,EXECUTION_CALIBRATION_DATASET_ID),rawPath=join(base,`${rawId}.raw.json`);
- let raw:RawOptionPrint[],instruments:InstrumentMeta[],retrievalHash:string,reused=false;
- try{
-  const cached=JSON.parse(await readFile(rawPath,"utf8")) as {target_start_ms:number;target_end_exclusive_ms:number;evidence_start_ms:number;content_hash:string;prints:RawOptionPrint[];instruments:InstrumentMeta[];complete:boolean};
-  if(cached.target_start_ms!==targetStart||cached.target_end_exclusive_ms!==targetEnd||cached.evidence_start_ms!==evidenceStart)throw new Error("raw cache identity mismatch");
-  if(!cached.complete)throw new Error("cached source shard is explicitly incomplete");
-  raw=cached.prints;instruments=cached.instruments;retrievalHash=cached.content_hash;reused=true;
- }catch(error){
-  if(error instanceof Error&&(error.message.includes("explicitly incomplete")||error.message.includes("identity mismatch")))throw error;
-  const retrieval=new CrossSectionRetrieval({host:OPTION_HISTORY_HOST});
-  instruments=[...await retrieval.instrumentManifest()];raw=[...await retrieval.optionPrints(evidenceStart,targetEnd-1)];
-  const complete=retrieval.incompleteLeafWindows.length===0;retrievalHash=contentHash({raw,instruments});
-  await mkdir(base,{recursive:true});
-  await writeFile(rawPath,JSON.stringify({dataset_id:EXECUTION_CALIBRATION_DATASET_ID,raw_source_id:rawId,target_start_ms:targetStart,target_end_exclusive_ms:targetEnd,evidence_start_ms:evidenceStart,source_host:OPTION_HISTORY_HOST,complete,incomplete_leaf_windows:retrieval.incompleteLeafWindows,content_hash:retrievalHash,instruments,prints:raw}));
-  if(!complete)throw new Error("source window incomplete; cached for diagnosis but excluded from calibration");
- }
+ const retrievalResult=await loadOrRetrieveRawCalibrationShard({path:rawPath,rawSourceId:rawId,targetStartMs:targetStart,targetEndExclusiveMs:targetEnd,evidenceStartMs:evidenceStart,sourceHost:OPTION_HISTORY_HOST,retrieve:async()=>{const retrieval=new CrossSectionRetrieval({host:OPTION_HISTORY_HOST}),instruments=[...await retrieval.instrumentManifest()],prints=[...await retrieval.optionPrints(evidenceStart,targetEnd-1)];return{prints,instruments,complete:retrieval.incompleteLeafWindows.length===0,incompleteLeafWindows:retrieval.incompleteLeafWindows}}});
+ const {prints:raw,instruments,content_hash:retrievalHash}=retrievalResult.shard,reused=retrievalResult.cacheReused;
  const tape=[...dedupePrints(raw).prints].sort((a,b)=>a.timestampMs-b.timestampMs||String(a.tradeId).localeCompare(String(b.tradeId)));
  const targets=calibrationTargets(tape,targetStart,targetEnd).filter(t=>{const d=(t.expiryTimestampMs-t.timestampMs)/DAY,k=typeof t.indexPrice==="number"&&t.indexPrice>0?Math.log(t.strike/t.indexPrice):Infinity;return d>=DTE_MIN&&d<=DTE_MAX&&Math.abs(k)<=ABS_LOG_MONEYNESS_MAX});
  const byInstrument=new Map(instruments.map(meta=>[meta.instrumentName,meta]));
- const rows=targets.map(target=>{const meta=byInstrument.get(target.instrumentName);return buildCalibrationObservation({target,tape,sourceHost:OPTION_HISTORY_HOST,retrievalShardId:rawId,retrievalContentHash:retrievalHash,sourceWindowComplete:true,contractSize:meta?.contractSize??null,minimumTradeAmount:meta?.minimumTradeAmount??null,directionSemanticsVerified:true})});
+ const featureIndex=new CausalFeatureIndex(tape);
+ const rows=targets.map(target=>{const meta=byInstrument.get(target.instrumentName);return buildCalibrationObservation({target,tape,features:featureIndex.features(target),sourceHost:OPTION_HISTORY_HOST,retrievalShardId:rawId,retrievalContentHash:retrievalHash,sourceWindowComplete:true,contractSize:meta?.contractSize??null,minimumTradeAmount:meta?.minimumTradeAmount??null,directionSemanticsVerified:true})});
  const hash=calibrationContentHash(rows),obsPath=join(base,`${rawId}.${hash}.observations.jsonl`);await writeFile(obsPath,rows.map(r=>JSON.stringify(r)).join("\n")+"\n");
  const primary=rows.filter(r=>r.primary_fair_eligible),taker=rows.filter(r=>r.taker_concession_eligible);
  const audit={scope:{target_start_utc:new Date(targetStart).toISOString(),target_end_exclusive_utc:new Date(targetEnd).toISOString(),evidence_start_utc:new Date(evidenceStart).toISOString(),raw_retrieved:raw.length,deduplicated:tape.length,calibration_targets:rows.length,primary_fair_available:primary.length,taker_concession_eligible:taker.length,unique_instruments:new Set(rows.map(r=>r.instrument_name)).size,unique_expiries:new Set(rows.map(r=>r.expiry_timestamp_ms)).size,calendar_days:new Set(rows.map(r=>r.features.calendar_date)).size,calendar_weeks:new Set(rows.map(r=>r.features.calendar_week)).size,expiry_date_groups:new Set(rows.map(r=>r.features.expiry_date_group_id)).size,cache_reused:reused},status:tally(rows,r=>r.status),option_type:tally(rows,r=>r.option_type),direction:tally(rows,r=>r.direction??"unknown"),residuals:{signed_iv_decimal:stats(primary.map(r=>r.signed_iv_residual_decimal)),adverse_iv_vol_points:stats(taker.map(r=>r.adverse_iv_concession_vol_points)),adverse_price_btc:stats(taker.map(r=>r.adverse_price_concession_btc)),independent_fair_minus_mark_btc:stats(primary.map(r=>r.mark_price_btc===null||r.primary_fair_price_btc===null?null:r.primary_fair_price_btc-r.mark_price_btc))}};

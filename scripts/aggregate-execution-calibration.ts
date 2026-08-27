@@ -1,0 +1,14 @@
+#!/usr/bin/env node
+import {readFile,readdir} from "node:fs/promises";
+import {join} from "node:path";
+import {fileURLToPath} from "node:url";
+import {contentHash} from "../app/lib/volatility/reference-series.ts";
+import {EXECUTION_CALIBRATION_DATASET_ID,EXECUTION_CALIBRATION_METHOD_VERSION,type ExecutionCalibrationObservation} from "../app/lib/execution-calibration.ts";
+type Manifest={method_version:string;dataset_content_hash:string;raw_source:{id:string;target_start_utc:string;target_end_exclusive_utc:string};shards:Array<{file:string;observation_content_hash:string}>};
+export async function aggregateExecutionCalibration(root=".local-cache/execution-calibration/execution_calibration_observations"){
+ const names=(await readdir(root)).filter(name=>name.startsWith("manifest.")&&name.endsWith(".json")).sort(),bySource=new Map<string,Manifest>();
+ for(const name of names){const manifest=JSON.parse(await readFile(join(root,name),"utf8")) as Manifest;if(manifest.method_version!==EXECUTION_CALIBRATION_METHOD_VERSION)continue;const previous=bySource.get(manifest.raw_source.id);if(previous&&previous.dataset_content_hash!==manifest.dataset_content_hash)throw new Error(`conflicting v3 manifests for ${manifest.raw_source.id}`);bySource.set(manifest.raw_source.id,manifest)}
+ const rows:ExecutionCalibrationObservation[]=[],fingerprints:string[]=[];for(const [id,manifest] of [...bySource].sort(([a],[b])=>a.localeCompare(b))){for(const shard of manifest.shards){const path=shard.file.startsWith("/")?shard.file:shard.file;const text=await readFile(path,"utf8");for(const line of text.split(/\r?\n/).filter(Boolean)){const row=JSON.parse(line) as ExecutionCalibrationObservation;if(row.method_version!==EXECUTION_CALIBRATION_METHOD_VERSION)throw new Error(`non-v3 observation in ${path}`);rows.push(row)}fingerprints.push(`${id}:${shard.observation_content_hash}`)}}
+ const starts=[...bySource.values()].map(m=>m.raw_source.target_start_utc).sort(),ends=[...bySource.values()].map(m=>m.raw_source.target_end_exclusive_utc).sort();return{dataset_id:EXECUTION_CALIBRATION_DATASET_ID,method_version:EXECUTION_CALIBRATION_METHOD_VERSION,completed_shard_count:bySource.size,coverage_start_utc:starts[0]??null,coverage_end_exclusive_utc:ends.at(-1)??null,total_observations:rows.length,primary_fair_eligible:rows.filter(r=>r.primary_fair_eligible).length,taker_concession_eligible:rows.filter(r=>r.taker_concession_eligible).length,unique_instruments:new Set(rows.map(r=>r.instrument_name)).size,unique_expiries:new Set(rows.map(r=>r.expiry_timestamp_ms)).size,days:new Set(rows.map(r=>r.features.calendar_date)).size,expiry_date_groups:new Set(rows.map(r=>r.features.expiry_date_group_id)).size,dataset_content_hash:contentHash(fingerprints.sort())}}
+async function main(){console.log(JSON.stringify(await aggregateExecutionCalibration(process.argv[2]),null,2))}
+if(process.argv[1]&&fileURLToPath(import.meta.url)===process.argv[1])await main();

@@ -1,0 +1,7 @@
+#!/usr/bin/env node
+import {spawn} from "node:child_process";
+import {fileURLToPath} from "node:url";
+const DAY=86_400_000;
+export function calibrationDayRanges(startMs:number,endExclusiveMs:number){const out:Array<{start:string;end:string}>=[];for(let cursor=startMs;cursor<endExclusiveMs;cursor+=DAY){const next=Math.min(cursor+DAY,endExclusiveMs);out.push({start:new Date(cursor).toISOString().slice(0,10),end:new Date(next).toISOString().slice(0,10)})}return out}
+async function main(){const [startArg,endArg]=process.argv.slice(2),start=Date.parse(`${startArg}T00:00:00Z`),end=Date.parse(`${endArg}T00:00:00Z`);if(!startArg||!endArg||!Number.isFinite(start)||!Number.isFinite(end)||end<=start)throw new Error("usage: build-execution-calibration-range.ts YYYY-MM-DD YYYY-MM-DD");const ranges=calibrationDayRanges(start,end),builder=fileURLToPath(new URL("build-execution-calibration.ts",import.meta.url));for(const [index,range] of ranges.entries()){console.error(JSON.stringify({status:"starting",shard:index+1,total:ranges.length,...range}));await new Promise<void>((resolve,reject)=>{const child=spawn(process.execPath,["--experimental-strip-types",builder,range.start,range.end],{stdio:"inherit"});child.once("error",reject);child.once("exit",code=>code===0?resolve():reject(new Error(`calibration shard ${range.start} failed with exit ${code}`)))});console.error(JSON.stringify({status:"complete",shard:index+1,total:ranges.length,...range}))}}
+if(process.argv[1]&&fileURLToPath(import.meta.url)===process.argv[1])await main();
