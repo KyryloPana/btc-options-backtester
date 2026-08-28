@@ -1138,22 +1138,3 @@ footer { color: var(--muted); font-size: 12px; }
 .results-workspace-heading{display:flex;align-items:end;justify-content:space-between;gap:16px;margin:4px 0 12px}.results-workspace-heading h3{margin:2px 0 0;font-size:20px}.track-selector{display:grid;gap:4px;min-width:min(330px,100%);color:var(--muted);font:11px var(--mono)}.track-selector select{min-width:0}.current-track{color:var(--text-primary);font:600 12px var(--mono)}.unavailable-button{white-space:nowrap}.pnl-results-table{table-layout:auto}.pnl-results-table th,.pnl-results-table td{white-space:nowrap}.pnl-results-table td:nth-child(4){white-space:normal;min-width:165px}.pnl-results-table tbody>tr:not(.ledger-detail-row)>td{padding-top:7px;padding-bottom:7px;overflow:hidden;text-overflow:ellipsis}.ledger-detail-row td{white-space:normal}.expanded-path{margin-top:12px;min-width:0}.expanded-path h4{margin:0 0 8px}.expanded-path .mini-chart{min-height:220px}.payoff-panel{overflow:hidden}
 @media(max-width:720px){.results-workspace-heading{align-items:stretch;flex-direction:column}.track-selector{width:100%}.pnl-results-table{min-width:1040px}.expanded-structure{padding:10px}.expanded-path .mini-chart{min-height:190px}}
 
-/* ==== BACKDROP IMAGE — revertible block ====================================
- * Delete everything between this marker and END BACKDROP IMAGE (and
- * public/backdrop.webp) to restore the original plain --bg colour (#0c0e0f).
- * The scrim opacity below is the single knob for image visibility: higher
- * alpha = dimmer image and more legible text.
- * ------------------------------------------------------------------------ */
-body, .app-shell {
-  background-image:
-    linear-gradient(rgba(10, 13, 18, 0.55), rgba(10, 13, 18, 0.55)),
-    url("/backdrop.webp");
-  background-size: cover;
-  background-position: center 12%;
-  background-attachment: fixed;
-  background-repeat: no-repeat;
-}
-/* The shell paints its own opaque ground above <body>; clear it so the
- * backdrop above is what shows through. */
-.app-shell { background-color: transparent; }
-/* ==== END BACKDROP IMAGE ================================================= */
