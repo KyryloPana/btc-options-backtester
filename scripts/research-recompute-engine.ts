@@ -26,11 +26,12 @@ import {
   type EstimatedOutcome, type EstimatedPathPoint, type ResearchValuation,
 } from "../app/lib/research-valuation.ts";
 import {analyzeDelayedExecution} from "../app/lib/delayed-execution.ts";
-import {buildExecutionCalibrationRecords} from "../app/lib/modeled-execution.ts";
+
 import {buildDerivedResearchOutput, type ResearchScenarioResult} from "../app/lib/research-derived.ts";
 import type {DerivedResearchOutput, ResearchRecomputeEngine} from "../app/lib/research-refresh.ts";
 import type {EvidenceTradeDto, ResearchSelectionStore} from "../app/lib/research-selections.ts";
 import {DeribitHistoryService, type DesiredRequest} from "./deribit-history-api.ts";
+import type {ExecutionCalibrationIndex} from "../app/lib/empirical-taker-execution.ts";
 
 type Row = Record<string, unknown>;
 const obj = (v: unknown): Row => v && typeof v === "object" && !Array.isArray(v) ? v as Row : {};
@@ -51,6 +52,8 @@ export interface RecomputeDiagnostics {
 
 export interface RecomputeEngineOptions {
   readonly service: DeribitHistoryService;
+  /** Optional compact v1 artifact index; absence deliberately leaves empirical tracks unavailable. */
+  readonly executionCalibration?: Pick<ExecutionCalibrationIndex,"execution"|"reference"|"artifact">;
   /** Collected per structure, for the migration audit. */
   readonly diagnostics?: RecomputeDiagnostics[];
   readonly onProgress?: (message: string) => void;
@@ -153,7 +156,7 @@ export function createResearchRecomputeEngine(options: RecomputeEngineOptions): 
   prime: (store: ResearchSelectionStore) => void;
 } {
   const markets = new Map<string, Promise<EventMarketState>>();
-  let calibration: ReturnType<typeof buildExecutionCalibrationRecords> = [];
+  const calibration=options.executionCalibration;
   const eventsById = new Map<string, ResearchSelectionStore["events"][number]>();
 
   const engine: ResearchRecomputeEngine = async input => {
@@ -252,7 +255,6 @@ export function createResearchRecomputeEngine(options: RecomputeEngineOptions): 
   return {
     engine,
     prime(store) {
-      calibration = buildExecutionCalibrationRecords(store);
       for (const event of store.events) eventsById.set(event.eventId, event);
     },
   };

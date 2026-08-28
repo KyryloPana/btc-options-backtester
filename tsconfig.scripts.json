@@ -27,6 +27,7 @@
     "scripts/execution-calibration-cache.ts",
     "scripts/build-execution-calibration-range.ts",
     "scripts/aggregate-execution-calibration.ts"
+    ,"scripts/compile-execution-estimator.ts"
   ],
   "exclude": [
     "node_modules"
