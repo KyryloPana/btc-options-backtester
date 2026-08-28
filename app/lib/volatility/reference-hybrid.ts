@@ -32,7 +32,7 @@ import {admitCrossSection, type RawOptionPrint} from "./cross-section.ts";
 import {aggregateSlice, type AggregatedStrikeObservation} from "./strike-aggregation.ts";
 import {
   LINEAR_INTERPOLATION_METHOD_VERSION, LOCAL_IV_ANCHOR_METHOD_VERSION,
-  estimateLinearInterpolation, type EstimationTarget,
+  estimateLinearInterpolation, type EstimationTarget, type SurfaceEstimate,
 } from "./surface-models.ts";
 
 /**
@@ -42,12 +42,48 @@ import {
  * estimator. Reusing it for different economics would make every historical
  * bundle silently claim to have been priced this way.
  */
-export const REFERENCE_VALUATION_METHOD_VERSION = "causal-reference-v2-hybrid-interpolation" as const;
+export const REFERENCE_VALUATION_METHOD_VERSION = "causal-reference-v3-expiry-forward-hybrid" as const;
 export const LEGACY_REFERENCE_VALUATION_METHOD_VERSION = "causal-reference-v1" as const;
 
 /** Rule C, as validated in Phase 2C. Not a tuned number: a validated one. */
 export const RULE_C_MINIMUM_UNIQUE_STRIKES = 5 as const;
 export const REFERENCE_GEOMETRY_RULE = "rule_c_bracketed_min_5_unique_strikes" as const;
+
+export interface RuleCInterpolationEvaluation {
+  readonly estimate: SurfaceEstimate | null;
+  readonly declineReason: ReferenceDeclineReason | null;
+  readonly uniqueStrikeCount: number;
+  readonly lower: AggregatedStrikeObservation | null;
+  readonly upper: AggregatedStrikeObservation | null;
+  readonly contributors: readonly AggregatedStrikeObservation[];
+}
+
+/** Authoritative production Rule-C gate plus the validated interpolation. */
+export function evaluateRuleCInterpolation(
+  points: readonly AggregatedStrikeObservation[], target: EstimationTarget,
+  minimumUniqueStrikes: number = RULE_C_MINIMUM_UNIQUE_STRIKES,
+): RuleCInterpolationEvaluation {
+  const uniqueStrikeCount = new Set(points.map(point => point.strike)).size;
+  const lower = [...points].filter(point => point.log_moneyness < target.logMoneyness)
+    .sort((a, b) => a.log_moneyness - b.log_moneyness).at(-1) ?? null;
+  const upper = [...points].filter(point => point.log_moneyness > target.logMoneyness)
+    .sort((a, b) => a.log_moneyness - b.log_moneyness)[0] ?? null;
+  const exact = points.filter(point => point.log_moneyness === target.logMoneyness);
+  const contributors = exact.length ? exact : [lower, upper].filter(
+    (point): point is AggregatedStrikeObservation => point !== null);
+  if (!points.length) return {estimate: null, declineReason: "no_qualifying_same_expiry_observations",
+    uniqueStrikeCount, lower, upper, contributors};
+  if (uniqueStrikeCount < minimumUniqueStrikes)
+    return {estimate: null, declineReason: "unique_strike_count_below_minimum",
+      uniqueStrikeCount, lower, upper, contributors};
+  const estimate = estimateLinearInterpolation(points, target);
+  if (estimate.status === "available" && estimate.iv_decimal !== null)
+    return {estimate, declineReason: null, uniqueStrikeCount, lower, upper, contributors};
+  const declineReason = estimate.unavailable_reason === "target_outside_observed_strike_range"
+    ? "target_not_bracketed" : estimate.unavailable_reason === "insufficient_observations"
+      ? "unique_strike_count_below_minimum" : "interpolation_returned_no_value";
+  return {estimate, declineReason, uniqueStrikeCount, lower, upper, contributors};
+}
 
 export type ReferenceValuationSource =
   | "same_expiry_linear_interpolation"
@@ -78,6 +114,14 @@ export interface ReferenceLegValuation {
   readonly target_timestamp_utc: string;
   readonly expiry_timestamp_utc: string;
   readonly underlying_price: number;
+  readonly forward_price: number | null;
+  readonly forward_source: string;
+  readonly forward_method_version: string | null;
+  readonly forward_evidence_timestamp_ms: number | null;
+  readonly forward_observation_count: number;
+  readonly rate: number | null;
+  readonly forward_moneyness: number | null;
+  readonly forward_unavailable_reason: string | null;
   /* interpolation provenance */
   readonly lower_strike: number | null;
   readonly upper_strike: number | null;
@@ -138,6 +182,11 @@ export interface ReferenceCrossSection {
   readonly observationCount: number;
   readonly maxAgeMinutes: number;
   readonly underlyingPrice: number;
+  readonly forwardPrice: number | null;
+  readonly forwardMethodVersion: string | null;
+  readonly forwardEvidenceTimestampMs: number | null;
+  readonly forwardObservationCount: number;
+  readonly forwardUnavailableReason: string | null;
 }
 
 /**
@@ -175,6 +224,11 @@ export function buildReferenceCrossSection(input: {
     observationCount: admitted.observations.length,
     maxAgeMinutes: maxAge,
     underlyingPrice: input.underlyingPrice,
+    forwardPrice: admitted.observations[0]?.forward_price ?? null,
+    forwardMethodVersion: admitted.observations[0]?.forward_method_version ?? null,
+    forwardEvidenceTimestampMs: admitted.observations[0]?.forward_evidence_timestamp_ms ?? null,
+    forwardObservationCount: admitted.observations[0]?.forward_observation_count ?? 0,
+    forwardUnavailableReason: admitted.observations.length?null:"no_causal_forward_evidence",
   };
 }
 
@@ -206,6 +260,14 @@ export function valueReferenceLeg(input: ReferenceLegInput): ReferenceLegValuati
     target_timestamp_utc: new Date(input.targetTimestampMs).toISOString(),
     expiry_timestamp_utc: new Date(leg.expiryTimestamp).toISOString(),
     underlying_price: input.underlyingPrice,
+    forward_price: input.crossSection?.forwardPrice ?? null,
+    forward_source: input.crossSection?.forwardPrice ? "option_trade_implied_forward" : "unavailable",
+    forward_method_version: input.crossSection?.forwardMethodVersion ?? null,
+    forward_evidence_timestamp_ms: input.crossSection?.forwardEvidenceTimestampMs ?? null,
+    forward_observation_count: input.crossSection?.forwardObservationCount ?? 0,
+    rate: input.crossSection?.forwardPrice ? Math.log(input.crossSection.forwardPrice/input.underlyingPrice)/((leg.expiryTimestamp-input.targetTimestampMs)/(365*24*3_600_000)) : null,
+    forward_moneyness: input.crossSection?.forwardPrice ? Math.log(leg.strike/input.crossSection.forwardPrice) : null,
+    forward_unavailable_reason: input.crossSection?.forwardPrice ? null : input.crossSection?.forwardUnavailableReason ?? "no_causal_forward_evidence",
     max_evidence_age_minutes: input.crossSection?.maxAgeMinutes ?? MARKET_IV_MAX_AGE_MINUTES,
     unique_qualifying_strike_count: input.crossSection?.uniqueStrikeCount ?? 0,
     qualifying_observation_count: input.crossSection?.observationCount ?? 0,
@@ -213,9 +275,10 @@ export function valueReferenceLeg(input: ReferenceLegInput): ReferenceLegValuati
 
   const target: EstimationTarget = {
     strike: leg.strike, optionType,
-    logMoneyness: Math.log(leg.strike / input.underlyingPrice),
+    logMoneyness: input.crossSection?.forwardPrice ? Math.log(leg.strike / input.crossSection.forwardPrice) : Number.NaN,
     timeToExpiryYears: (leg.expiryTimestamp - input.targetTimestampMs) / (365 * 24 * 3_600_000),
     underlyingPrice: input.underlyingPrice,
+    forwardPrice: input.crossSection?.forwardPrice ?? undefined,
     targetTimestampMs: input.targetTimestampMs,
     expiryTimestampMs: leg.expiryTimestamp,
   };
@@ -225,17 +288,11 @@ export function valueReferenceLeg(input: ReferenceLegInput): ReferenceLegValuati
   let decline: ReferenceDeclineReason | null = null;
   const points = input.crossSection?.points ?? [];
   if (!input.crossSection) decline = "cross_section_unavailable";
-  else if (!points.length) decline = "no_qualifying_same_expiry_observations";
-  else if (input.crossSection.uniqueStrikeCount < minimumStrikes) decline = "unique_strike_count_below_minimum";
   else {
-    const estimate = estimateLinearInterpolation(points, target);
-    if (estimate.status === "available" && estimate.iv_decimal !== null) {
-      const below = [...points].filter(p => p.log_moneyness < target.logMoneyness)
-        .sort((a, b) => a.log_moneyness - b.log_moneyness).at(-1) ?? null;
-      const above = [...points].filter(p => p.log_moneyness > target.logMoneyness)
-        .sort((a, b) => a.log_moneyness - b.log_moneyness)[0] ?? null;
-      const exact = points.filter(p => p.log_moneyness === target.logMoneyness);
-      const contributors = exact.length ? exact : [below, above].filter((x): x is AggregatedStrikeObservation => x !== null);
+    const ruleC = evaluateRuleCInterpolation(points, target, minimumStrikes);
+    const estimate = ruleC.estimate;
+    if (ruleC.declineReason === null && estimate?.status === "available" && estimate.iv_decimal !== null) {
+      const {lower: below, upper: above, contributors} = ruleC;
       const freshest = contributors.length
         ? Math.max(...contributors.map(p => p.effective_timestamp_ms)) : null;
       return {
@@ -254,10 +311,7 @@ export function valueReferenceLeg(input: ReferenceLegInput): ReferenceLegValuati
     }
     // The estimator refuses to extrapolate; that refusal is the validated
     // behaviour and is recorded as such rather than as a failure.
-    decline = estimate.unavailable_reason === "target_outside_observed_strike_range"
-      ? "target_not_bracketed"
-      : estimate.unavailable_reason === "insufficient_observations"
-        ? "unique_strike_count_below_minimum" : "interpolation_returned_no_value";
+    decline = ruleC.declineReason;
   }
 
   /* ---- Tier 2: existing local exact-contract anchor, unchanged ---- */

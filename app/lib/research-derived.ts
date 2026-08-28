@@ -21,7 +21,7 @@ import {
   type EvidenceTradeDto, type EvidenceUsageDto, type ExecutionScenarioSnapshot,
   type IndependentTrackSnapshot, type JsonValue, type SelectedStructure,
 } from "./research-selections.ts";
-import {buildModeledExecution, type ExecutionCalibrationRecord} from "./modeled-execution.ts";
+import {buildModeledExecution} from "./modeled-execution.ts";
 import {buildResearchMarginSnapshot} from "./research-margin.ts";
 import {delayedExecutionSnapshot, type DelayedExecutionAnalysis} from "./delayed-execution.ts";
 import {referenceValuationSourceOf} from "./research-valuation.ts";
@@ -49,7 +49,7 @@ export interface DerivedResearchInput {
   readonly statusLayers: JsonValue;
   readonly delayed: DelayedExecutionAnalysis;
   readonly evidenceCatalog: Map<string, EvidenceTradeDto>;
-  readonly modeledCalibration: ExecutionCalibrationRecord[];
+  readonly modeledCalibration?: Parameters<typeof buildModeledExecution>[1];
   /** Structural fields, copied from the saved selection and never re-derived. */
   readonly structural: Pick<SelectedStructure, "candidateSnapshot" | "quantity">;
 }

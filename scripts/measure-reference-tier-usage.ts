@@ -129,6 +129,11 @@ async function main() {
           points, uniqueStrikeCount: new Set(points.map(p => p.strike)).size,
           observationCount: points.length, maxAgeMinutes: 60,
           underlyingPrice: snapshot.underlying_price,
+          forwardPrice: sameExpiry[0]?.forward_price ?? null,
+          forwardMethodVersion: sameExpiry[0]?.forward_method_version ?? null,
+          forwardEvidenceTimestampMs: sameExpiry[0]?.forward_evidence_timestamp_ms ?? null,
+          forwardObservationCount: sameExpiry[0]?.forward_observation_count ?? 0,
+          forwardUnavailableReason: sameExpiry[0]?.forward_price ? null : "no_causal_forward_evidence",
         },
         anchor,
       });

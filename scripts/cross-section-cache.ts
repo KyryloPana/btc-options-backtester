@@ -33,6 +33,10 @@ type Row = Record<string, unknown>;
 const num = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) ? v : null;
 const str = (v: unknown): string | null => typeof v === "string" && v ? v : null;
 
+/** Backoff floor and ceiling for HTTP 429 / 5xx, in milliseconds. */
+const THROTTLE_BACKOFF_BASE_MS = 1_000;
+const THROTTLE_BACKOFF_CEILING_MS = 30_000;
+
 export interface InstrumentMeta {
   readonly instrumentName: string;
   readonly strike: number;
@@ -40,6 +44,8 @@ export interface InstrumentMeta {
   readonly expiryTimestampMs: number;
   readonly createdAtMs: number;
   readonly settlementPeriod: string;
+  readonly contractSize: number | null;
+  readonly minimumTradeAmount: number | null;
 }
 
 export interface RetrievalOptions {
@@ -56,11 +62,12 @@ export class CrossSectionRetrieval {
   readonly #windows = new Map<string, RawOptionPrint[]>();
   #manifest: InstrumentMeta[] | null = null;
   #requests = 0;
+  #incompleteLeafWindows: Array<{fromMs:number;toMs:number;count:number}> = [];
 
   constructor(options: RetrievalOptions = {}) {
     this.#fetch = options.fetcher ?? fetch;
     this.#host = options.host ?? OPTION_HISTORY_HOST;
-    this.#maxRetries = options.maxRetries ?? 3;
+    this.#maxRetries = options.maxRetries ?? 6;
   }
 
   get requestCount(): number { return this.#requests; }
@@ -71,18 +78,34 @@ export class CrossSectionRetrieval {
    */
   clearWindowCache(): void { this.#windows.clear(); }
   get host(): string { return this.#host; }
+  get incompleteLeafWindows(): readonly {fromMs:number;toMs:number;count:number}[] { return this.#incompleteLeafWindows; }
 
   async #get(method: string, params: Record<string, string | number>): Promise<unknown> {
     const query = new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]));
     let lastError: unknown = null;
-    for (let attempt = 0; attempt < this.#maxRetries; attempt += 1) {
+    // Throttling and transient server errors get their own, longer budget:
+    // a multi-year materialization fans out enough concurrent windows to be
+    // rate-limited eventually, and dying on the first 429 would abandon hours
+    // of otherwise-complete work. Deterministic backoff, no jitter, so a rerun
+    // behaves identically.
+    const attempts = this.#maxRetries;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       this.#requests += 1;
+      let throttled = false, retryAfterMs: number | null = null;
       try {
         const response = await this.#fetch(`${this.#host}/${method}?${query}`);
         if (response.ok) return (await response.json() as {result?: unknown}).result;
+        throttled = response.status === 429 || response.status >= 500;
+        const header = response.headers?.get?.("retry-after");
+        const seconds = header === null || header === undefined ? Number.NaN : Number(header);
+        retryAfterMs = Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null;
         lastError = new Error(`${method} -> HTTP ${response.status}`);
-      } catch (error) { lastError = error; }
-      await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
+      } catch (error) { lastError = error; throttled = true; }
+      if (attempt === attempts - 1) break;
+      const backoff = throttled
+        ? Math.min(THROTTLE_BACKOFF_CEILING_MS, THROTTLE_BACKOFF_BASE_MS * 2 ** attempt)
+        : 400 * (attempt + 1);
+      await new Promise(resolve => setTimeout(resolve, Math.max(retryAfterMs ?? 0, backoff)));
     }
     throw lastError instanceof Error ? lastError : new Error(`${method} failed`);
   }
@@ -108,6 +131,7 @@ export class CrossSectionRetrieval {
         instrumentName: name, strike, optionType: r.option_type === "put" ? "P" : "C",
         expiryTimestampMs: expiry, createdAtMs: created,
         settlementPeriod: str(r.settlement_period) ?? "unknown",
+        contractSize: num(r.contract_size), minimumTradeAmount: num(r.min_trade_amount),
       });
     }
     this.#manifest = out;
@@ -143,9 +167,10 @@ export class CrossSectionRetrieval {
     }) as {trades?: Row[]} | undefined;
     const trades = result?.trades ?? [];
 
-    // Depth cap: below a minute of span, splitting further cannot help and would
-    // spin. Truncation at that resolution is reported by the caller's counts.
-    if (trades.length >= TRADE_PAGE_LIMIT && depth < 6 && toMs - fromMs > 60_000) {
+    // Split down to an individual millisecond. A fixed recursion-depth cap can
+    // silently truncate a busy month/day; only a saturated 1ms leaf is truly
+    // indivisible and is explicitly reported as incomplete below.
+    if (trades.length >= TRADE_PAGE_LIMIT && depth < 64 && toMs > fromMs) {
       const middle = Math.floor((fromMs + toMs) / 2);
       const [older, newer] = await Promise.all([
         this.#pagedTrades(fromMs, middle, byName, depth + 1),
@@ -153,6 +178,8 @@ export class CrossSectionRetrieval {
       ]);
       return [...older, ...newer];
     }
+    if (trades.length >= TRADE_PAGE_LIMIT)
+      this.#incompleteLeafWindows.push({fromMs,toMs,count:trades.length});
     return trades.flatMap(t => {
       const name = str(t.instrument_name);
       const meta = name ? byName.get(name) : undefined;

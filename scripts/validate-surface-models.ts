@@ -261,6 +261,7 @@ async function main() {
       strike: truth.strike, optionType: truth.option_type,
       logMoneyness: truth.log_moneyness, timeToExpiryYears: truth.time_to_expiry_years,
       underlyingPrice: snapshot.underlying_price,
+      forwardPrice: truth.forward_price,
       targetTimestampMs: holdout.target_timestamp_ms,
       expiryTimestampMs: holdout.expiry_timestamp_ms,
     };
@@ -396,6 +397,7 @@ async function main() {
       strike: num(truth.strike)!, optionType: String(truth.option_type) === "P" ? "P" : "C",
       logMoneyness: num(truth.log_moneyness)!, timeToExpiryYears: num(truth.time_to_expiry_years)!,
       underlyingPrice: snapshot.underlying_price,
+      forwardPrice: num(truth.forward_price) ?? undefined,
       targetTimestampMs: target, expiryTimestampMs: expiry,
     });
     const shortTarget = legTarget(shortTruth as Row), longTarget = legTarget(longTruth as Row);

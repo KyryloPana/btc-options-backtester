@@ -254,6 +254,8 @@ async function main() {
         for (const structure of own) {
           const slice = sliceFor(snapshot, structure.expiryMs);
           const sameExpiry = observationsFor(snapshot, structure.expiryMs);
+          const expiryForward = sameExpiry[0]?.forward_price;
+          if (!(expiryForward && expiryForward > 0)) continue;
           const wideSame = observationsFor(wideSnapshot, structure.expiryMs);
           const countFor = (instrument: string, rows: typeof sameExpiry) =>
             rows.filter(o => o.instrument_name === instrument).length;
@@ -265,8 +267,8 @@ async function main() {
             underlying_price: underlying,
             short_instrument: structure.shortInstrument, long_instrument: structure.longInstrument,
             short_strike: structure.shortStrike, long_strike: structure.longStrike,
-            short_log_moneyness: Math.log(structure.shortStrike / underlying),
-            long_log_moneyness: Math.log(structure.longStrike / underlying),
+            short_log_moneyness: Math.log(structure.shortStrike / expiryForward),
+            long_log_moneyness: Math.log(structure.longStrike / expiryForward),
             // Roundness is the liquidity hypothesis: 10k/5k strikes are far more
             // heavily traded than 1k-increment strikes.
             short_strike_round_10k: structure.shortStrike % 10_000 === 0,

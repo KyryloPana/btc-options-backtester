@@ -267,7 +267,7 @@ test("COHERENCE: legs marked hours apart are refused, whichever tiers produced t
 });
 
 test("VERSIONING: the promoted identity is new, and the legacy one still names the old method", () => {
-  assert.equal(REFERENCE_VALUATION_METHOD_VERSION, "causal-reference-v2-hybrid-interpolation");
+  assert.equal(REFERENCE_VALUATION_METHOD_VERSION, "causal-reference-v3-expiry-forward-hybrid");
   assert.equal(LEGACY_REFERENCE_VALUATION_METHOD_VERSION, "causal-reference-v1");
   assert.notEqual(REFERENCE_VALUATION_METHOD_VERSION, LEGACY_REFERENCE_VALUATION_METHOD_VERSION);
 });

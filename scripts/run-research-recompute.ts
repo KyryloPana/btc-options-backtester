@@ -8,7 +8,7 @@
  * successful one in the output.
  *
  *   node --experimental-strip-types scripts/run-research-recompute.ts \
- *     <datasetId> <auditJson> [--dry-run]
+ *     <datasetId> <auditJson> [--execution-estimator=/path/to/artifact.json] [--dry-run]
  */
 
 import {readFile, writeFile} from "node:fs/promises";
@@ -18,6 +18,7 @@ import {structuralDifferences, structuralIdentityOf} from "../app/lib/research-i
 import {recomputeSelectedResearch} from "../app/lib/research-refresh.ts";
 import {DeribitHistoryService} from "./deribit-history-api.ts";
 import {createResearchRecomputeEngine, type RecomputeDiagnostics} from "./research-recompute-engine.ts";
+import {loadExecutionCalibration} from "./execution-estimator-artifact.ts";
 
 type Row = Record<string, unknown>;
 const obj = (v: unknown): Row => v && typeof v === "object" && !Array.isArray(v) ? v as Row : {};
@@ -42,8 +43,13 @@ function captureReference(store: ResearchSelectionStore) {
 
 async function main() {
   const [datasetId, auditPath, ...flags] = process.argv.slice(2);
-  if (!datasetId || !auditPath) throw new Error("usage: run-research-recompute.ts <datasetId> <auditJson> [--dry-run]");
+  if (!datasetId || !auditPath) throw new Error("usage: run-research-recompute.ts <datasetId> <auditJson> [--execution-estimator=<artifactJson>] [--dry-run]");
   const dryRun = flags.includes("--dry-run");
+  const estimatorFlags=flags.filter(flag=>flag.startsWith("--execution-estimator="));
+  const unknown=flags.filter(flag=>flag!=="--dry-run"&&!flag.startsWith("--execution-estimator="));
+  if(unknown.length||estimatorFlags.length>1||estimatorFlags[0]==="--execution-estimator=")throw new Error(`invalid arguments: ${[...unknown,...estimatorFlags.slice(1)].join(" ")||"empty execution estimator path"}`);
+  // Validate before starting the history service: a bad artifact cannot cause a partial recompute.
+  const executionCalibration=estimatorFlags[0]?await loadExecutionCalibration(resolve(estimatorFlags[0].slice("--execution-estimator=".length))):undefined;
   const storePath = resolve(process.cwd(), "data/research-selections", `${datasetId}.json`);
 
   const raw = JSON.parse(await readFile(storePath, "utf8"));
@@ -61,7 +67,7 @@ async function main() {
   process.stderr.write("instrument manifest ready\n");
 
   const diagnostics: RecomputeDiagnostics[] = [];
-  const {engine, prime} = createResearchRecomputeEngine({service, diagnostics});
+  const {engine, prime} = createResearchRecomputeEngine({service, diagnostics, executionCalibration});
   prime(before);
 
   let done = 0;

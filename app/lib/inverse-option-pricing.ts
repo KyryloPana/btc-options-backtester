@@ -50,3 +50,14 @@ export function priceInverseOption(input: InverseOptionPricingInput): InverseOpt
   if (![d1, d2, rate, priceUsd, priceBtc].every(Number.isFinite) || priceUsd < 0 || priceBtc < 0) return { status: "unavailable", reason: "The model produced a non-finite or negative value." };
   return { status: "priced", priceBtc, priceUsd, timeYears, forwardPrice, rate };
 }
+
+/** Deterministic inversion of the authoritative inverse-option equation. */
+export function impliedVolatilityFromInversePrice(input: Omit<InverseOptionPricingInput,"ivDecimal"> & {priceBtc:number}): number|null {
+  if (!(input.priceBtc >= 0) || !Number.isFinite(input.priceBtc) || input.expiryTimestamp <= input.valuationTimestamp) return null;
+  const value=(iv:number)=>{const result=priceInverseOption({...input,ivDecimal:iv});return result.status==="priced"?result.priceBtc:null};
+  let low=1e-6,high=8;
+  const lo=value(low),hi=value(high);
+  if(lo===null||hi===null||input.priceBtc<lo-1e-12||input.priceBtc>hi+1e-12)return null;
+  for(let i=0;i<100;i++){const mid=(low+high)/2,price=value(mid);if(price===null)return null;if(price<input.priceBtc)low=mid;else high=mid;}
+  return (low+high)/2;
+}

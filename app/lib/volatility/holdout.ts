@@ -23,7 +23,7 @@ import {
 } from "./cross-section.ts";
 import {contentHash} from "./reference-series.ts";
 
-export const HOLDOUT_METHOD_VERSION = "iv-holdout-cases-v1" as const;
+export const HOLDOUT_METHOD_VERSION = "iv-holdout-cases-v2-expiry-forward" as const;
 
 export type HoldoutMode =
   | "exact_target_contract"
@@ -48,6 +48,7 @@ export interface HoldoutTruth {
   readonly mark_price: number | null;
   readonly index_price: number;
   readonly underlying_price: number;
+  readonly forward_price: number;
   readonly log_moneyness: number;
   readonly time_to_expiry_years: number;
   readonly total_implied_variance: number;
@@ -85,6 +86,7 @@ const truthOf = (o: CrossSectionObservation): HoldoutTruth => ({
   age_minutes: o.age_minutes,
   true_iv_decimal: o.iv_decimal, true_iv_api_percentage: o.iv_api_percentage,
   true_trade_price: o.trade_price, mark_price: o.mark_price,
+  forward_price: o.forward_price,
   index_price: o.index_price, underlying_price: o.underlying_price,
   log_moneyness: o.log_moneyness, time_to_expiry_years: o.time_to_expiry_years,
   total_implied_variance: o.total_implied_variance,

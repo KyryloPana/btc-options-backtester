@@ -169,7 +169,7 @@ const point = (k: number, iv: number): AggregatedStrikeObservation => ({
 
 const targetAt = (k: number): EstimationTarget => ({
   strike: SPOT * Math.exp(k), optionType: "C", logMoneyness: k,
-  timeToExpiryYears: YEARS, underlyingPrice: SPOT,
+  timeToExpiryYears: YEARS, underlyingPrice: SPOT, forwardPrice: SPOT,
   targetTimestampMs: T, expiryTimestampMs: EXPIRY,
 });
 

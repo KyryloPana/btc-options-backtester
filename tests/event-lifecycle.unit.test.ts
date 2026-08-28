@@ -109,7 +109,7 @@ test("EDIT: a text field change is what the exported JSON contains",()=>{
 
 test("EDIT: numeric, enum and timestamp fields keep their types",()=>{
  const edited:BacktestEvent={...fullEvent,entryPrice:42250.5,direction:"short",entryTimeSource:"manual",
-  vpocTimestamp:Date.UTC(2024,0,31,4),exitTimestamp:Date.UTC(2024,2,6,1)};
+  vpocDate:"2024-01-31",vpocTimestamp:Date.UTC(2024,0,31,4),exitDate:"2024-03-06",exitTimestamp:Date.UTC(2024,2,6,1)};
  const checked=validateTradeDataset(dataset([edited]));
  assert.equal(checked.ok,true,JSON.stringify(checked));
  const out=JSON.parse(JSON.stringify(dataset([edited])));
