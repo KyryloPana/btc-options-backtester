@@ -1,10 +1,10 @@
 import { canonicalJson, compactResearchSelectionEvent, type JsonValue, type ResearchSelectionStore, type SelectedStructure } from "./research-selections.ts";
-import { buildExecutionCalibrationRecords, buildModeledExecution } from "./modeled-execution.ts";
+import { buildModeledExecution } from "./modeled-execution.ts";
 import { buildResearchMarginSnapshot, LEGACY_MARGIN_NOT_COMPUTED_REASON } from "./research-margin.ts";
 
 export const CURRENT_RESEARCH_ENGINE_VERSIONS={
- immediateExecution:"immediate-scenario-v2",referenceValuation:"causal-reference-v2-hybrid-interpolation",
- delayedExecution:"causal-delayed-v2",modeledExecution:"modeled-execution-v2",
+ immediateExecution:"immediate-scenario-v2",referenceValuation:"causal-reference-v3-expiry-forward-hybrid",
+ delayedExecution:"causal-delayed-v2",modeledExecution:"modeled-execution-v3-empirical-taker",
  settlementAccounting:"inverse-settlement-v2",margin:"deribit-standard-margin-v2",
 } as const;
 export type DerivedLayer=keyof typeof CURRENT_RESEARCH_ENGINE_VERSIONS;
@@ -47,13 +47,12 @@ const selected=(scope:RefreshScope,eventId:string,candidateId:string)=>scope.kin
  */
 export async function recomputeSelectedResearch(store:ResearchSelectionStore,scope:RefreshScope,engine:ResearchRecomputeEngine,now=new Date().toISOString()):Promise<{store:ResearchSelectionStore;refreshed:number}>{
  let refreshed=0;
- const calibration=buildExecutionCalibrationRecords(store);
  const events=[] as ResearchSelectionStore["events"];
  for(const event of store.events){const structures=[] as SelectedStructure[];for(const structure of event.selectedStructures){
   if(!selected(scope,event.eventId,structure.candidateId)){structures.push(structure);continue;}
   const output=await engine({eventId:event.eventId,sourceRun:event.sourceRun,generationSnapshot:event.generationSnapshot,structure});
   const referenceValuation=output.referenceValuation;
-  const recomputedStructure={...structure,referenceValuation};structures.push({...structure,executionScenarios:output.executionScenarios,referenceValuation,delayedExecution:canonicalJson(output.delayedExecution),modeledExecution:buildModeledExecution(referenceValuation,calibration),marginSnapshot:buildResearchMarginSnapshot(recomputedStructure),evidenceTradeSnapshots:output.evidenceTradeSnapshots?.map(canonicalJson),evidenceUsages:output.evidenceUsages,statusLayers:canonicalJson(output.statusLayers),derivedVersions:{...output.versions,modeledExecution:CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution},derivedRefreshedAtUtc:now});refreshed++;
+  const recomputedStructure={...structure,referenceValuation};structures.push({...structure,executionScenarios:output.executionScenarios,referenceValuation,delayedExecution:canonicalJson(output.delayedExecution),modeledExecution:output.modeledExecution??buildModeledExecution(referenceValuation),marginSnapshot:buildResearchMarginSnapshot(recomputedStructure),evidenceTradeSnapshots:output.evidenceTradeSnapshots?.map(canonicalJson),evidenceUsages:output.evidenceUsages,statusLayers:canonicalJson(output.statusLayers),derivedVersions:{...output.versions,modeledExecution:CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution},derivedRefreshedAtUtc:now});refreshed++;
  }events.push({...event,selectedStructures:structures});}
  if(scope.kind!=="all"&&refreshed===0)throw new Error("No saved selected structure matched the requested refresh scope.");
  return{store:{...store,updatedAtUtc:now,events:events.map(compactResearchSelectionEvent)},refreshed};
