@@ -37,7 +37,7 @@ export const ANALYTICAL_LAYER_GROUPS:readonly {group:AnalyticalLayerGroup;label:
 
 export const ANALYTICAL_TRACK_LAYERS:readonly AnalyticalTrackLayer[]=[
  {id:"reference",group:"primary_baseline",label:"Reference fair value",
-  question:"The primary economic baseline for option-structure economics, short-strike comparisons, width comparisons and core DTE economics where execution is not the question.",
+  question:"The fair-value counterfactual for execution economics, and the structural baseline for short-strike, width and core DTE comparisons.",
   availability:null},
  {id:"immediate_maker",group:"execution_robustness",label:"Immediate Maker",
   question:"Does the reference economics survive a resting maker fill at the signal?",
@@ -88,8 +88,8 @@ export const REPORT_TRACK_ROUTES:readonly ReportTrackRoute[]=[
   note:"Protective width is a structural comparison, so Reference is the primary layer. Maker and taker are attached as separate robustness layers and are never pooled with it."},
  {report:"Exit Policy",primaryLayer:"reference",robustnessLayers:["immediate_maker","immediate_taker"],executionDependent:false,
   note:"Every policy is compared on ONE canonical same-track methodology: triggers and economics on the reference path, with observed maker/taker close support attached separately. Pricing and execution tracks are never pooled. The selected complete exit policy remains a genuine policy control."},
- {report:"Economics",primaryLayer:"reference",robustnessLayers:["immediate_maker","immediate_taker","modeled_expected","modeled_conservative","penalty_sensitivity"],executionDependent:false,
-  note:"The reference account and position baseline is primary. Observed and modelled execution layers are sensitivities beside it and never replace it."},
+ {report:"Economics",primaryLayer:"modeled_expected",robustnessLayers:["reference","modeled_conservative","immediate_maker","immediate_taker","penalty_sensitivity"],executionDependent:true,
+  note:"Empirical Q50 is central, Reference is the fair-value counterfactual, and empirical Q90 is the conservative execution layer."},
 ];
 
 /**

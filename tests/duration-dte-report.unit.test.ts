@@ -592,7 +592,7 @@ test("canonical unavailable status and reason survive every research normalizer"
  const candidate={event_id:"audit",candidate_id:"audit-c",structure_execution_id:"audit-c~maker",execution_scenario:"maker",
   execution_scenario_status:"unavailable",execution_scenario_reason:reason,execution_scenario_legacy_undifferentiated:true,
   target_horizon_days:7,actual_strikes:{short:40000,long:39000,width:1000},expiry_timestamp_utc:D(8)};
- const audit={metadata:{},tables:{candidates:[candidate]}} as unknown as AnalysisDataset;
+ const audit={schemaVersion:"3.8.0",metadata:{},tables:{candidates:[candidate],availability:[]}} as unknown as AnalysisDataset;
  assert.equal(normalizeExecutionScenarioStatus("unavailable"),"unavailable");
  for(const row of [normalizeDteCandidates(audit)[0],normalizeShortStrikeStructures(audit)[0],normalizeWidthStructures(audit)[0]]){
   assert.equal(row.executionScenarioStatus,"unavailable");

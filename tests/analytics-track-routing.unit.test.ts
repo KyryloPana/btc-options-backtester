@@ -92,13 +92,12 @@ test("ROUTING: Reference is the Spread Width primary layer, with maker and taker
  assert.deepEqual([...route.robustnessLayers],["immediate_maker","immediate_taker"]);
 });
 
-test("ROUTING: Economics keeps Reference primary and does not let observed layers overwrite it",()=>{
+test("ROUTING: Economics uses Q50 central, Reference counterfactual, and Q90 conservative",()=>{
  const report=buildEconomicReport(fixture(),DEFAULT_ANALYSIS_CONFIGURATION);
- assert.equal(report.configuration.executionScenario,"reference");
- assert.equal(report.configuration.pricingTrack,"reference");
- // The rendered primary positions ARE the reference layer, not a maker layer.
- assert.equal(report.positions,report.reference.positions);
- assert.equal(report.portfolio,report.reference.portfolio);
+ assert.equal(report.configuration.executionScenario,null);
+ assert.equal(report.configuration.pricingTrack,null);
+ assert.equal(report.positions,report.central.positions);
+ assert.equal(report.portfolio,report.central.portfolio);
  assert.ok(report.observed.maker&&report.observed.taker,"observed layers exist beside it");
  assert.notEqual(report.observed.maker,report.reference,"and are not the same object as the baseline");
 });
@@ -140,25 +139,9 @@ test("ROUTING: the Duration display scenario declares exactly what it scopes",()
 
 /* ---------------- modeled sensitivity ---------------- */
 
-test("ROUTING: expected modeled execution stays explicitly unavailable when uncalibrated",()=>{
+test("ROUTING: the canonical Economics projection is empirical Q50",()=>{
  const report=buildEconomicReport(fixture(),DEFAULT_ANALYSIS_CONFIGURATION);
- assert.equal(report.modeledStatus,"Uncalibrated sensitivity");
- const expected=report.modeled.modeled_expected!,conservative=report.modeled.modeled_conservative!;
- // Uncalibrated means explicitly Unavailable, never zero. The rows survive so
- // the missingness stays visible and countable.
- assert.ok(expected.positions.length>0,"the structures are still counted, not silently dropped");
- for(const position of expected.positions){
-  assert.notEqual(position.status,"priced","an uncalibrated modelled opening is not a priced result");
-  assert.equal(position.pnlBtc,null,"and is Unavailable rather than zero");
-  assert.equal(position.pnlUsd,null);
-  assert.ok(position.missingReason,"with an explicit reason");
- }
- // Conservative modelled execution is never substituted for expected.
- assert.notEqual(expected,conservative);
- const layer=ANALYTICAL_TRACK_LAYERS.find(x=>x.id==="modeled_expected")!;
- assert.match(layer.availability!,/calibration/i);
- assert.equal(layer.group,"modeled_sensitivity");
- assert.equal(ANALYTICAL_TRACK_LAYERS.find(x=>x.id==="modeled_conservative")!.group,"modeled_sensitivity");
+ assert.equal(report.positions,report.modeled.modeled_expected.positions);
 });
 
 /* ---------------- visible control surface ---------------- */

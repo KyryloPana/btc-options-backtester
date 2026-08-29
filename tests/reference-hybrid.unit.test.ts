@@ -8,6 +8,8 @@ import {
 } from "../app/lib/volatility/reference-hybrid.ts";
 import {MARKET_IV_MAX_AGE_MINUTES} from "../app/lib/volatility/market-iv-evidence.ts";
 import {buildExpiryCandidates} from "../app/lib/backtester.ts";
+import {priceInverseOption} from "../app/lib/inverse-option-pricing.ts";
+import {compactEntryEconomics, type EvidenceTradeDto, type EvidenceUsageDto} from "../app/lib/research-selections.ts";
 import type {ContractSeries, ContractTrade, RetrievedSpread} from "../app/lib/backtester.ts";
 
 /**
@@ -89,6 +91,29 @@ test("BRANCH 1: bracketed same-expiry interpolation prices both legs and says so
   assert.ok(provenance.short.iv_decimal! < 0.42 && provenance.short.iv_decimal! > 0.41);
 });
 
+test("Reference repricing uses and persists the exact causal expiry forward", () => {
+  const result = value(spreadOf(series(106_000, "C", []), series(108_000, "C", []), denseLadder()));
+  assert.equal(result.status, "priced"); if (result.status !== "priced") return;
+  const model = result.sold.model!;
+  assert.equal(model.expiryTimestamp, EXPIRY);
+  assert.equal(model.forwardPrice, result.referenceProvenance!.short.forward_price);
+  assert.equal(model.forwardMethodVersion, result.referenceProvenance!.short.forward_method_version);
+  assert.equal(model.forwardEvidenceTimestamp, result.referenceProvenance!.short.forward_evidence_timestamp_ms);
+  assert.notEqual(model.forwardPrice, INDEX, "fixture must exercise a non-spot causal forward");
+  const forwardAware = priceInverseOption({optionType:"call",indexPrice:INDEX,strike:model.strike,valuationTimestamp:TARGET,expiryTimestamp:EXPIRY,forwardPrice:model.forwardPrice,ivDecimal:model.anchorIvDecimal});
+  const oldSpotForward = priceInverseOption({optionType:"call",indexPrice:INDEX,strike:model.strike,valuationTimestamp:TARGET,expiryTimestamp:EXPIRY,ivDecimal:model.anchorIvDecimal});
+  assert.equal(forwardAware.status,"priced"); assert.equal(oldSpotForward.status,"priced");
+  if(forwardAware.status==="priced"&&oldSpotForward.status==="priced"){
+    assert.ok(Math.abs(result.sold.unslippedPriceBtcPerContract-forwardAware.priceBtc)<1e-12);
+    assert.notEqual(result.sold.unslippedPriceBtcPerContract,oldSpotForward.priceBtc);
+  }
+  assert.deepEqual([result.sold.economicSide,result.bought.economicSide],["sold","bought"]);
+  const compacted=compactEntryEconomics("deribit","candidate",result,[] as EvidenceUsageDto[],new Map<string,EvidenceTradeDto>(),null) as Record<string,unknown>;
+  const compactModel=((compacted.sold as Record<string,unknown>).model as Record<string,unknown>);
+  for(const field of ["expiryTimestamp","forwardPrice","anchorIvDecimal","strike","optionType","targetIndex"])
+    assert.equal(compactModel[field],model[field],`${field} must survive persistence compaction`);
+});
+
 test("BRANCH 1: a leg never interpolates from its own prints", () => {
   // 108k DID print, at an absurd IV. If its own observation reached the smile
   // used to value it, the estimate would be partly a restatement of the answer.
@@ -146,9 +171,8 @@ test("BRANCH 2: stale evidence cannot reach the interpolation tier", () => {
   const sold = series(106_000, "C", [tradeAt("BTC-23JUN25-106000-C", 41.5, 90)]);
   const bought = series(108_000, "C", [tradeAt("BTC-23JUN25-108000-C", 41, 90)]);
   const result = value(spreadOf(sold, bought, [...stale, sold, bought]));
-  const {short} = result.referenceProvenance!;
-  assert.equal(short.source, "local_iv_anchor");
-  assert.equal(short.interpolation_declined_reason, "no_qualifying_same_expiry_observations");
+  assert.equal(result.status,"unavailable");
+  if(result.status==="unavailable")assert.equal(result.reasonCode,"causal-expiry-forward-unavailable");
 });
 
 /* ==================== branch 3: unavailable ==================== */
@@ -156,11 +180,8 @@ test("BRANCH 2: stale evidence cannot reach the interpolation tier", () => {
 test("BRANCH 3: neither tier available is explicitly unavailable, never a fabricated mark", () => {
   const result = value(spreadOf(series(106_000, "C", []), series(108_000, "C", []), []));
   assert.equal(result.status, "unavailable");
-  assert.equal(result.reasonCode, "reference-evidence-unavailable");
-  const {short} = result.referenceProvenance!;
-  assert.equal(short.source, "unavailable");
-  assert.equal(short.iv_decimal, null, "unavailable is null, never zero");
-  assert.equal(short.unavailable_reason, "no_market_evidence");
+  assert.equal(result.reasonCode, "causal-expiry-forward-unavailable");
+  assert.match(result.reason,/causal expiry forward/);
 });
 
 test("BRANCH 3: the final-day reason names itself, and does not blanket-refuse", () => {

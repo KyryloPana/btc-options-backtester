@@ -373,9 +373,10 @@ test("E: every canonical fixed-time and capture outcome survives to the rendered
  }
  // The engine label "3D" must not become an unmatched "3d".
  assert.equal(byType("3d"),undefined);
- // And the rendered report reaches priced exits on the reference layer.
+ // The persisted Reference counterfactual remains inspectable, but it is not
+ // promoted into central Q50 economics when empirical execution is absent.
  const report=buildExitPolicyReport(fixture(),CONFIG);
- assert.ok(report.policies.some(p=>p.stats.pricedExits.n>0),"the reference layer renders priced exits");
+ assert.ok(report.policies.every(p=>p.stats.pricedExits.n===0),"Reference does not substitute for Q50");
  assert.ok(report.observed.maker&&report.observed.taker,"observed robustness stays separate");
 });
 
@@ -432,7 +433,7 @@ test("G: entry-only delayed evidence never becomes an economically available lay
  assert.equal(entryOnly.status,"unavailable");
  assert.equal(entryOnly.pricedPositions,0);
  assert.equal(entryOnly.medianExitPnlBtc,null,"Unavailable, never zero");
- assert.equal(entryOnly.kind,"delayed","and it is labelled delayed, not observed");
+ assert.equal(entryOnly.role,"diagnostic","and it remains a diagnostic, not central economics");
 });
 
 /* ============ H / I: futures denominator and equal risk ============ */
@@ -489,19 +490,19 @@ test("J: uncalibrated expected modelled execution is Unavailable, not zero and n
   "conservative modelled execution is never substituted for expected");
  assert.notEqual(expected.pricedPositions,conservative.pricedPositions);
  assert.match(expected.reason!,/calibration/i);
- assert.equal(conservative.kind,"modeled");
- assert.equal(layers.filter(l=>l.primary).length,1);
- assert.equal(layers.find(l=>l.primary)!.track,"reference");
+ assert.equal(conservative.role,"conservative");
+ assert.equal(layers.filter(l=>l.role==="central").length,1);
+ assert.equal(layers.find(l=>l.role==="central")!.track,"modeled_expected");
 });
 
 /* ============ cross-cutting: routing, IV, provenance ============ */
 
-test("ROUTING: Reference stays primary across Short Strike, Spread Width and Economics",()=>{
+test("ROUTING: structural reports use Reference while Economics uses Q50",()=>{
  const data=fixture();
  assert.equal(buildShortStrikeReport(data).scenario,"reference");
  assert.equal(buildSpreadWidthReport(data).scenario,"reference");
  const economics=buildEconomicReport(data,CONFIG);
- assert.equal(economics.positions,economics.reference.positions);
+ assert.equal(economics.positions,economics.central.positions);
  // Robustness layers exist beside the primary one and are never pooled into it.
  assert.equal(buildSpreadWidthReport(data).robustness!.taker.scenario,"taker");
  assert.equal(buildShortStrikeReport(data).robustness!.maker.scenario,"maker");

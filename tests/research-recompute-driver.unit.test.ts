@@ -157,10 +157,35 @@ test("RECOMPUTE: a stale causal-reference-v1 structure becomes current", async (
     const result = await service.recompute(id, {kind: "all"}, async () => derivedOutput("v2"));
     for (const structure of result.store.events.flatMap(e => e.selectedStructures)) {
       assert.equal(structure.derivedVersions?.referenceValuation,
-        "causal-reference-v3-expiry-forward-hybrid");
+        CURRENT_RESEARCH_ENGINE_VERSIONS.referenceValuation);
       assert.deepEqual(diagnoseDerivedStaleness(structure).layers.referenceValuation, undefined);
     }
   });
+});
+
+test("RECOMPUTE: v4 modeled snapshots are replaced before the v5 aggregate version is persisted",async()=>{
+ await withStore(async({service,id})=>{
+  const current=await service.read(id);
+  for(const structure of current.events.flatMap(e=>e.selectedStructures)){
+   structure.derivedVersions={...CURRENT_RESEARCH_ENGINE_VERSIONS,modeledExecution:"modeled-execution-v4-empirical-taker"};
+   structure.modeledExecution={expected:{status:"evaluated",modelVersion:"modeled-execution-v4-empirical-taker"},conservative:{status:"unavailable",reason:"Empirical modeled execution produces nonpositive credit after authoritative fees.",modelVersion:null,provenance:null}};
+  }
+  await service.save(id,current);
+  const provenance={artifactHash:"fake-v5",datasetFingerprint:"fake-calibration"};
+  const result=await service.recompute(id,{kind:"all"},async()=>({...derivedOutput("v5"),modeledExecution:{
+   expected:{status:"evaluated",reason:null,modelVersion:CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution,provenance,entrySnapshot:{netOpeningCashFlowBtc:.01},outcomeSnapshots:[]},
+   conservative:{status:"unavailable",reasonCode:"empirical_nonpositive_credit_after_fees",reason:"Empirical modeled execution produces nonpositive credit after authoritative fees.",modelVersion:CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution,provenance,attemptedEntrySnapshot:{grossSpreadBtc:-.001,openingFeesBtc:.0001,netOpeningCashFlowBtc:-.0011},outcomeSnapshots:[]},
+  }}));
+  for(const structure of result.store.events.flatMap(e=>e.selectedStructures)){
+   const modeled=structure.modeledExecution as Record<string,Record<string,unknown>>;
+   assert.equal(structure.derivedVersions?.modeledExecution,CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution);
+   assert.equal(modeled.expected.modelVersion,CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution);
+   assert.equal(modeled.conservative.modelVersion,CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution);
+   assert.equal(modeled.conservative.reasonCode,"empirical_nonpositive_credit_after_fees");
+   assert.ok(modeled.conservative.provenance);
+   assert.ok(modeled.conservative.attemptedEntrySnapshot);
+  }
+ });
 });
 
 /* ==================== failure safety ==================== */

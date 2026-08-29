@@ -59,7 +59,7 @@ test("SEPARATION: modeled conservative execution is never a relabelled reference
  const s=fixture.events[0]!.selectedStructures[0]! as Record<string,unknown>;
  const referenceEntry=(s.referenceValuation as Record<string,unknown>).entrySnapshot as Record<string,unknown>;
  (s as Record<string,unknown>).modeledExecution={
-  conservative:{status:"evaluated",reason:null,source:"conservative_penalty",modelVersion:"modeled/2",
+  conservative:{status:"evaluated",reason:null,source:"conservative_penalty",modelVersion:"modeled-execution-v5-empirical-taker",
    penaltyBps:25,entryTimestamp:ts,
    // Its OWN opening ledger: a worse net credit than the reference entry.
    entrySnapshot:{...referenceEntry,grossSpreadBtc:.0055,netOpeningCashFlowBtc:.0050},
@@ -207,11 +207,11 @@ test("VOLATILITY: per-leg IV and provenance survive export without changing exec
 });
 
 test("VERSIONING: the schema is bumped and old execution-gated bundles are not reinterpreted",()=>{
- assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION,"3.7.0");
+ assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION,"3.8.0");
  const bundle=buildResearchBundle(referenceOnlyFixture(),now);
  // A bundle claiming the previous version is rejected rather than silently
  // read as if its execution-gated rows were the new canonical economics.
- const stale={...bundle.files,"run.json":bundle.files["run.json"].replace('"3.7.0"','"3.6.0"')};
+ const stale={...bundle.files,"run.json":bundle.files["run.json"].replace('"3.8.0"','"3.6.0"')};
  assert.equal(validateResearchBundle(stale).ok,false);
  // Dropping the new table is a hard failure, not a silent downgrade.
  const withoutTable={...bundle.files,"structure_economics.jsonl":""};

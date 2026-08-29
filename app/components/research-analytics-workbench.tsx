@@ -2,6 +2,7 @@
 import { useMemo, useState } from "react";
 import {
   ANALYTICS_TRACKS,
+  ANALYTICS_TRACK_METADATA,
   buildResearchAnalyticsModel,
   type ResearchAnalyticsModel,
 } from "../lib/research-analytics-model";
@@ -94,7 +95,7 @@ export function ResearchAnalyticsWorkbench({
           <tbody>
             {model.summaries.map((summary) => (
               <tr key={summary.track}>
-                <td>{label(summary.track)}</td>
+                <td>{ANALYTICS_TRACK_METADATA[summary.track].label}</td>
                 <td>
                   {summary.events} / {summary.eligible} / {summary.entered}
                 </td>
@@ -130,7 +131,7 @@ export function ResearchAnalyticsWorkbench({
               <th>Observation</th>
               <th>Contract status</th>
               {ANALYTICS_TRACKS.map((track) => (
-                <th key={track}>{label(track)}</th>
+                <th key={track}>{ANALYTICS_TRACK_METADATA[track].label}</th>
               ))}
             </tr>
           </thead>

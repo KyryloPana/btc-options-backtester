@@ -17,6 +17,19 @@ export const ANALYTICS_TRACKS = [
   "penalty_sensitivity",
 ] as const;
 export type AnalyticsTrack = (typeof ANALYTICS_TRACKS)[number];
+export const ANALYTICS_TRACK_METADATA: Readonly<Record<AnalyticsTrack, {
+  label:string; observed:boolean; modeled:boolean; executionScenario:"maker"|"taker"|null;
+  role:"central"|"counterfactual"|"conservative"|"sensitivity"; description:string;
+}>> = {
+  reference:{label:"Reference fair value",observed:false,modeled:false,executionScenario:null,role:"counterfactual",description:"Execution-independent fair-value counterfactual."},
+  immediate_maker:{label:"Immediate maker opportunity",observed:true,modeled:false,executionScenario:"maker",role:"sensitivity",description:"Exact causal tape maker opportunity."},
+  immediate_taker:{label:"Immediate taker execution",observed:true,modeled:false,executionScenario:"taker",role:"sensitivity",description:"Exact causal tape taker execution."},
+  delayed_maker:{label:"Delayed maker opportunity",observed:true,modeled:false,executionScenario:"maker",role:"sensitivity",description:"Delayed causal tape maker opportunity."},
+  delayed_taker:{label:"Delayed taker execution",observed:true,modeled:false,executionScenario:"taker",role:"sensitivity",description:"Delayed causal tape taker execution."},
+  modeled_expected:{label:"Empirical expected taker · Q50",observed:false,modeled:true,executionScenario:null,role:"central",description:"Central empirical taker execution using per-leg Q50 concessions."},
+  modeled_conservative:{label:"Empirical conservative taker · Q90",observed:false,modeled:true,executionScenario:null,role:"conservative",description:"Conservative empirical taker execution using per-leg Q90 concessions."},
+  penalty_sensitivity:{label:"Declared sensitivity",observed:false,modeled:true,executionScenario:null,role:"sensitivity",description:"Declared execution-penalty sensitivity; not observed execution."},
+};
 export type SourceTier = "high" | "medium" | "low" | "unavailable";
 type Row = Readonly<Record<string, unknown>>;
 const n = (v: unknown) =>
@@ -40,7 +53,7 @@ const tier = (v: unknown): SourceTier =>
       : v === "red" || v === "low"
         ? "low"
         : "unavailable";
-const trackOf = (r: Row): AnalyticsTrack | null => {
+const trackOf = (r: Row, legacyIvCompatibility=false): AnalyticsTrack | null => {
   const explicit = s(r.analytics_track);
   if (explicit && ANALYTICS_TRACKS.includes(explicit as AnalyticsTrack))
     return explicit as AnalyticsTrack;
@@ -52,7 +65,9 @@ const trackOf = (r: Row): AnalyticsTrack | null => {
   if (scenario === "taker")
     return delay && delay > 0 ? "delayed_taker" : "immediate_taker";
   if (pricing === "raw_vwap") return null;
-  if (pricing === "iv_normalized") return "modeled_expected";
+  // Current bundles require analytics_track. This mapping is limited to explicitly
+  // older imports and is never labelled with empirical estimator provenance.
+  if(legacyIvCompatibility&&pricing === "iv_normalized") return "modeled_expected";
   return null;
 };
 export interface PositionEconomics {
@@ -136,6 +151,13 @@ export interface Denominators {
   immediateTakerSupported: number;
   delayedSupported: Readonly<Record<string, number>>;
   modeledValued: number;
+  referenceAvailable:number;
+  immediateMakerAvailable:number;
+  immediateTakerAvailable:number;
+  delayedMakerAvailable:number;
+  delayedTakerAvailable:number;
+  modeledExpectedAvailable:number;
+  modeledConservativeAvailable:number;
   fullyUnavailable: number;
 }
 export interface TrackSummary {
@@ -257,7 +279,7 @@ function projectOutcome(
   x: Row,
   name: string,
   candidateId: string,
-  scenario: "maker" | "taker",
+  scenario: "maker" | "taker" | null,
   track: ScenarioTrack,
   expiry: number | null,
 ): Row {
@@ -353,7 +375,7 @@ function projectAnalyticsTrack(
     const track = observation.tracks[requested];
     const entry = rec(track?.entryEvidence);
     const sold = rec(entry.sold), bought = rec(entry.bought);
-    const scenario = requested === "immediate_taker" || requested === "delayed_taker" ? "taker" : "maker";
+    const metadata=ANALYTICS_TRACK_METADATA[requested],scenario=metadata.executionScenario;
     const available = track?.status === "available";
     candidates.push({
       ...base,
@@ -362,6 +384,8 @@ function projectAnalyticsTrack(
       structure_execution_id: `${observation.candidateId}~${requested}`,
       analytics_track: requested,
       execution_scenario: scenario,
+      execution_observed: metadata.observed,
+      execution_modeled: metadata.modeled,
       execution_scenario_status: available ? "evaluated" : "unavailable",
       execution_scenario_reason: track?.reason ?? `${requested} unavailable`,
       structure_entry_timestamp_utc: track?.entryTime === null || track?.entryTime === undefined ? null : new Date(track.entryTime).toISOString(),
@@ -635,7 +659,7 @@ function buildResearchAnalyticsModelUncached(
           time(event?.signal_timestamp_utc) ?? time(event?.entry_timestamp_utc),
         tracks: Partial<Record<AnalyticsTrack, ScenarioTrack>> = {};
       for (const r of g.rows) {
-        const tr = trackOf(r);
+        const tr = trackOf(r, Number(d.schemaVersion.split(".")[0])<3 || (Number(d.schemaVersion.split(".")[0])===3&&Number(d.schemaVersion.split(".")[1])<7));
         if (!tr) continue;
         const entry =
             time(r.structure_entry_timestamp_utc) ??
@@ -868,6 +892,13 @@ function buildResearchAnalyticsModelUncached(
           o.tracks.modeled_expected?.status === "available" ||
           o.tracks.modeled_conservative?.status === "available",
       ).length,
+      referenceAvailable:observations.filter(o=>o.tracks.reference?.status==="available").length,
+      immediateMakerAvailable:observations.filter(o=>o.tracks.immediate_maker?.status==="available").length,
+      immediateTakerAvailable:observations.filter(o=>o.tracks.immediate_taker?.status==="available").length,
+      delayedMakerAvailable:observations.filter(o=>o.tracks.delayed_maker?.status==="available").length,
+      delayedTakerAvailable:observations.filter(o=>o.tracks.delayed_taker?.status==="available").length,
+      modeledExpectedAvailable:observations.filter(o=>o.tracks.modeled_expected?.status==="available").length,
+      modeledConservativeAvailable:observations.filter(o=>o.tracks.modeled_conservative?.status==="available").length,
       fullyUnavailable: observations.filter(
         (o) => !Object.values(o.tracks).some((x) => x?.status === "available"),
       ).length,

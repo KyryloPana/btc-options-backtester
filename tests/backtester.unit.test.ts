@@ -295,7 +295,7 @@ test("matrix toggle defaults off and disclosure buttons retain accessible relati
   assert.doesNotMatch(page, /⌄/);
   assert.doesNotMatch(page, /ResultTrack|Viewing track|track-selector/, "candidate evidence is not controlled by global track state");
   assert.match(page, /Immediate Maker opportunity/);
-  assert.match(page, /Modeled conservative unavailable/);
+  assert.match(page, /Empirical conservative taker · Q90/);
   assert.match(page, /Show data-unavailable/);
   assert.match(page, /Economically valued structures/);
   assert.match(page, /<th>Status<\/th>/);

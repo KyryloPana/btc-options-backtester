@@ -20,22 +20,20 @@ function data():AnalysisDataset {
  return {filename:"task3.zip",schemaVersion:"3.2.0",migratedFrom:null,run:{},tables:{candidates,availability:variants.map(v=>({event_id:"e",strategy_variant_id:v.strategy_variant_id})),events:[{event_id:"e",entry_timestamp_utc:day(1),signal_timestamp_utc:day(1),entry_price:100,extreme_price:92,invalidation_price:88,range_low:80,range_high:100}],underlying_path:[],outcomes:[],valuations:[],margin_scenarios:[]},counts:{},venues:[],sourceRuns:[],eventUniverseComplete:true,capabilities:[]};
 }
 
-test("Task 3 primary reports use one structural observation and reference economics without observed fills",()=>{
+test("Task 3 structural reports retain Reference as their counterfactual basis",()=>{
  const d=data(),model=buildResearchAnalyticsModel(d),projected=datasetForAnalyticsTrack(d,"reference");
  assert.equal(model.observations.length,3);
  assert.equal(projected.tables.candidates?.length,3);
  const strike=buildShortStrikeReport(d);
  assert.equal(strike.scenario,"reference");
- assert.equal(strike.pairs.length,1);
- assert.equal(strike.pairs[0]?.economicsComparable,true);
+ assert.equal(strike.pairs.length,0,"no empirical Q50 means no central economic pair");
  assert.equal(strike.robustness?.maker.pairs[0]?.economicsComparable,false);
  assert.equal(strike.robustness?.taker.pairs[0]?.economicsComparable,false);
  const width=buildSpreadWidthReport(d);
  assert.equal(width.scenario,"reference");
- assert.equal(width.groups.length,1);
- assert.equal(width.groups[0]?.steps.length,1);
+ assert.equal(width.groups.length,0,"Reference is not substituted for missing Q50 economics");
  assert.equal(width.robustness?.maker.groups[0]?.steps[0]?.economicsComparable,false);
- assert.equal(width.capital[0]?.openingMarginAvailableN,0);
+ assert.equal(width.capital.length,0);
 });
 
 test("one dataset owns one normalization and reuses each track projection",()=>{

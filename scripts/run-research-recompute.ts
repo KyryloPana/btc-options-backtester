@@ -8,7 +8,7 @@
  * successful one in the output.
  *
  *   node --experimental-strip-types scripts/run-research-recompute.ts \
- *     <datasetId> <auditJson> [--execution-estimator=/path/to/artifact.json] [--dry-run]
+ *     <datasetId> <auditJson> [--execution-estimator=/path/to/artifact-directory-or-json] [--dry-run]
  */
 
 import {readFile, writeFile} from "node:fs/promises";
@@ -43,7 +43,7 @@ function captureReference(store: ResearchSelectionStore) {
 
 async function main() {
   const [datasetId, auditPath, ...flags] = process.argv.slice(2);
-  if (!datasetId || !auditPath) throw new Error("usage: run-research-recompute.ts <datasetId> <auditJson> [--execution-estimator=<artifactJson>] [--dry-run]");
+  if (!datasetId || !auditPath) throw new Error("usage: run-research-recompute.ts <datasetId> <auditJson> [--execution-estimator=<artifact-directory-or-json>] [--dry-run]");
   const dryRun = flags.includes("--dry-run");
   const estimatorFlags=flags.filter(flag=>flag.startsWith("--execution-estimator="));
   const unknown=flags.filter(flag=>flag!=="--dry-run"&&!flag.startsWith("--execution-estimator="));
