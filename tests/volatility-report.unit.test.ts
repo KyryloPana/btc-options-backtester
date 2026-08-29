@@ -19,13 +19,30 @@ test("market-IV report excludes reconstructed pricing IV and does not synthesize
 test("outcome IV joins exactly to its canonical Reference valuation timestamp",()=>{
  const entry="2020-01-01T00:00:00.000Z",exit="2020-01-01T04:01:00.000Z",structure={event_id:"e",candidate_id:"c",entry_timestamp_utc:entry,legs:[{leg:"short",status:"available",observation:"observed",iv_decimal:.5},{leg:"long",status:"available",observation:"observed",iv_decimal:.6}],same_expiry_reference:{status:"unavailable"},differentials:[],synthesized_spread_iv:null};
  const vol=(iv:number,observation="observed")=>({status:"available",observation,iv_decimal:iv});
- const report=buildVolatilityReport(dataset({event_volatility_state:[],structure_volatility_state:[structure],valuations:[{candidate_id:"c",analytics_track:"reference",timestamp_utc:exit,short_leg_volatility:vol(.4),long_leg_volatility:vol(.55)}],outcomes:[{candidate_id:"c",analytics_track:"reference",outcome_type:"vpoc",valuation_timestamp_utc:exit}]}));
+ const report=buildVolatilityReport(dataset({event_volatility_state:[],structure_volatility_state:[structure],valuations:[{candidate_id:"c",analytics_track:"reference_fair_value",timestamp_utc:exit,short_leg_volatility:vol(.4),long_leg_volatility:vol(.55)}],outcomes:[{candidate_id:"c",analytics_track:"reference_fair_value",outcome_type:"vpoc",valuation_timestamp_utc:exit}]}));
  const vpoc=report.endpoints.find(e=>e.id==="vpoc")!;assert.equal(vpoc.timestampUtc,exit);assert.ok(Math.abs(vpoc.deltaShortIv!+.1)<1e-12);
  const fixed=report.endpoints.find(e=>e.id==="4h")!;assert.equal(fixed.status,"unavailable","the nearby 04:01 mark must not be searched forward");
 });
 
 test("endpoint reconstructed IV makes change unavailable",()=>{
  const entry="2020-01-01T00:00:00.000Z",exit="2020-01-01T04:00:00.000Z",structure={event_id:"e",candidate_id:"c",entry_timestamp_utc:entry,legs:[{leg:"short",status:"available",observation:"observed",iv_decimal:.5},{leg:"long",status:"available",observation:"observed",iv_decimal:.6}],same_expiry_reference:{status:"unavailable"},differentials:[],synthesized_spread_iv:null};
- const report=buildVolatilityReport(dataset({event_volatility_state:[],structure_volatility_state:[structure],valuations:[{candidate_id:"c",analytics_track:"reference",timestamp_utc:exit,short_leg_volatility:{status:"available",observation:"reconstructed",iv_decimal:.4}}],outcomes:[]}));
+ const report=buildVolatilityReport(dataset({event_volatility_state:[],structure_volatility_state:[structure],valuations:[{candidate_id:"c",analytics_track:"reference_fair_value",timestamp_utc:exit,short_leg_volatility:{status:"available",observation:"reconstructed",iv_decimal:.4}}],outcomes:[]}));
  assert.equal(report.endpoints.find(e=>e.id==="4h")!.deltaShortIv,null);
+});
+
+
+test("legacy reference name cannot silently populate canonical Reference endpoints",()=>{
+ const entry="2020-01-01T00:00:00.000Z",exit="2020-01-01T04:00:00.000Z",structure={event_id:"e",candidate_id:"c",entry_timestamp_utc:entry,legs:[{leg:"short",status:"available",observation:"observed",iv_decimal:.5}],same_expiry_reference:{status:"unavailable"},differentials:[]};
+ const report=buildVolatilityReport(dataset({event_volatility_state:[],structure_volatility_state:[structure],valuations:[{candidate_id:"c",analytics_track:"reference",timestamp_utc:exit,short_leg_volatility:{status:"available",observation:"observed",iv_decimal:.4}}],outcomes:[]}));
+ assert.equal(report.endpoints.find(e=>e.id==="4h")!.status,"unavailable");
+});
+
+test("production cache materialization preserves one event and candidate row per structural identity",async()=>{
+ const {mkdtemp}=await import("node:fs/promises"),{tmpdir}=await import("node:os"),{join}=await import("node:path");
+ const {materializeVolatilityStates}=await import("../scripts/materialize-volatility-states.ts");
+ const {store}=await import("./fixtures/research-selection-store.ts");
+ const state=await materializeVolatilityStates(store,await mkdtemp(join(tmpdir(),"vol-state-")));
+ assert.deepEqual(state.events!.map(x=>x.event_id).sort(),["e1","e2"]);
+ assert.equal(state.structures!.length,4);assert.equal(new Set(state.structures!.map(x=>x.candidate_id)).size,4);
+ assert.ok(state.events!.every(x=>x.reference_iv.every(v=>v.status==="unavailable")),"missing cache must remain unavailable");
 });

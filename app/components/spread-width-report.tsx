@@ -1,6 +1,8 @@
 "use client";
 import {useState} from "react";
 import type {SpreadWidthReport} from "../lib/spread-width/report";
+import type {VolatilityReport} from "../lib/volatility/volatility-report";
+import {EmbeddedVolatilityContext} from "./volatility-report";
 import type {WidthStructure} from "../lib/spread-width/normalize";
 import {ChartMarker,ChartReadout,useChartCursor} from "./chart-cursor";
 import {nearestInPlot,type PlotGeometry} from "../lib/chart-interaction";
@@ -89,8 +91,8 @@ const VIEWS:readonly {value:WidthView;label:string}[]=[
  {value:"maker",label:"Maker opportunity"},{value:"taker",label:"Taker"},{value:"compare",label:"Compare"},
 ];
 
-export function SpreadWidthReportView({report,view="maker",onViewChange}:{
- report:SpreadWidthReport;view?:WidthView;onViewChange?:(view:WidthView)=>void;
+export function SpreadWidthReportView({report,volatility,view="maker",onViewChange}:{
+ report:SpreadWidthReport;volatility?:VolatilityReport;view?:WidthView;onViewChange?:(view:WidthView)=>void;
 }){
  const [page,setPage]=useState(0);
  const s=report.summary,pageSize=10;
@@ -114,6 +116,7 @@ export function SpreadWidthReportView({report,view="maker",onViewChange}:{
    </div>}
   </header>
 
+  {volatility&&<EmbeddedVolatilityContext report={volatility} kind="width"/>}
   {/* 1 · Summary */}
   <div className="dd-cards">
    <Card label="Matched observations" value={String(s.matchedObservations)} detail={`${s.matchedGroups} ladder(s), ${s.adjacentSteps} step(s)`}/>

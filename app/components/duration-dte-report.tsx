@@ -8,6 +8,8 @@ import type {
 } from "../lib/duration-dte/report";
 import type {DteCandidate,OutcomeBeforeExpiry,ScenarioCoverage} from "../lib/duration-dte/normalize";
 import {executionScenarioStatusLabel} from "../lib/execution-scenario";
+import type {VolatilityReport} from "../lib/volatility/volatility-report";
+import {EmbeddedVolatilityContext} from "./volatility-report";
 
 /**
  * Presentation only. Every number comes from the prebuilt Duration & DTE view
@@ -447,7 +449,7 @@ const VIEWS:readonly {value:ExecutionView;label:string}[]=[
  {value:"compare",label:"Compare"},
 ];
 
-export function DurationDteReportView({report,view="maker",onViewChange}:{report:DurationDteReport;view?:ExecutionView;onViewChange?:(view:ExecutionView)=>void}){
+export function DurationDteReportView({report,volatility,view="maker",onViewChange}:{report:DurationDteReport;volatility?:VolatilityReport;view?:ExecutionView;onViewChange?:(view:ExecutionView)=>void}){
  const [page,setPage]=useState(0);
  const pages=Math.max(1,Math.ceil(report.candidates.length/PAGE_SIZE));
  const current=Math.min(page,pages-1);
@@ -472,6 +474,7 @@ export function DurationDteReportView({report,view="maker",onViewChange}:{report
    <div className="dd-horizons">{report.horizons.map(hz=><span key={hz.nominalDays} className="dd-horizon-pill">{hz.label}{hz.eligibleDteRange&&<small> {hz.eligibleDteRange.min}–{hz.eligibleDteRange.max}d</small>}</span>)}</div>
   </header>
 
+  {volatility&&<EmbeddedVolatilityContext report={volatility} kind="dte"/>}
   <p className="dd-note" data-testid="duration-execution-scope"><b>Analytical layer.</b> The primary comparisons on this report are computed on the execution-independent structure population — Reference — and are unchanged by any execution assumption: {report.executionScenarioScope.independentOf.join("; ")}. One display scenario ({report.executionScenarioScope.displayScenario}) scopes only the explicitly execution-dependent subsections: {report.executionScenarioScope.appliesTo.join("; ")}. {report.executionScenarioScope.note}</p>
 
   {report.excludedIneligible>0&&<p className="dd-notice">{report.excludedIneligible} structure(s) excluded — their underlying MR event is ineligible for time-to-event analysis, never counted as a resolution or a failure.</p>}

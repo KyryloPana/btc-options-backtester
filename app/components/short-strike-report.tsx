@@ -1,6 +1,8 @@
 "use client";
 import {useState} from "react";
 import type {ConditionalBucket,MatchedPair,ShortStrikeReport} from "../lib/short-strike/report";
+import type {VolatilityReport} from "../lib/volatility/volatility-report";
+import {EmbeddedVolatilityContext} from "./volatility-report";
 import type {ExecutionScenario} from "../lib/short-strike/normalize";
 import {executionScenarioStatusLabel} from "../lib/execution-scenario";
 import {ChartMarker,ChartReadout,useChartCursor} from "./chart-cursor";
@@ -88,8 +90,8 @@ const VIEWS:readonly {value:StrikeView;label:string}[]=[
  {value:"maker",label:"Maker opportunity"},{value:"taker",label:"Taker"},{value:"compare",label:"Compare"},
 ];
 
-export function ShortStrikeReportView({report,takerReport,view="maker",onViewChange}:{
- report:ShortStrikeReport;takerReport?:ShortStrikeReport;view?:StrikeView;onViewChange?:(view:StrikeView)=>void;
+export function ShortStrikeReportView({report,takerReport,volatility,view="maker",onViewChange}:{
+ report:ShortStrikeReport;takerReport?:ShortStrikeReport;volatility?:VolatilityReport;view?:StrikeView;onViewChange?:(view:StrikeView)=>void;
 }){
  const [page,setPage]=useState(0);
  const s=report.summary,pageSize=10;
@@ -112,6 +114,7 @@ export function ShortStrikeReportView({report,takerReport,view="maker",onViewCha
    </div>}
   </header>
 
+  {volatility&&<EmbeddedVolatilityContext report={volatility} kind="strike"/>}
   {/* 1 · Summary */}
   <div className="dd-cards">
    <Card label="Matched pairs" value={String(s.matchedPairs)} detail={`${s.matchedEvents} event(s)`}/>
