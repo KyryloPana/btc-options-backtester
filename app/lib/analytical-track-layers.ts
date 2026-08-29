@@ -36,6 +36,9 @@ export const ANALYTICAL_LAYER_GROUPS:readonly {group:AnalyticalLayerGroup;label:
 ];
 
 export const ANALYTICAL_TRACK_LAYERS:readonly AnalyticalTrackLayer[]=[
+ {id:"market_volatility_state",group:"primary_baseline",label:"Market volatility state",
+  question:"What did admissible strike/expiry IV, causal reference IV, trailing RV and broad volatility evidence show at entry and while the position was open?",
+  availability:"Missing market evidence remains unavailable; pricing reconstruction and DVOL are not substitutes."},
  {id:"reference",group:"primary_baseline",label:"Reference fair value",
   question:"The fair-value counterfactual for execution economics, and the structural baseline for short-strike, width and core DTE comparisons.",
   availability:null},
@@ -80,6 +83,8 @@ export interface ReportTrackRoute {
 export const REPORT_TRACK_ROUTES:readonly ReportTrackRoute[]=[
  {report:"Underlying Resolution",primaryLayer:"underlying_path",robustnessLayers:[],executionDependent:false,
   note:"MR resolution is a property of the underlying path. It has no options execution track and no maker/taker switch."},
+ {report:"Volatility",primaryLayer:"market_volatility_state",robustnessLayers:[],executionDependent:false,
+  note:"Descriptive market-state evidence with explicit missingness. Pricing IV and DVOL never substitute for strike/expiry market IV, and there is no execution selector."},
  {report:"Duration & DTE",primaryLayer:"reference",robustnessLayers:["immediate_maker","immediate_taker","delayed_maker","delayed_taker","modeled_expected","modeled_conservative"],executionDependent:false,
   note:"Structural timing, actual DTE and thesis resolution are execution-independent and have their own denominator. Maker and taker coverage, leg synchronization, the matched maker-vs-taker comparison and the operational holding period are execution-dependent subsections and say so; one display scenario scopes those subsections only."},
  {report:"Short Strike",primaryLayer:"reference",robustnessLayers:["immediate_maker","immediate_taker"],executionDependent:false,
