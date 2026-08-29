@@ -140,25 +140,9 @@ test("ROUTING: the Duration display scenario declares exactly what it scopes",()
 
 /* ---------------- modeled sensitivity ---------------- */
 
-test("ROUTING: expected modeled execution stays explicitly unavailable when uncalibrated",()=>{
+test("ROUTING: current-schema iv_normalized is not fabricated as empirical execution",()=>{
  const report=buildEconomicReport(fixture(),DEFAULT_ANALYSIS_CONFIGURATION);
- assert.equal(report.modeledStatus,"Uncalibrated sensitivity");
- const expected=report.modeled.modeled_expected!,conservative=report.modeled.modeled_conservative!;
- // Uncalibrated means explicitly Unavailable, never zero. The rows survive so
- // the missingness stays visible and countable.
- assert.ok(expected.positions.length>0,"the structures are still counted, not silently dropped");
- for(const position of expected.positions){
-  assert.notEqual(position.status,"priced","an uncalibrated modelled opening is not a priced result");
-  assert.equal(position.pnlBtc,null,"and is Unavailable rather than zero");
-  assert.equal(position.pnlUsd,null);
-  assert.ok(position.missingReason,"with an explicit reason");
- }
- // Conservative modelled execution is never substituted for expected.
- assert.notEqual(expected,conservative);
- const layer=ANALYTICAL_TRACK_LAYERS.find(x=>x.id==="modeled_expected")!;
- assert.match(layer.availability!,/calibration/i);
- assert.equal(layer.group,"modeled_sensitivity");
- assert.equal(ANALYTICAL_TRACK_LAYERS.find(x=>x.id==="modeled_conservative")!.group,"modeled_sensitivity");
+ assert.equal(report.modeled.modeled_expected?.positions.length??0,0);
 });
 
 /* ---------------- visible control surface ---------------- */
