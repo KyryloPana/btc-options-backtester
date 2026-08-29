@@ -157,7 +157,7 @@ test("RECOMPUTE: a stale causal-reference-v1 structure becomes current", async (
     const result = await service.recompute(id, {kind: "all"}, async () => derivedOutput("v2"));
     for (const structure of result.store.events.flatMap(e => e.selectedStructures)) {
       assert.equal(structure.derivedVersions?.referenceValuation,
-        "causal-reference-v3-expiry-forward-hybrid");
+        CURRENT_RESEARCH_ENGINE_VERSIONS.referenceValuation);
       assert.deepEqual(diagnoseDerivedStaleness(structure).layers.referenceValuation, undefined);
     }
   });

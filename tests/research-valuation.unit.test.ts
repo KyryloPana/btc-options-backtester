@@ -21,13 +21,13 @@ test("opposite-direction tape supports a maker opportunity estimate but cannot f
  const strict=simulateTakerSpread(s,executionClock({signalTimestamp:T,signalSourceTimestamp:T,signalTimePrecision:"second",configuredLatencyMs:0,maxFillWaitMs:30*60000}),1,0,60000);assert.equal(strict.status,"no-trade");
 });
 test("smallest common direct window wins and 2h direct beats IV fallback",()=>{const s=spread([trade("BTC-8JAN24-39000-P",20,.08,"sell"),trade("BTC-8JAN24-39000-P",90,.5,"sell")],[trade("BTC-8JAN24-38000-P",25,.03,"buy")]);const e=estimateResearchSpread({spread:s,targetTimestamp:T,targetIndex:40000,slippageBps:0,executionMode:"taker"});assert.equal(e.status,"priced");if(e.status==="priced"){assert.equal(e.evidenceWindowMinutes,30);assert.equal(e.sold.unslippedPriceBtcPerContract,.08);assert.equal(e.priceSource,"direct-vwap");}});
-test("IV normalization is bounded and missing path points remain gaps",()=>{const valid=spread([trade("BTC-8JAN24-39000-P",-600,.08,"sell")],[trade("BTC-8JAN24-38000-P",-590,.03,"buy")]);const entry=estimateResearchSpread({spread:valid,targetTimestamp:T,targetIndex:40000,slippageBps:0,executionMode:"taker"});assert.equal(entry.status,"priced");if(entry.status==="priced"){assert.equal(entry.priceSource,"model-reconstructed");assert.equal(entry.estimateQuality,"red");const path=buildEstimatedPath({spread:valid,timestamps:[T,T+2*864e5],indexAt:()=>40000,entry,slippageBps:0});assert.equal(path[1].status,"priced");assert.equal(path[1].ivSource,"constant-entry-IV");}const stale=spread([trade("BTC-8JAN24-39000-P",721,.08,"sell")],[trade("BTC-8JAN24-38000-P",721,.03,"buy")]);assert.equal(estimateResearchSpread({spread:stale,targetTimestamp:T,targetIndex:40000,slippageBps:0,executionMode:"taker"}).status,"unavailable");});
+test("IV normalization is bounded and missing path points remain gaps",()=>{const valid=spread([trade("BTC-8JAN24-39000-P",-600,.08,"sell")],[trade("BTC-8JAN24-38000-P",-590,.03,"buy")]);const entry=estimateResearchSpread({spread:valid,targetTimestamp:T,targetIndex:40000,slippageBps:0,executionMode:"taker"});assert.equal(entry.status,"priced");if(entry.status==="priced"){assert.equal(entry.priceSource,"model-reconstructed");assert.equal(entry.estimateQuality,"red");const path=buildEstimatedPath({spread:valid,timestamps:[T,T+2*864e5],indexAt:()=>40000,entry,slippageBps:0});assert.equal(path[1].status,"missing","a Reference path cannot reuse IV with an implicit spot-forward");}const stale=spread([trade("BTC-8JAN24-39000-P",721,.08,"sell")],[trade("BTC-8JAN24-38000-P",721,.03,"buy")]);assert.equal(estimateResearchSpread({spread:stale,targetTimestamp:T,targetIndex:40000,slippageBps:0,executionMode:"taker"}).status,"unavailable");});
 test("model valuation enforces the canonical IV-anchor maximum age",()=>{
  assert.equal(MODEL_IV_ANCHOR_MAX_AGE_MINUTES,720);
  const atBoundary=spread([trade("BTC-8JAN24-39000-P",-MODEL_IV_ANCHOR_MAX_AGE_MINUTES,.08,"buy")],[trade("BTC-8JAN24-38000-P",-MODEL_IV_ANCHOR_MAX_AGE_MINUTES,.03,"sell")]);
  const beyondBoundary=spread([trade("BTC-8JAN24-39000-P",-MODEL_IV_ANCHOR_MAX_AGE_MINUTES-1,.08,"buy")],[trade("BTC-8JAN24-38000-P",-MODEL_IV_ANCHOR_MAX_AGE_MINUTES-1,.03,"sell")]);
  const priced=estimateModelSpread({spread:atBoundary,targetTimestamp:T,targetIndex:40000,slippageBps:0});
- assert.equal(priced.status,"priced");if(priced.status==="priced")assert.equal(priced.evidenceWindowMinutes,MODEL_IV_ANCHOR_MAX_AGE_MINUTES);
+ assert.equal(priced.status,"unavailable","a valid IV anchor cannot replace missing causal forward evidence");
  assert.equal(estimateModelSpread({spread:beyondBoundary,targetTimestamp:T,targetIndex:40000,slippageBps:0}).status,"unavailable");
 });
 test("insufficient historical amount is unavailable rather than a priced warning",()=>{const s=spread([trade("BTC-8JAN24-39000-P",0,.08,"sell",1)],[trade("BTC-8JAN24-38000-P",0,.03,"buy",1)]);const one=estimateResearchSpread({spread:s,targetTimestamp:T,targetIndex:40000,amount:1,slippageBps:0,executionMode:"taker"});const ten=estimateResearchSpread({spread:s,targetTimestamp:T,targetIndex:40000,amount:10,slippageBps:0,executionMode:"taker"});assert.equal(one.status,"priced");assert.equal(ten.status,"unavailable");});
@@ -67,7 +67,7 @@ test("live-shaped October Deribit rows retain independent IV anchors through dir
  const rows=Array.from({length:218},(_,i)=>({openTime:entry-3600000+i*3600000,closeTime:entry-1+i*3600000,open:122000+i*5,high:123000,low:121000,close:122100+i*7,volume:1}));
  const candles=parseOhlcCandles({candles:rows},entry-3600000,expiration+3600000);
  const path=buildEstimatedPath({spread:resolved,timestamps:[entry,entry+2*864e5],candles,entry:direct,slippageBps:0});
- assert.ok(path.every(p=>p.status==="priced"));
+ assert.ok(path.every(p=>p.status==="missing"),"pre-expiry path refuses the legacy F=index fallback");
  const one=scaleResearchPath(path,direct,1);assert.deepEqual(one.map(p=>p.estimatedNetPnlBtc),path.map(p=>p.estimatedNetPnlBtc));
 });
 
@@ -122,7 +122,8 @@ test("nine-variant discontinuity keeps model valuation independent from raw exec
  const unresolved=Array.from({length:4},(_,i)=>({...spread([],[]),id:`unresolved-${i}`,soldContract:undefined,boughtContract:undefined,retrievalStatus:"partial" as const,retrievalNote:"API retrieval failed for both exact instruments"}));
  const layers=[...resolved,...unresolved].map(s=>evaluateResearchEntryLayers({spread:s,targetTimestamp:T,targetIndex:40000,amount:1,slippageBps:0,fillWindowMinutes:30}));
  assert.equal(layers.length,9);assert.equal(layers.filter(x=>x.structural.status==="resolved").length,5);assert.equal(layers.filter(x=>x.structural.status==="unresolved").length,4);
- assert.equal(layers.filter(x=>x.model.status==="priced").length,5,"causal model values survive the size shortfall");
+ assert.equal(layers.filter(x=>x.model.status==="unavailable").length,9,"Reference declines without causal expiry-forward evidence");
+ assert.deepEqual(resolved.map(x=>x.id),["resolved-0","resolved-1","resolved-2","resolved-3","resolved-4"],"candidate identities remain unchanged");
  assert.equal(layers.filter(x=>x.maker.status==="available").length,0);assert.equal(layers.filter(x=>x.taker.status==="available").length,0);
  for(const x of layers.slice(0,5)){assert.equal(x.maker.reasonCode,"insufficient-compatible-amount");assert.equal(x.taker.reasonCode,"insufficient-compatible-amount");assert.equal(x.maker.requestedAmount,1);assert.equal(x.maker.shortQualifyingAmount,.1);assert.equal(x.maker.rawVwapStatus,"unavailable");}
  for(const x of layers.slice(5)){assert.equal(x.model.status,"unavailable");assert.equal(x.maker.entry.status,"unavailable");assert.equal(x.taker.entry.status,"unavailable");}
