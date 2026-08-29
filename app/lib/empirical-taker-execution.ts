@@ -44,13 +44,19 @@ export function dteBand(dte:number):DteBand|null{return dte>=1&&dte<3?"1-3":dte>
 export const amountBand=(amount:number):AmountBand=>amount<=1?"small":"larger";
 export function quantileR7(values:readonly number[],p:number){if(!values.length)return null;const x=[...values].sort((a,b)=>a-b),h=(x.length-1)*p,lo=Math.floor(h),f=h-lo;return x[lo]!+(x[Math.min(lo+1,x.length-1)]!-x[lo]!)*f}
 const economicIdentity=(r:ExecutionCalibrationObservation)=>JSON.stringify([r.trade_timestamp_ms,r.direction,r.trade_iv_decimal,r.primary_fair_iv_decimal,r.mark_price_btc,r.index_price,r.forward_price,r.strike,r.option_type,r.expiry_timestamp_ms,r.actual_dte_days,r.amount,r.forward_moneyness,r.features?.calendar_date,r.features?.expiry_date_group_id]);
+export const calibrationEconomicIdentity=economicIdentity;
+/** The single-row economic conversion shared by portable and streaming compilers. */
+export function compileCalibrationRow(r:ExecutionCalibrationObservation):EmpiricalCalibrationRow|null{
+ if(r.method_version!==EXECUTION_CALIBRATION_METHOD_VERSION||!r.taker_concession_eligible||!r.trade_id)return null;
+ const action=r.direction,band=dteBand(r.actual_dte_days),amount=r.amount,forward=r.forward_price,index=r.index_price,fair=r.primary_fair_iv_decimal,trade=r.trade_iv_decimal,mark=r.mark_price_btc,m=r.forward_moneyness;
+ if((action!=="buy"&&action!=="sell")||band===null||amount===null||!(amount>0)||forward===null||!(forward>0)||index===null||!(index>0)||fair===null||!(fair>0)||trade===null||!(trade>0)||mark===null||!(mark>=0)||m===null||Math.abs(m)>0.35)return null;
+ const markIv=impliedVolatilityFromInversePrice({optionType:r.option_type==="C"?"call":"put",indexPrice:index,strike:r.strike,valuationTimestamp:r.trade_timestamp_ms,expiryTimestamp:r.expiry_timestamp_ms,forwardPrice:forward,priceBtc:mark});if(markIv===null)return null;
+ return{tradeId:r.trade_id,timestampMs:r.trade_timestamp_ms,action,dteDays:r.actual_dte_days,dteBand:band,amount,amountBand:amountBand(amount),expiryDayGroup:r.features.expiry_date_group_id,calendarDate:r.features.calendar_date,concessionVolPoints:(action==="buy"?trade-markIv:markIv-trade)*100,referenceErrorVolPoints:Math.abs(fair-markIv)*100};
+}
 export function compileCalibrationRows(observations:readonly ExecutionCalibrationObservation[]):EmpiricalCalibrationRow[]{
  const ids=new Map<string,string>(),rows:EmpiricalCalibrationRow[]=[];
  for(const r of observations){if(r.method_version!==EXECUTION_CALIBRATION_METHOD_VERSION||!r.taker_concession_eligible||!r.trade_id)continue;const identity=economicIdentity(r),prior=ids.get(r.trade_id);if(prior!==undefined){if(prior!==identity)throw new Error(`Conflicting economic fields for duplicate trade_id ${r.trade_id}`);continue}ids.set(r.trade_id,identity);
-  const action=r.direction,band=dteBand(r.actual_dte_days),amount=r.amount,forward=r.forward_price,index=r.index_price,fair=r.primary_fair_iv_decimal,trade=r.trade_iv_decimal,mark=r.mark_price_btc,m=r.forward_moneyness;
-  if((action!=="buy"&&action!=="sell")||band===null||amount===null||!(amount>0)||forward===null||!(forward>0)||index===null||!(index>0)||fair===null||!(fair>0)||trade===null||!(trade>0)||mark===null||!(mark>=0)||m===null||Math.abs(m)>0.35)continue;
-  const markIv=impliedVolatilityFromInversePrice({optionType:r.option_type==="C"?"call":"put",indexPrice:index,strike:r.strike,valuationTimestamp:r.trade_timestamp_ms,expiryTimestamp:r.expiry_timestamp_ms,forwardPrice:forward,priceBtc:mark});if(markIv===null)continue;
-  rows.push({tradeId:r.trade_id,timestampMs:r.trade_timestamp_ms,action,dteDays:r.actual_dte_days,dteBand:band,amount,amountBand:amountBand(amount),expiryDayGroup:r.features.expiry_date_group_id,calendarDate:r.features.calendar_date,concessionVolPoints:(action==="buy"?trade-markIv:markIv-trade)*100,referenceErrorVolPoints:Math.abs(fair-markIv)*100});
+  const row=compileCalibrationRow(r);if(row)rows.push(row);
  }
  return rows.sort((a,b)=>a.timestampMs-b.timestampMs||a.tradeId.localeCompare(b.tradeId));
 }

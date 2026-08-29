@@ -28,6 +28,7 @@
     "scripts/build-execution-calibration-range.ts",
     "scripts/aggregate-execution-calibration.ts"
     ,"scripts/compile-execution-estimator.ts"
+    ,"scripts/execution-estimator-artifact.ts"
     ,"scripts/local-contract-archive.ts"
     ,"scripts/index-local-contract-archive.ts"
     ,"scripts/build-execution-calibration-local-range.ts"
