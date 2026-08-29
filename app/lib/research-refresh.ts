@@ -4,7 +4,7 @@ import { buildResearchMarginSnapshot, LEGACY_MARGIN_NOT_COMPUTED_REASON } from "
 
 export const CURRENT_RESEARCH_ENGINE_VERSIONS={
  immediateExecution:"immediate-scenario-v2",referenceValuation:"causal-reference-v3-expiry-forward-hybrid/repricing-v2",
- delayedExecution:"causal-delayed-v2",modeledExecution:"modeled-execution-v4-empirical-taker",
+ delayedExecution:"causal-delayed-v2",modeledExecution:"modeled-execution-v5-empirical-taker",
  settlementAccounting:"inverse-settlement-v2",margin:"deribit-standard-margin-v2",
 } as const;
 export type DerivedLayer=keyof typeof CURRENT_RESEARCH_ENGINE_VERSIONS;

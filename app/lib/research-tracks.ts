@@ -44,6 +44,10 @@ export const TRACK_REASON_CODES=[
  "reference_valuation_unavailable",
  "reference_valuation_not_evaluated",
  "modeled_execution_unavailable",
+ "modeled_execution_pending",
+ "modeled_execution_non_economic",
+ "modeled_execution_reference_inputs_unavailable",
+ "modeled_execution_invalid_adjusted_iv",
  "modeled_calibration_insufficient",
  "immediate_execution_unavailable",
  "immediate_execution_not_evaluated",
@@ -126,13 +130,13 @@ const arr=(v:unknown):JsonValue[]=>Array.isArray(v)?v as JsonValue[]:[];
 const entryTime=(entry:Record<string,unknown>):number|null=>num(entry.valuationTimestamp)??num(entry.targetTimestamp);
 
 function unavailable(track:CanonicalTrack,reasonCode:TrackReasonCode,reason:string|null,
- executionScenario:"maker"|"taker"|null,provenance:JsonValue=null):TrackDescriptor{
+ executionScenario:"maker"|"taker"|null,provenance:JsonValue=null,engineVersion:string|null=null):TrackDescriptor{
  return {track,status:"unavailable",reasonCode,reason,entryBasis:"unavailable",entryTimestampMs:null,
   valuationBasis:"unavailable",
   executionEvidence:executionScenario==="taker"?"observed_taker_execution"
    :executionScenario==="maker"?"observed_maker_opportunity"
    :track.startsWith("modeled")?"modeled_assumption":"none_reference_only",
-  valuationSource:null,provenance,engineVersion:null,executionScenario,
+  valuationSource:null,provenance,engineVersion,executionScenario,
   entrySnapshot:null,valuationPath:[],outcomeSnapshots:[],entryStatus:"unavailable",pathStatus:"unavailable"};
 }
 
@@ -177,9 +181,14 @@ function modeledTrack(structure:Record<string,unknown>,which:"conservative"|"exp
  const modeled=obj(obj(structure.modeledExecution)[which]);
  const reference=obj(structure.referenceValuation);
  if(!Object.keys(modeled).length||modeled.status!=="evaluated"){
-  const insufficient=which==="expected"&&(num(modeled.calibrationCount)!==null||str(modeled.reason)!==null);
-  return unavailable(track,insufficient?"modeled_calibration_insufficient":"modeled_execution_unavailable",
-   str(modeled.reason)??"The modeled execution layer did not produce this track.",null,(modeled.provenance??null) as JsonValue);
+  const producer=str(modeled.reasonCode),reasonCode:TrackReasonCode=
+   modeled.status==="not_evaluated"?"modeled_execution_pending":
+   producer==="empirical_nonpositive_credit_after_fees"?"modeled_execution_non_economic":
+   producer==="empirical_calibration_insufficient"||(!producer&&num(modeled.calibrationCount)!==null)?"modeled_calibration_insufficient":
+   producer==="empirical_reference_inputs_unavailable"?"modeled_execution_reference_inputs_unavailable":
+   producer==="empirical_invalid_adjusted_iv"?"modeled_execution_invalid_adjusted_iv":"modeled_execution_unavailable";
+  return unavailable(track,reasonCode,
+   str(modeled.reason)??"The modeled execution layer did not produce this track.",null,(modeled.provenance??null) as JsonValue,str(modeled.modelVersion));
  }
  // The modeled opening ledger is real; the marks it is valued against are the
  // reference marks, which is why the reference track must exist for it to.
