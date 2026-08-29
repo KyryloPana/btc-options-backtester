@@ -19,9 +19,9 @@ export const ANALYTICS_TRACKS = [
 export type AnalyticsTrack = (typeof ANALYTICS_TRACKS)[number];
 export const ANALYTICS_TRACK_METADATA: Readonly<Record<AnalyticsTrack, {
   label:string; observed:boolean; modeled:boolean; executionScenario:"maker"|"taker"|null;
-  role:"central"|"conservative"|"sensitivity"; description:string;
+  role:"central"|"counterfactual"|"conservative"|"sensitivity"; description:string;
 }>> = {
-  reference:{label:"Reference fair value",observed:false,modeled:false,executionScenario:null,role:"central",description:"Execution-independent fair-value counterfactual."},
+  reference:{label:"Reference fair value",observed:false,modeled:false,executionScenario:null,role:"counterfactual",description:"Execution-independent fair-value counterfactual."},
   immediate_maker:{label:"Immediate maker opportunity",observed:true,modeled:false,executionScenario:"maker",role:"sensitivity",description:"Exact causal tape maker opportunity."},
   immediate_taker:{label:"Immediate taker execution",observed:true,modeled:false,executionScenario:"taker",role:"sensitivity",description:"Exact causal tape taker execution."},
   delayed_maker:{label:"Delayed maker opportunity",observed:true,modeled:false,executionScenario:"maker",role:"sensitivity",description:"Delayed causal tape maker opportunity."},
