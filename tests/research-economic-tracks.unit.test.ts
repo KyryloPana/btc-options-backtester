@@ -59,7 +59,7 @@ test("SEPARATION: modeled conservative execution is never a relabelled reference
  const s=fixture.events[0]!.selectedStructures[0]! as Record<string,unknown>;
  const referenceEntry=(s.referenceValuation as Record<string,unknown>).entrySnapshot as Record<string,unknown>;
  (s as Record<string,unknown>).modeledExecution={
-  conservative:{status:"evaluated",reason:null,source:"conservative_penalty",modelVersion:"modeled/2",
+  conservative:{status:"evaluated",reason:null,source:"conservative_penalty",modelVersion:"modeled-execution-v5-empirical-taker",
    penaltyBps:25,entryTimestamp:ts,
    // Its OWN opening ledger: a worse net credit than the reference entry.
    entrySnapshot:{...referenceEntry,grossSpreadBtc:.0055,netOpeningCashFlowBtc:.0050},

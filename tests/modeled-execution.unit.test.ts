@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildExecutionCalibrationRecords, buildModeledExecution } from "../app/lib/modeled-execution.ts";
+import { buildExecutionCalibrationRecords, buildModeledExecution, MODELED_EXECUTION_VERSION } from "../app/lib/modeled-execution.ts";
+import {compactModeledExecution} from "../app/lib/research-selections.ts";
 import type { ResearchSelectionStore } from "../app/lib/research-selections.ts";
 const rec=(v:unknown)=>v as Record<string,unknown>;
 const entry=(time:number,gross=.1)=>({targetTimestamp:time,valuationTimestamp:time,amount:1,sold:{priceBtcPerContract:.12},bought:{priceBtcPerContract:.02},grossSpreadBtcPerContract:gross,grossSpreadBtc:gross,openingFeesBtc:.0006,netOpeningCashFlowBtc:gross-.0006});
@@ -31,4 +32,10 @@ test("valued Reference provenance drives expected and conservative empirical BUY
  const uneconomic=rec(buildModeledExecution(valued,provider(0,50) as never));
  assert.equal(rec(uneconomic.conservative).status,"unavailable");
  assert.match(String(rec(uneconomic.conservative).reason),/nonpositive credit after authoritative fees/);
+ const persisted=rec(compactModeledExecution(uneconomic));
+ const rejected=rec(persisted.conservative);
+ assert.equal(rejected.modelVersion,MODELED_EXECUTION_VERSION);
+ assert.equal(rejected.reasonCode,"empirical_nonpositive_credit_after_fees");
+ assert.ok(rejected.provenance,"provider provenance must survive the persistence boundary");
+ assert.ok(rejected.attemptedEntrySnapshot,"rejected entry economics must survive the persistence boundary");
 });

@@ -453,6 +453,7 @@ export function validateResearchBundle(files:Partial<Record<string,string>>):{ok
   if(!tracks)  {errors.push(`Structure-economics record ${String(r.candidate_id)} is missing its analytical track statuses.`);continue}
   const named=new Set(tracks.map(t=>String(obj(t as JsonValue).track)));
   for(const track of CANONICAL_TRACKS)if(!named.has(track))errors.push(`Structure-economics record ${String(r.candidate_id)} omits the status of track ${track}.`);
+  for(const raw of tracks){const t=obj(raw as JsonValue);if((t.track==="modeled_expected"||t.track==="modeled_conservative")&&t.engine_version!==null&&t.engine_version!==run.modeled_execution_methodology_version)errors.push(`Structure-economics record ${String(r.candidate_id)} track ${String(t.track)} was produced by ${String(t.engine_version)}, not run methodology ${String(run.modeled_execution_methodology_version)}.`)}
  }
  for(const r of rows("candidates.jsonl"))if(r.execution_scenario!=="maker"&&r.execution_scenario!=="taker")errors.push(`Candidate ${String(r.candidate_id)} has an invalid execution_scenario: ${String(r.execution_scenario)}.`);
  const runId=run.run_id,sourceRuns=new Set((Array.isArray(run.source_runs)?run.source_runs:[]).map(x=>obj(x).source_run_id));for(const [name,table] of parsed)for(const r of table){if(r.run_id!==runId)errors.push(`${name} has incompatible run_id.`);if(!sourceRuns.has(r.source_run_id))errors.push(`${name} has unknown or flattened source_run_id.`)}

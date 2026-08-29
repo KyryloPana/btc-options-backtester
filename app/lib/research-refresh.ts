@@ -34,7 +34,13 @@ export function diagnoseDerivedStaleness(structure:SelectedStructure,current:Par
   if(layer==="immediateExecution"){
    for(const mode of ["maker","taker"] as const)if(placeholder(object(snapshot)[mode]))add(layer,`${mode}_placeholder`);
   }else if(snapshot!==undefined&&placeholder(snapshot))add(layer,"placeholder_snapshot");
-  if(layer==="modeledExecution")for(const mode of ["expected","conservative"] as const)if(placeholder(object(snapshot)[mode]))add(layer,`${mode}_placeholder`);
+ if(layer==="modeledExecution")for(const mode of ["expected","conservative"] as const)if(placeholder(object(snapshot)[mode]))add(layer,`${mode}_placeholder`);
+  if(layer==="modeledExecution")for(const mode of ["expected","conservative"] as const){
+   const track=object(object(snapshot)[mode]);
+   // The aggregate version is only a cache hint.  The producing snapshot is
+   // authoritative, including an empirical economic rejection.
+   if(track.modelVersion!==current[layer])add(layer,`${mode}_model_version_mismatch`);
+  }
  }
  return{stale:Object.keys(layers).length>0,layers};
 }
@@ -52,7 +58,12 @@ export async function recomputeSelectedResearch(store:ResearchSelectionStore,sco
   if(!selected(scope,event.eventId,structure.candidateId)){structures.push(structure);continue;}
   const output=await engine({eventId:event.eventId,sourceRun:event.sourceRun,generationSnapshot:event.generationSnapshot,structure});
   const referenceValuation=output.referenceValuation;
-  const recomputedStructure={...structure,referenceValuation};structures.push({...structure,executionScenarios:output.executionScenarios,referenceValuation,delayedExecution:canonicalJson(output.delayedExecution),modeledExecution:output.modeledExecution??buildModeledExecution(referenceValuation),marginSnapshot:buildResearchMarginSnapshot(recomputedStructure),evidenceTradeSnapshots:output.evidenceTradeSnapshots?.map(canonicalJson),evidenceUsages:output.evidenceUsages,statusLayers:canonicalJson(output.statusLayers),derivedVersions:{...output.versions,modeledExecution:CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution},derivedRefreshedAtUtc:now});refreshed++;
+  const recomputedStructure={...structure,referenceValuation};
+  const modeledExecution=output.modeledExecution??buildModeledExecution(referenceValuation);
+  const modeled=object(modeledExecution);
+  const modeledCurrent=(["expected","conservative"] as const).every(mode=>object(modeled[mode]).modelVersion===CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution);
+  const {modeledExecution:_claimedModeledVersion,...rebuiltVersions}=output.versions;void _claimedModeledVersion;
+  structures.push({...structure,executionScenarios:output.executionScenarios,referenceValuation,delayedExecution:canonicalJson(output.delayedExecution),modeledExecution,marginSnapshot:buildResearchMarginSnapshot(recomputedStructure),evidenceTradeSnapshots:output.evidenceTradeSnapshots?.map(canonicalJson),evidenceUsages:output.evidenceUsages,statusLayers:canonicalJson(output.statusLayers),derivedVersions:{...rebuiltVersions,...(modeledCurrent?{modeledExecution:CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution}:{})},derivedRefreshedAtUtc:now});refreshed++;
  }events.push({...event,selectedStructures:structures});}
  if(scope.kind!=="all"&&refreshed===0)throw new Error("No saved selected structure matched the requested refresh scope.");
  return{store:{...store,updatedAtUtc:now,events:events.map(compactResearchSelectionEvent)},refreshed};
