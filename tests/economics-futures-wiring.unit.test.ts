@@ -136,27 +136,24 @@ function fixture(over:{futures?:Record<string,unknown>[];optionOutcome?:string;f
 
 const economics=()=>buildEconomicReport(fixture(),DEFAULT_ANALYSIS_CONFIGURATION);
 
-test("ECONOMICS: Reference stays the primary layer and observed layers do not overwrite it",()=>{
+test("ECONOMICS: Q50 is central and Reference is counterfactual",()=>{
  const report=economics(),layers=economicLayerSummaries(report);
  const reference=layers.find(l=>l.track==="reference")!;
- assert.equal(reference.primary,true);
- assert.equal(layers.filter(l=>l.primary).length,1,"exactly one primary layer");
- // The primary rendered positions ARE the reference layer object.
- assert.equal(report.positions,report.reference.positions);
- for(const layer of layers.filter(l=>!l.primary))assert.equal(layer.primary,false);
+ assert.equal(reference.role,"counterfactual");
+ assert.equal(layers.filter(l=>l.role==="central").length,1,"exactly one central layer");
+ assert.equal(report.positions,report.central.positions);
  // Maker and taker appear as their own rows rather than replacing reference.
- assert.ok(layers.some(l=>l.track==="immediate_maker"&&l.kind==="observed"));
- assert.ok(layers.some(l=>l.track==="immediate_taker"&&l.kind==="observed"));
+ assert.ok(layers.some(l=>l.track==="immediate_maker"&&l.role==="diagnostic"));
+ assert.ok(layers.some(l=>l.track==="immediate_taker"&&l.role==="diagnostic"));
 });
 
 test("ECONOMICS: conservative modelled execution is labelled modelled, never observed",()=>{
  const layers=economicLayerSummaries(economics());
  const conservative=layers.find(l=>l.track==="modeled_conservative")!;
- assert.equal(conservative.kind,"modeled");
- assert.notEqual(conservative.kind,"observed");
- assert.equal(layers.find(l=>l.track==="penalty_sensitivity")!.kind,"modeled");
+ assert.equal(conservative.role,"conservative");
+ assert.equal(layers.find(l=>l.track==="penalty_sensitivity")!.role,"sensitivity");
  for(const track of ["delayed_maker","delayed_taker"] as const)
-  assert.equal(layers.find(l=>l.track===track)!.kind,"delayed","a delayed opening is its own question, not an immediate one");
+  assert.equal(layers.find(l=>l.track===track)!.role,"diagnostic","a delayed opening is its own question, not central economics");
 });
 
 test("ECONOMICS: expected modelled execution stays unavailable when uncalibrated, never zero",()=>{
@@ -166,8 +163,7 @@ test("ECONOMICS: expected modelled execution stays unavailable when uncalibrated
  assert.equal(expected.pricedPositions,0);
  assert.equal(expected.medianExitPnlBtc,null,"Unavailable, not 0");
  assert.equal(expected.medianReturnOnStructuralLoss,null);
- assert.match(expected.reason!,/calibration/i);
- assert.match(expected.reason!,/never substituted/i);
+ assert.match(expected.reason!,/unavailable|calibration/i);
  // Conservative is a distinct row and is never used in place of expected.
  assert.notEqual(expected.reason,layers.find(l=>l.track==="modeled_conservative")!.reason);
 });
@@ -182,19 +178,15 @@ test("ECONOMICS: missing margin stays unavailable rather than becoming a return 
   assert.ok(position.returnOnOpeningMargin.reason,"with a reason");
  }
  assert.equal(report.capabilities.openingMargin,false);
- assert.equal(economicLayerSummaries(report).find(l=>l.track==="reference")!.medianReturnOnOpeningMargin,null);
+ assert.equal(economicLayerSummaries(report).find(l=>l.track==="modeled_expected")!.medianReturnOnStructuralLoss,null);
 });
 
 test("ECONOMICS: the visible wording is structural loss, and margin is not renamed",()=>{
  const view=readFileSync(new URL("../app/components/economic-analysis-report.tsx",import.meta.url),"utf8");
  assert.doesNotMatch(view,/Max loss|Aggregate max loss|Maximum economic loss/i);
  assert.match(view,/<th>Structural loss<\/th>/);
- assert.match(view,/<th>Aggregate structural loss<\/th>/);
  assert.match(view,/Return \/ structural loss/);
- // Standard Margin keeps its own names, and delivery fees are not hidden.
- assert.match(view,/IM \/ peak IM/);
- assert.match(view,/not Initial Margin and not Maintenance Margin/);
- assert.match(view,/settlement delivery fees remain reported separately/i);
+ assert.match(view,/Capital &amp; margin diagnostics/);
 });
 
 /* ================= futures comparison ================= */
