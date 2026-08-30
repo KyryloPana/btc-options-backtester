@@ -807,6 +807,7 @@ export function validateResearchBundle(files:Partial<Record<string,string>>):{ok
    for(const point of arr(r[collection])){
     const pointContext=`${context} ${collection} ${String(point.endpoint_id??point.target_timestamp_utc)}`;
     if(typeof point.target_timestamp_utc!=="string")errors.push(`${pointContext} has no exact target timestamp.`);
+    if(collection==="post_entry_market_iv"&&["vpoc","invalidation","credit_capture_50","credit_capture_70","fixed_3d","fixed_5d","fixed_7d"].includes(String(point.endpoint_id))){const outcome=outcomeRows.get(`${String(r.candidate_id)}~reference_fair_value~${String(point.endpoint_id)}`);if(outcome&&outcome.valuation_timestamp_utc!=null&&point.target_timestamp_utc!==outcome.valuation_timestamp_utc)errors.push(`${pointContext} target ${String(point.target_timestamp_utc)} disagrees with canonical Reference outcome ${String(outcome.valuation_timestamp_utc)}.`)}
     for(const side of ["short","long"]){const evidence=obj(point[side]);nullWhenUnavailable(evidence,["iv_decimal"],`${pointContext} ${side}`);if(evidence.status==="available"&&evidence.source!=="deribit_trade_iv")errors.push(`${pointContext} ${side} is available without Deribit trade-IV provenance.`);const age=num(evidence.age_minutes);if(evidence.status==="available"&&(age===null||age<0||age>60))errors.push(`${pointContext} ${side} violates the market-state age rule.`)}
    }
   }

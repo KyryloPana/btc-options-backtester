@@ -83,6 +83,14 @@ test("ROUTING: repeated trade windows are served from the in-memory cache", asyn
   assert.equal(calls.length, 2, "a different window is a genuine new request");
 });
 
+test("COMPLETENESS: >1000 exact-instrument and currency trades are fully retrieved, ordered, deduplicated and cached",async()=>{
+ const total=1505,start=T,end=T+total-1,all=Array.from({length:total},(_,i)=>({instrument_name:"BTC-X",timestamp:start+i,iv:40,trade_id:`t${i}`,trade_seq:i,index_price:SPOT}));let calls=0;
+ const fetcher=async(input:string|URL|Request)=>{calls+=1;const url=new URL(String(input)),a=Number(url.searchParams.get("start_timestamp")),b=Number(url.searchParams.get("end_timestamp")),matching=all.filter(x=>x.timestamp>=a&&x.timestamp<=b),page=matching.slice(0,1000);return new Response(JSON.stringify({result:{trades:[...page,page[0]].filter(Boolean),has_more:matching.length>1000}}),{status:200})};
+ const service=new VolatilityReferenceRetrieval({fetcher:fetcher as never}),exact=await service.ivTrades("BTC-X",start,end),afterExact=calls,currency=await service.ivTradesByCurrency(start,end);
+ assert.equal(exact.length,total);assert.equal(currency.length,total);assert.equal(exact.at(-1)!.tradeId,`t${total-1}`);assert.equal(new Set(exact.map(x=>x.tradeId)).size,total);assert.ok(exact.every((x,i)=>i===0||exact[i-1]!.timestampMs<=x.timestampMs));
+ await service.ivTrades("BTC-X",start,end);await service.ivTradesByCurrency(start,end);assert.equal(calls,afterExact+(afterExact),"both complete interval results are reused from memory");
+});
+
 /* ---------------- realized-volatility underlying ---------------- */
 
 test("UNDERLYING: hourly closes come from the existing perpetual series shape", () => {
@@ -209,6 +217,23 @@ test("PERCENTILE CACHE: a genuine 720-hour same-tenor series is reused and makes
 test("PERCENTILE CACHE: missing hourly targets are populated once and monthly shards prevent a second refetch",async()=>withTempRoot(async root=>{
  let currencyCalls=0;const expiries=[7,14,30].map(days=>({instrumentName:`BTC-${days}D-100-C`,strike:100,optionType:"C" as const,expiryTimestampMs:ENTRY+days*86_400_000,createdAtMs:ENTRY-40*86_400_000,settlementPeriod:"week"}));
  const fake={instrumentManifest:async()=>expiries,ivTrades:async()=>[],ivTradesByCurrency:async(_start:number,end:number)=>{currencyCalls+=1;return expiries.map((m,i)=>({instrumentName:m.instrumentName,tradeId:`${end}-${i}`,tradeSeq:i,timestampMs:end-60_000,ivApiPercent:40+i,indexPrice:100,price:null,markPrice:null,direction:null,amount:null}))},dvolRange:async()=>[]};
- await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:2,perpetualBars:async()=>[]});assert.equal(currencyCalls,3);currencyCalls=0;
+ const first=await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:2,perpetualBars:async()=>[]});assert.equal(currencyCalls,3);assert.ok(first.events!.every(e=>e.underlying_instrument==="deribit_btc_usd_index"));assert.ok((await readReferenceShard("2026-08",root)).every(r=>r.underlying_instrument==="deribit_btc_usd_index"));currencyCalls=0;
  await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:2,perpetualBars:async()=>[]});assert.equal(currencyCalls,0);assert.equal((await readReferenceShard("2026-08",root)).length,9);
+}));
+
+test("PERCENTILE BACKFILL: sparse attempted hours extend until 720 valid observations",async()=>withTempRoot(async root=>{
+ const max=900,metas=Array.from({length:max+1},(_,h)=>[7,14,30].map(days=>({instrumentName:`H${h}-${days}`,strike:100,optionType:"C" as const,expiryTimestampMs:ENTRY-h*3_600_000+days*86_400_000,createdAtMs:ENTRY-(max+24)*3_600_000,settlementPeriod:"week"}))).flat(),byExpiry=new Map(metas.map(x=>[x.expiryTimestampMs,x]));let calls=0;
+ const fake={instrumentManifest:async()=>metas,ivTrades:async()=>[],ivTradesByCurrency:async(_start:number,end:number)=>{calls+=1;const h=Math.round((ENTRY-end)/3_600_000);if(h>0&&h<=100)return[];return[7,14,30].map((days,i)=>{const m=byExpiry.get(end+days*86_400_000)!;return{instrumentName:m.instrumentName,tradeId:`${end}-${days}`,tradeSeq:i,timestampMs:end-60_000,ivApiPercent:40+i,indexPrice:100,price:null,markPrice:null,direction:null,amount:null}})},dvolRange:async()=>[]};
+ const state=await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:max,perpetualBars:async()=>[]});assert.ok(calls>760,"attempt count must extend when attempted hours are invalid");assert.ok(calls<max+1,"backfill stops after all tenors reach 720 valid rows");assert.ok(state.events!.every(e=>e.reference_iv_percentile.every(p=>p.status==="available"&&p.prior_observation_count>=720)));
+}));
+
+test("PERCENTILE PERFORMANCE: widely separated events retrieve a union of local windows, not the calendar gap",async()=>withTempRoot(async root=>{
+ const fixture=structuredClone(selectionStore),january=Date.UTC(2026,0,15),june=Date.UTC(2026,5,15);for(const [event,timestamp] of fixture.events.map((event,i)=>[event,i?june:january] as const)){(event.sourceRun as {event:{entryTimestamp:number}}).event.entryTimestamp=timestamp;event.generationSnapshot.underlyingHourlyPath=[]}let calls=0;
+ const fake={instrumentManifest:async()=>[{instrumentName:"boundary",strike:100,optionType:"C" as const,expiryTimestampMs:june+60*86_400_000,createdAtMs:january-10*86_400_000,settlementPeriod:"month"}],ivTrades:async()=>[],ivTradesByCurrency:async()=>{calls+=1;return[]},dvolRange:async()=>[]};
+ await materializeVolatilityStates(fixture,root,{retrieval:fake,historyHours:2,perpetualBars:async()=>[]});assert.equal(calls,6,"two three-hour local scans must not fill January through June");
+}));
+
+test("CACHE COMPLETENESS: canonical unavailable tenor rows are not repeatedly retrieved",async()=>withTempRoot(async root=>{
+ let calls=0;const expiry=ENTRY+7*86_400_000,meta={instrumentName:"BTC-U",strike:100,optionType:"C" as const,expiryTimestampMs:expiry,createdAtMs:ENTRY-86_400_000,settlementPeriod:"week"},fake={instrumentManifest:async()=>[meta],ivTrades:async()=>[],ivTradesByCurrency:async(_start:number,end:number)=>{calls+=1;return[{instrumentName:meta.instrumentName,tradeId:`u-${end}`,tradeSeq:1,timestampMs:end-1,ivApiPercent:null,indexPrice:100,price:null,markPrice:null,direction:null,amount:null}]},dvolRange:async()=>[]};
+ await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:0,perpetualBars:async()=>[]});assert.equal(calls,1);calls=0;await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:0,perpetualBars:async()=>[]});assert.equal(calls,0);
 }));

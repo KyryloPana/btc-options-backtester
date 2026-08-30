@@ -247,3 +247,7 @@ test("VALIDATOR: a non-canonical annualization factor is rejected", () => {
   assert.equal(result.ok, false);
   assert.ok(result.errors.some(e => /non-canonical annualization factor/.test(e)));
 });
+
+test("VALIDATOR: post-entry outcome targets must match canonical Reference outcomes",()=>{
+ const bundle=withVolatility(),rows=bundle.files["structure_volatility_state.jsonl"].trim().split("\n").map(line=>JSON.parse(line)),candidate=rows[0]!,outcomes=bundle.files["outcomes.jsonl"].trim().split("\n").map(line=>JSON.parse(line)),vpoc=outcomes.find(x=>x.candidate_id===candidate.candidate_id&&x.outcome_type==="vpoc");assert.ok(vpoc);vpoc.analytics_track="reference_fair_value";const unavailable={status:"unavailable",instrument:null,iv_decimal:null,observation_timestamp_utc:null,age_minutes:null,max_age_minutes:60,source:null,unavailable_reason:"fixture"};candidate.post_entry_market_iv.push({endpoint_id:"vpoc",target_timestamp_utc:new Date(Date.parse(vpoc.valuation_timestamp_utc)+60_000).toISOString(),short:unavailable,long:unavailable});const files={...bundle.files,"outcomes.jsonl":outcomes.map(JSON.stringify).join("\n")+"\n","structure_volatility_state.jsonl":rows.map(JSON.stringify).join("\n")+"\n"},result=validateResearchBundle(files);assert.equal(result.ok,false);assert.match(result.errors.join("\n"),/disagrees with canonical Reference outcome/);
+});

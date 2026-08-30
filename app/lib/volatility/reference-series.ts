@@ -25,6 +25,8 @@ import {
 
 export const REFERENCE_SERIES_METHOD_VERSION = "volatility-reference-series-v1" as const;
 export const REFERENCE_SERIES_ID = "deribit-btc-same-expiry-reference-v1" as const;
+/** `index_price` carried by Deribit BTC option trades. Not BTC-PERPETUAL. */
+export const DERIBIT_OPTION_INDEX_UNDERLYING = "deribit_btc_usd_index" as const;
 export const DVOL_SERIES_ID = "deribit-btc-dvol-hourly-v1" as const;
 export const DVOL_METHOD_VERSION = "deribit-dvol-index-v1" as const;
 /** DVOL history genuinely begins here; earlier targets have no broad reference. */
