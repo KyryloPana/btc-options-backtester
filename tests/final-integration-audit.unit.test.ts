@@ -526,9 +526,9 @@ test("PART 7: staleness diagnosis names the minority events, and the exporter re
 
 test("PART 7 / versioning: a previous-schema bundle is rejected, never reinterpreted",()=>{
  const built=bundle();
- assert.equal(JSON.parse(built.files["run.json"]).schema_version,"3.8.0");
+ assert.equal(JSON.parse(built.files["run.json"]).schema_version,"3.9.0");
  for(const previous of ["3.6.0","3.5.0","3.4.0","3.3.0"]){
-  const stale={...built.files,"run.json":built.files["run.json"].replace('"3.8.0"',`"${previous}"`)};
+  const stale={...built.files,"run.json":built.files["run.json"].replace('"3.9.0"',`"${previous}"`)};
   assert.equal(validateResearchBundle(stale).ok,false,`${previous} carried different maximum-loss semantics and must not be read as current`);
  }
 });

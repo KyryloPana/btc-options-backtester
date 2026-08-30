@@ -12,6 +12,8 @@ import type {ReferenceSeriesRow} from "../app/lib/volatility/reference-series.ts
 import type {RealizedVolatilityResult} from "../app/lib/volatility/realized-volatility.ts";
 import {HOUR_MS} from "../app/lib/volatility/realized-volatility.ts";
 import {now, store, ts} from "./fixtures/research-selection-store.ts";
+import {createResearchBundleZip} from "../scripts/research-bundle-service.ts";
+import {importResearchBundle} from "../app/lib/research-analysis.ts";
 
 /**
  * Schema 3.7.0: the two volatility tables as part of the serialized contract.
@@ -91,11 +93,18 @@ void CANDIDATES; void candidateIdOf;
 
 /* ---------------- schema contract ---------------- */
 
-test("SCHEMA: 3.8.0 retains volatility tables and makes 3.7.0 legacy", () => {
-  assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION, "3.8.0");
+test("SCHEMA: 3.9.0 retains volatility tables and makes 3.8.0 legacy", () => {
+  assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION, "3.9.0");
   assert.ok(RESEARCH_BUNDLE_FILES.includes("event_volatility_state.jsonl"));
   assert.ok(RESEARCH_BUNDLE_FILES.includes("structure_volatility_state.jsonl"));
-  assert.ok((LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS as readonly string[]).includes("3.7.0"));
+  assert.ok((LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS as readonly string[]).includes("3.8.0"));
+});
+
+test("LEGACY: schema 3.8 volatility rows import with new market collections explicitly empty",()=>{
+ const bundle=withVolatility(),run=JSON.parse(bundle.files["run.json"]);run.schema_version="3.8.0";run.volatility_method_versions.structure_volatility_state="structure-volatility-state-v1";
+ const legacyStructures=bundle.files["structure_volatility_state.jsonl"].trim().split("\n").map(line=>{const row=JSON.parse(line);row.method_version="structure-volatility-state-v1";delete row.post_entry_market_iv;delete row.market_iv_path;return JSON.stringify(row)}).join("\n")+"\n";
+ const files={...bundle.files,"run.json":JSON.stringify(run)+"\n","structure_volatility_state.jsonl":legacyStructures},result=importResearchBundle(new Uint8Array(createResearchBundleZip(files)),"legacy.zip");
+ if(result.status==="invalid")assert.fail(result.errors.join("\n"));assert.equal(result.status,"degraded");assert.equal(result.dataset.migratedFrom,"3.8.0");assert.deepEqual(result.dataset.tables.structure_volatility_state[0]!.post_entry_market_iv,[]);
 });
 
 test("SCHEMA: a bundle built without the volatility pipeline exports empty tables, not zeroes", () => {

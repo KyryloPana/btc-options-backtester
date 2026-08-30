@@ -1,80 +1,55 @@
 import type {ResearchSelectionStore} from "../app/lib/research-selections.ts";
 import type {ResearchVolatilityStates} from "../app/lib/research-bundle.ts";
 import {resolveEventTiming} from "../app/lib/event-timing.ts";
+import {canonicalOutcomeId} from "../app/lib/research-outcomes.ts";
 import {buildEventVolatilityState,buildStructureVolatilityState,type BroadVolatilityState,type LegVolatilitySnapshot} from "../app/lib/volatility/volatility-state.ts";
-import {DVOL_FIRST_AVAILABLE_MS,DVOL_METHOD_VERSION,DVOL_SERIES_ID,REFERENCE_SERIES_ID,buildExpiryReferenceRow,buildReferenceSeriesRows,referenceSeriesContentHash,type ListedExpiry,type ReferenceSeriesRow} from "../app/lib/volatility/reference-series.ts";
+import {DVOL_FIRST_AVAILABLE_MS,DVOL_METHOD_VERSION,DVOL_SERIES_ID,OPTION_HISTORY_HOST,REFERENCE_SERIES_ID,buildExpiryReferenceRow,buildReferenceSeriesRows,referenceSeriesContentHash,type ListedExpiry,type ReferenceSeriesRow} from "../app/lib/volatility/reference-series.ts";
 import {MARKET_IV_MAX_AGE_MINUTES,type RawIvTradeCandidate} from "../app/lib/volatility/market-iv-evidence.ts";
-import {causalIvPercentile,type ReferenceObservation} from "../app/lib/volatility/iv-percentile.ts";
+import {causalIvPercentile,MINIMUM_PRIOR_OBSERVATIONS,type ReferenceObservation} from "../app/lib/volatility/iv-percentile.ts";
 import {HOUR_MS,realizedVolatilityProfile,type HourlyClose} from "../app/lib/volatility/realized-volatility.ts";
 import {DeribitPerpetualHistoryService} from "./deribit-perpetual-history.ts";
-import {OPTION_HISTORY_HOST} from "../app/lib/volatility/reference-series.ts";
 import {VolatilityReferenceRetrieval,listCachedShards,readDvolShard,readReferenceShard,VOLATILITY_CACHE_ROOT,writeDvolShards,writeReferenceShards} from "./volatility-reference-cache.ts";
 
-type R=Record<string,unknown>;const o=(v:unknown):R=>v&&typeof v==="object"&&!Array.isArray(v)?v as R:{};const n=(v:unknown)=>typeof v==="number"&&Number.isFinite(v)?v:null;const s=(v:unknown)=>typeof v==="string"&&v?v:null;
+type R=Record<string,unknown>;const o=(v:unknown):R=>v&&typeof v==="object"&&!Array.isArray(v)?v as R:{};const a=(v:unknown):R[]=>Array.isArray(v)?v.map(o):[];const n=(v:unknown)=>typeof v==="number"&&Number.isFinite(v)?v:null;const s=(v:unknown)=>typeof v==="string"&&v?v:null;
 const TENORS=["7d","14d","30d"] as const;
+/** Phase-2A cadence plus slack above the locked 720 valid-observation minimum. */
+export const PERCENTILE_HISTORY_HOURS=760 as const;
 
-export interface VolatilityMaterializationDependencies {
- retrieval?:VolatilityReferenceRetrieval;
- perpetualBars?:(startMs:number,endMs:number)=>Promise<HourlyClose[]>;
- /** Tests and offline exporters may deliberately disable network population. */
- populateMissing?:boolean;
-}
-
-function eventEntry(event:ResearchSelectionStore["events"][number]){
- return resolveEventTiming({sourceRun:event.sourceRun,underlyingHourlyPath:event.generationSnapshot.underlyingHourlyPath}).entryTimestamp;
-}
+export interface VolatilityMaterializationRetrieval {instrumentManifest():ReturnType<VolatilityReferenceRetrieval["instrumentManifest"]>;ivTrades(name:string,start:number,end:number):ReturnType<VolatilityReferenceRetrieval["ivTrades"]>;ivTradesByCurrency(start:number,end:number):ReturnType<VolatilityReferenceRetrieval["ivTradesByCurrency"]>;dvolRange(start:number,end:number):ReturnType<VolatilityReferenceRetrieval["dvolRange"]>}
+export interface VolatilityMaterializationDependencies {retrieval?:VolatilityMaterializationRetrieval;perpetualBars?:(startMs:number,endMs:number)=>Promise<HourlyClose[]>;populateMissing?:boolean;historyHours?:number}
+function eventEntry(event:ResearchSelectionStore["events"][number]){return resolveEventTiming({sourceRun:event.sourceRun,underlyingHourlyPath:event.generationSnapshot.underlyingHourlyPath}).entryTimestamp}
 function sourceEntryPrice(event:ResearchSelectionStore["events"][number]){const source=o(event.sourceRun),raw=o(source.event??source);return n(raw.entryPrice)}
-function instrumentNames(selected:ResearchSelectionStore["events"][number]["selectedStructures"][number]){
- const resolution=o(selected.contractResolution),candidate=o(selected.candidateSnapshot),legacy=o(candidate.instruments);
- return {short:s(o(resolution.short).instrumentName)??s(legacy.short),long:s(o(resolution.long).instrumentName)??s(legacy.long)};
-}
-function raw(meta:{instrumentName:string;strike:number;optionType:"C"|"P";expiryTimestampMs:number;createdAtMs:number|null;settlementPeriod:string|null},trade:Awaited<ReturnType<VolatilityReferenceRetrieval["ivTrades"]>>[number]):RawIvTradeCandidate{return{instrumentName:meta.instrumentName,tradeId:trade.tradeId,tradeSeq:trade.tradeSeq,strike:meta.strike,optionType:meta.optionType,expiryTimestampMs:meta.expiryTimestampMs,settlementPeriod:meta.settlementPeriod,contractCreatedAtMs:meta.createdAtMs,timestampMs:trade.timestampMs,ivApiPercent:trade.ivApiPercent,indexPrice:trade.indexPrice}}
-function leg(trades:readonly RawIvTradeCandidate[],instrument:string|null,target:number):LegVolatilitySnapshot|null{const hit=trades.filter(x=>x.instrumentName===instrument&&x.timestampMs<=target&&target-x.timestampMs<=MARKET_IV_MAX_AGE_MINUTES*60_000&&n(x.ivApiPercent)!==null&&x.ivApiPercent!>0).sort((a,b)=>b.timestampMs-a.timestampMs)[0];return hit?{ivDecimal:hit.ivApiPercent!/100,ivApiPercent:hit.ivApiPercent,ivSource:"deribit_trade_iv",ivSourceTimestampMs:hit.timestampMs,observation:"observed"}:null}
+function instrumentNames(selected:ResearchSelectionStore["events"][number]["selectedStructures"][number]){const resolution=o(selected.contractResolution),candidate=o(selected.candidateSnapshot),legacy=o(candidate.instruments);return{short:s(o(resolution.short).instrumentName)??s(legacy.short),long:s(o(resolution.long).instrumentName)??s(legacy.long)}}
+type Meta=Awaited<ReturnType<VolatilityReferenceRetrieval["instrumentManifest"]>>[number];type Trade=Awaited<ReturnType<VolatilityReferenceRetrieval["ivTrades"]>>[number];
+function raw(meta:Meta,trade:Trade):RawIvTradeCandidate{return{instrumentName:meta.instrumentName,tradeId:trade.tradeId,tradeSeq:trade.tradeSeq,strike:meta.strike,optionType:meta.optionType,expiryTimestampMs:meta.expiryTimestampMs,settlementPeriod:meta.settlementPeriod,contractCreatedAtMs:meta.createdAtMs,timestampMs:trade.timestampMs,ivApiPercent:trade.ivApiPercent,indexPrice:trade.indexPrice}}
+function leg(trades:readonly RawIvTradeCandidate[],instrument:string|null,target:number):LegVolatilitySnapshot|null{const hit=trades.filter(x=>x.instrumentName===instrument&&x.timestampMs<=target&&target-x.timestampMs<=MARKET_IV_MAX_AGE_MINUTES*60_000&&n(x.ivApiPercent)!==null&&x.ivApiPercent!>0).sort((x,y)=>y.timestampMs-x.timestampMs)[0];return hit?{ivDecimal:hit.ivApiPercent!/100,ivApiPercent:hit.ivApiPercent,ivSource:"deribit_trade_iv",ivSourceTimestampMs:hit.timestampMs,observation:"observed"}:null}
+function listedAt(manifest:readonly Meta[],target:number):ListedExpiry[]{const groups=new Map<number,Meta[]>();for(const m of manifest)if(m.createdAtMs!==null&&m.createdAtMs<=target&&m.expiryTimestampMs>target)groups.set(m.expiryTimestampMs,[...(groups.get(m.expiryTimestampMs)??[]),m]);return[...groups].map(([expiryTimestampMs,ms])=>({expiryTimestampMs,createdAtMs:Math.min(...ms.map(x=>x.createdAtMs!)),settlementPeriod:ms[0]!.settlementPeriod,strikes:ms.map(x=>x.strike)}))}
+function referenceRows(target:number,trades:readonly Trade[],manifest:readonly Meta[]):ReferenceSeriesRow[]{const byName=new Map(manifest.map(x=>[x.instrumentName,x])),candidates=trades.flatMap(t=>{const m=byName.get(t.instrumentName);return m?[raw(m,t)]:[]}),underlying=[...trades].filter(x=>n(x.indexPrice)!==null&&x.timestampMs<=target).sort((x,y)=>y.timestampMs-x.timestampMs)[0]?.indexPrice??null;return underlying===null?[]:[...buildReferenceSeriesRows({timestampMs:target,underlyingInstrument:"BTC-PERPETUAL",underlyingPrice:underlying,listedExpiries:listedAt(manifest,target),candidates,tenors:TENORS}).rows]}
+interface Targets{endpoints:{id:string;timestamp:number}[];path:number[]}
+function selectedTargets(selected:ResearchSelectionStore["events"][number]["selectedStructures"][number],entry:number,expiry:number|null):Targets{const reference=o(selected.referenceValuation),path=a(reference.valuationPathSnapshot).map(x=>n(x.timestamp)).filter((x):x is number=>x!==null&&x>entry&&(expiry===null||x<expiry));const endpoints=[{id:"4h",timestamp:entry+4*HOUR_MS},{id:"12h",timestamp:entry+12*HOUR_MS},{id:"1d",timestamp:entry+24*HOUR_MS},{id:"3d",timestamp:entry+72*HOUR_MS}];for(const x of a(reference.outcomeSnapshots)){const id=canonicalOutcomeId(x.label),timestamp=n(x.valuationTimestamp);if(id&&["vpoc","invalidation","credit_capture_50","credit_capture_70","fixed_3d","fixed_5d","fixed_7d","settlement"].includes(id)&&timestamp!==null&&(expiry===null||timestamp<expiry))endpoints.push({id,timestamp})}return{endpoints:[...new Map(endpoints.filter(x=>x.timestamp>entry&&(expiry===null||x.timestamp<expiry)).map(x=>[x.id,x])).values()],path:[...new Set(path)].sort((x,y)=>x-y)}}
 
-/**
- * Populate missing market evidence before the synchronous bundle builder runs.
- * Failures are intentionally converted to unavailable metric states, never to a
- * missing event/candidate row. This is the production boundary between IO and
- * deterministic bundle assembly.
- */
+/** IO boundary: populate/reuse canonical caches, then build network-free bundle state rows. */
 export async function materializeVolatilityStates(store:ResearchSelectionStore,cacheRoot=VOLATILITY_CACHE_ROOT,deps:VolatilityMaterializationDependencies={}):Promise<ResearchVolatilityStates>{
- const retrieval=deps.retrieval??new VolatilityReferenceRetrieval(),populate=deps.populateMissing??true;
- const targets=store.events.map(event=>({event,entry:eventEntry(event)}));
- const validTargets=targets.filter((x):x is typeof x&{entry:number}=>x.entry!==null);
- let manifest:Awaited<ReturnType<VolatilityReferenceRetrieval["instrumentManifest"]>>=[];
- if(populate&&validTargets.length)try{manifest=await retrieval.instrumentManifest()}catch{/* explicit unavailable rows are built below */}
-
- const tapeByEvent=new Map<string,RawIvTradeCandidate[]>(),freshRows:ReferenceSeriesRow[]=[];
- for(const {event,entry} of validTargets){
-  const underlying=sourceEntryPrice(event),windowStart=entry-MARKET_IV_MAX_AGE_MINUTES*60_000;
-  const relevant=manifest.filter(m=>m.createdAtMs!==null&&m.createdAtMs<=entry&&m.expiryTimestampMs>entry&&((m.expiryTimestampMs-entry)/86_400_000<=38||Object.values(instrumentNamesForEvent(event)).includes(m.instrumentName)));
-  const candidates:RawIvTradeCandidate[]=[];
-  if(populate)await Promise.all(relevant.map(async m=>{try{for(const t of await retrieval.ivTrades(m.instrumentName,windowStart,entry))candidates.push(raw(m,t))}catch{/* missing tape remains unavailable */}}));
-  tapeByEvent.set(event.eventId,candidates);
-  if(underlying!==null){const byExpiry=new Map<number,ListedExpiry>();for(const m of relevant){const old=byExpiry.get(m.expiryTimestampMs);if(old)continue;byExpiry.set(m.expiryTimestampMs,{expiryTimestampMs:m.expiryTimestampMs,createdAtMs:m.createdAtMs,settlementPeriod:m.settlementPeriod,strikes:relevant.filter(x=>x.expiryTimestampMs===m.expiryTimestampMs).map(x=>x.strike)})}freshRows.push(...buildReferenceSeriesRows({timestampMs:entry,underlyingInstrument:"BTC-PERPETUAL",underlyingPrice:underlying,listedExpiries:[...byExpiry.values()],candidates,tenors:TENORS}).rows)}
- }
- if(freshRows.length)await writeReferenceShards({rows:freshRows,root:cacheRoot});
-
- // DVOL and RV are populated by their established venue-specific retrievals.
- if(populate)for(const {entry} of validTargets){try{await writeDvolShards({points:await retrieval.dvolRange(Math.max(DVOL_FIRST_AVAILABLE_MS,entry-HOUR_MS),entry),root:cacheRoot})}catch{/* unavailable */}}
- const shards=await listCachedShards(REFERENCE_SERIES_ID,cacheRoot),all:ReferenceSeriesRow[]=(await Promise.all(shards.map(x=>readReferenceShard(x,cacheRoot)))).flat();
- const dvolShards=await listCachedShards(DVOL_SERIES_ID,cacheRoot),dvol=(await Promise.all(dvolShards.map(x=>readDvolShard(x,cacheRoot)))).flat();
- const history:ReferenceObservation[]=all.filter(x=>x.passes_market_state_rule&&typeof x.reference_iv_decimal==="number").map(x=>({timestampMs:x.timestamp_ms,ivDecimal:x.reference_iv_decimal!,tenor:x.nominal_tenor,referenceSeriesId:REFERENCE_SERIES_ID}));
- const hash=referenceSeriesContentHash(all),events=[],structures=[];
+ const retrieval=deps.retrieval??new VolatilityReferenceRetrieval(),populate=deps.populateMissing??true,historyHours=deps.historyHours??PERCENTILE_HISTORY_HOURS;
+ const targets=store.events.map(event=>({event,entry:eventEntry(event)}));for(const x of targets)if(x.entry===null)throw new Error(`Volatility materialization cannot resolve canonical entry timing for event ${x.event.eventId}.`);
+ const valid=targets as {event:ResearchSelectionStore["events"][number];entry:number}[];
+ let cached:ReferenceSeriesRow[]=[];for(const shard of await listCachedShards(REFERENCE_SERIES_ID,cacheRoot))cached.push(...await readReferenceShard(shard,cacheRoot));
+ let manifest:Meta[]=[];if(populate&&valid.length)try{manifest=await retrieval.instrumentManifest()}catch{/* every state row still materializes unavailable */}
+ // Genuine hourly expanding series, not an event convenience sample. A timestamp
+ // is complete once all three canonical tenor rows exist, including honest misses.
+ if(populate&&manifest.length&&valid.length){const earliest=Math.min(...valid.map(x=>x.entry)),latest=Math.max(...valid.map(x=>x.entry)),required:number[]=[];for(let t=earliest-historyHours*HOUR_MS;t<=latest;t+=HOUR_MS)required.push(t);const complete=new Set<number>();for(const t of required)if(TENORS.every(tenor=>cached.some(r=>r.timestamp_ms===t&&r.nominal_tenor===tenor)))complete.add(t);const fresh:ReferenceSeriesRow[]=[];for(const t of required)if(!complete.has(t))try{fresh.push(...referenceRows(t,await retrieval.ivTradesByCurrency(t-MARKET_IV_MAX_AGE_MINUTES*60_000,t),manifest))}catch{/* retry on next export; no completeness marker written */}if(fresh.length){await writeReferenceShards({rows:fresh,root:cacheRoot});cached=[];for(const shard of await listCachedShards(REFERENCE_SERIES_ID,cacheRoot))cached.push(...await readReferenceShard(shard,cacheRoot))}}
+ // Build the union of exact-instrument windows once. Every endpoint and every
+ // canonical path target is resolved from this independent tape.
+ const targetByCandidate=new Map<string,Targets>(),windowByInstrument=new Map<string,{start:number;end:number}>();
+ for(const {event,entry} of valid)for(const selected of event.selectedStructures){const expiry=n(o(selected.candidateSnapshot).expiryTimestamp),t=selectedTargets(selected,entry,expiry);targetByCandidate.set(selected.candidateId,t);for(const name of Object.values(instrumentNames(selected)))if(name){const all=[entry,...t.endpoints.map(x=>x.timestamp),...t.path],start=Math.min(...all)-MARKET_IV_MAX_AGE_MINUTES*60_000,end=Math.max(...all),old=windowByInstrument.get(name);windowByInstrument.set(name,{start:old?Math.min(old.start,start):start,end:old?Math.max(old.end,end):end})}}
+ const exactTape=new Map<string,RawIvTradeCandidate[]>(),byName=new Map(manifest.map(x=>[x.instrumentName,x]));if(populate)await Promise.all([...windowByInstrument].map(async([name,w])=>{const meta=byName.get(name);if(!meta)return;try{exactTape.set(name,(await retrieval.ivTrades(name,w.start,w.end)).map(t=>raw(meta,t)))}catch{exactTape.set(name,[])}}));
+ const crossTapeByEvent=new Map<string,RawIvTradeCandidate[]>();if(populate)await Promise.all(valid.map(async({event,entry})=>{if(!event.selectedStructures.some(x=>Object.values(instrumentNames(x)).some(Boolean)))return;try{const trades=await retrieval.ivTradesByCurrency(entry-MARKET_IV_MAX_AGE_MINUTES*60_000,entry);crossTapeByEvent.set(event.eventId,trades.flatMap(t=>{const meta=byName.get(t.instrumentName);return meta?[raw(meta,t)]:[]}))}catch{crossTapeByEvent.set(event.eventId,[])}}));
+ if(populate)for(const {entry} of valid)try{await writeDvolShards({points:await retrieval.dvolRange(Math.max(DVOL_FIRST_AVAILABLE_MS,entry-HOUR_MS),entry),root:cacheRoot})}catch{/* unavailable */}
+ const dvol=(await Promise.all((await listCachedShards(DVOL_SERIES_ID,cacheRoot)).map(x=>readDvolShard(x,cacheRoot)))).flat(),history:ReferenceObservation[]=cached.filter(x=>x.passes_market_state_rule&&typeof x.reference_iv_decimal==="number").map(x=>({timestampMs:x.timestamp_ms,ivDecimal:x.reference_iv_decimal!,tenor:x.nominal_tenor,referenceSeriesId:REFERENCE_SERIES_ID})),hash=referenceSeriesContentHash(cached),events=[],structures=[];
  const bars=deps.perpetualBars??(async(start,end)=>{const service=new DeribitPerpetualHistoryService(OPTION_HISTORY_HOST);const result=await service.referenceSeries("BTC-PERPETUAL",start,end,60);return result.points.map(x=>({timestampMs:x.timestamp,close:x.close}))});
- for(const {event,entry} of targets){
-  // A malformed source is diagnosed loudly rather than silently shrinking denominators.
-  if(entry===null)throw new Error(`Volatility materialization cannot resolve canonical entry timing for event ${event.eventId}.`);
-  const referenceRows=all.filter(x=>x.timestamp_ms===entry),percentiles=Object.fromEntries(TENORS.map(t=>[t,causalIvPercentile({subjectIvDecimal:referenceRows.find(x=>x.nominal_tenor===t)?.reference_iv_decimal??null,targetTimestampMs:entry,history,tenor:t,referenceSeriesId:REFERENCE_SERIES_ID,referenceSeriesContentHash:hash})]));
-  let rv={};if(populate||deps.perpetualBars)try{rv=realizedVolatilityProfile({bars:await bars(entry-31*86_400_000,entry),targetTimestampMs:entry})}catch{/* unavailable profile */}
-  const broad=dvol.filter(x=>x.timestamp_ms<=entry&&entry-x.timestamp_ms<=HOUR_MS).sort((a,b)=>b.timestamp_ms-a.timestamp_ms)[0];
-  const broadState:BroadVolatilityState|undefined=broad?{series_id:DVOL_SERIES_ID,method_version:DVOL_METHOD_VERSION,value_decimal:broad.dvol_decimal,observation_timestamp_utc:broad.timestamp_utc,age_minutes:(entry-broad.timestamp_ms)/60_000,status:"available",unavailable_reason:null,substitution_permitted:false}:undefined;
-  events.push(buildEventVolatilityState({eventId:event.eventId,entryTimestampMs:entry,underlyingInstrument:"BTC-PERPETUAL",entryUnderlyingPrice:sourceEntryPrice(event),referenceSeriesId:REFERENCE_SERIES_ID,referenceSeriesContentHash:hash,referenceRows,realizedVolatility:rv,percentiles,broadVolatility:broadState}));
-  const tape=tapeByEvent.get(event.eventId)??[];
-  for(const selected of event.selectedStructures){const c=o(selected.candidateSnapshot),expiry=n(c.expiryTimestamp),names=instrumentNames(selected),underlying=sourceEntryPrice(event);const listed=expiry===null?undefined:manifest.find(x=>x.expiryTimestampMs===expiry);const expiryReference=underlying===null||!listed?null:buildExpiryReferenceRow({timestampMs:entry,underlyingInstrument:"BTC-PERPETUAL",underlyingPrice:underlying,expiry:{expiryTimestampMs:listed.expiryTimestampMs,createdAtMs:listed.createdAtMs,settlementPeriod:listed.settlementPeriod,strikes:manifest.filter(x=>x.expiryTimestampMs===listed.expiryTimestampMs).map(x=>x.strike)},candidates:tape,excludedInstruments:[names.short,names.long].filter((x):x is string=>!!x)});
-   structures.push(buildStructureVolatilityState({eventId:event.eventId,candidateId:selected.candidateId,entryTimestampMs:entry,actualExpiryTimestampMs:expiry,actualDteDays:expiry===null?null:(expiry-entry)/86_400_000,shortStrike:n(c.shortStrike),longStrike:n(c.longStrike),optionType:s(c.optionType),shortInstrument:names.short,longInstrument:names.long,referenceSeriesId:REFERENCE_SERIES_ID,referenceSeriesContentHash:hash,shortLeg:leg(tape,names.short,entry),longLeg:leg(tape,names.long,entry),reference:expiryReference}));
-  }
+ for(const {event,entry} of valid){const atEntry=cached.filter(x=>x.timestamp_ms===entry),percentiles=Object.fromEntries(TENORS.map(t=>[t,causalIvPercentile({subjectIvDecimal:atEntry.find(x=>x.nominal_tenor===t)?.reference_iv_decimal??null,targetTimestampMs:entry,history,tenor:t,referenceSeriesId:REFERENCE_SERIES_ID,referenceSeriesContentHash:hash})]));let rv={};if(populate||deps.perpetualBars)try{rv=realizedVolatilityProfile({bars:await bars(entry-31*86_400_000,entry),targetTimestampMs:entry})}catch{/* unavailable */}const broad=dvol.filter(x=>x.timestamp_ms<=entry&&entry-x.timestamp_ms<=HOUR_MS).sort((x,y)=>y.timestamp_ms-x.timestamp_ms)[0],broadState:BroadVolatilityState|undefined=broad?{series_id:DVOL_SERIES_ID,method_version:DVOL_METHOD_VERSION,value_decimal:broad.dvol_decimal,observation_timestamp_utc:broad.timestamp_utc,age_minutes:(entry-broad.timestamp_ms)/60_000,status:"available",unavailable_reason:null,substitution_permitted:false}:undefined;events.push(buildEventVolatilityState({eventId:event.eventId,entryTimestampMs:entry,underlyingInstrument:"BTC-PERPETUAL",entryUnderlyingPrice:sourceEntryPrice(event),referenceSeriesId:REFERENCE_SERIES_ID,referenceSeriesContentHash:hash,referenceRows:atEntry,realizedVolatility:rv,percentiles,broadVolatility:broadState}));
+  for(const selected of event.selectedStructures){const c=o(selected.candidateSnapshot),expiry=n(c.expiryTimestamp),names=instrumentNames(selected),shortTape=names.short?exactTape.get(names.short)??[]:[],longTape=names.long?exactTape.get(names.long)??[]:[],t=targetByCandidate.get(selected.candidateId)??{endpoints:[],path:[]},underlying=sourceEntryPrice(event),listed=expiry===null?undefined:manifest.find(x=>x.expiryTimestampMs===expiry),cross=crossTapeByEvent.get(event.eventId)??[],ref=underlying===null||!listed?null:buildExpiryReferenceRow({timestampMs:entry,underlyingInstrument:"BTC-PERPETUAL",underlyingPrice:underlying,expiry:{expiryTimestampMs:listed.expiryTimestampMs,createdAtMs:listed.createdAtMs,settlementPeriod:listed.settlementPeriod,strikes:manifest.filter(x=>x.expiryTimestampMs===listed.expiryTimestampMs).map(x=>x.strike)},candidates:cross,excludedInstruments:[names.short,names.long].filter((x):x is string=>!!x)});structures.push(buildStructureVolatilityState({eventId:event.eventId,candidateId:selected.candidateId,entryTimestampMs:entry,actualExpiryTimestampMs:expiry,actualDteDays:expiry===null?null:(expiry-entry)/86_400_000,shortStrike:n(c.shortStrike),longStrike:n(c.longStrike),optionType:s(c.optionType),shortInstrument:names.short,longInstrument:names.long,referenceSeriesId:REFERENCE_SERIES_ID,referenceSeriesContentHash:hash,shortLeg:leg(shortTape,names.short,entry),longLeg:leg(longTape,names.long,entry),reference:ref,postEntryMarketIv:t.endpoints.map(x=>({endpointId:x.id,targetTimestampMs:x.timestamp,short:leg(shortTape,names.short,x.timestamp),long:leg(longTape,names.long,x.timestamp)})),marketIvPath:t.path.map(timestamp=>({targetTimestampMs:timestamp,short:leg(shortTape,names.short,timestamp),long:leg(longTape,names.long,timestamp)}))}))}
  }
  return{events,structures};
 }
-function instrumentNamesForEvent(event:ResearchSelectionStore["events"][number]){return event.selectedStructures.flatMap(x=>Object.values(instrumentNames(x)).filter((v):v is string=>!!v))}
+export {MINIMUM_PRIOR_OBSERVATIONS};

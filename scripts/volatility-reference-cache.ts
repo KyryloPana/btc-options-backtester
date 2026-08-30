@@ -124,6 +124,19 @@ export class VolatilityReferenceRetrieval {
     return rows;
   }
 
+  /** One hourly cross-market window, used by the canonical percentile series. */
+  async ivTradesByCurrency(startMs: number, endMs: number): Promise<DeribitIvTradeRow[]> {
+    const key = `BTC-options:${startMs}:${endMs}`;
+    const cached = this.tradeCache.get(key);
+    if (cached) return cached;
+    const result = await this.api(this.optionHost, "get_last_trades_by_currency_and_time", {
+      currency: "BTC", kind: "option", start_timestamp: startMs, end_timestamp: endMs,
+      count: 1000, sorting: "desc",
+    }) as {trades?: Record<string, unknown>[]} | undefined;
+    const rows=(result?.trades??[]).flatMap<DeribitIvTradeRow>(t=>{const instrumentName=str(t.instrument_name),timestampMs=num(t.timestamp);return !instrumentName||timestampMs===null?[]:[{instrumentName,tradeId:str(t.trade_id),tradeSeq:num(t.trade_seq),timestampMs,ivApiPercent:num(t.iv),price:num(t.price),markPrice:num(t.mark_price),indexPrice:num(t.index_price),direction:str(t.direction),amount:num(t.amount)}]});
+    this.tradeCache.set(key,rows);return rows;
+  }
+
   /**
    * DVOL, from the MAIN host. The history mirror does not serve the volatility
    * index, the same way it does not serve perpetual funding.

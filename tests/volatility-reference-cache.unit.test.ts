@@ -13,6 +13,8 @@ import {
   buildReferenceSeriesRows, type ReferenceSeriesRow,
 } from "../app/lib/volatility/reference-series.ts";
 import type {RawIvTradeCandidate} from "../app/lib/volatility/market-iv-evidence.ts";
+import {materializeVolatilityStates,MINIMUM_PRIOR_OBSERVATIONS} from "../scripts/materialize-volatility-states.ts";
+import {store as selectionStore,ts as ENTRY} from "./fixtures/research-selection-store.ts";
 
 /**
  * Retrieval routing and the monthly shard cache. A stub fetcher records every
@@ -194,3 +196,19 @@ test("CACHE: a missing cache reads as empty rather than throwing", async () => {
     assert.equal(await readReferenceManifest(root), null);
   });
 });
+
+const historyRows=()=>Array.from({length:721},(_,i)=>ENTRY-(720-i)*3_600_000).flatMap(timestampMs=>buildReferenceSeriesRows({timestampMs,underlyingInstrument:"BTC-PERPETUAL",underlyingPrice:100,listedExpiries:[7,14,30].map(days=>({expiryTimestampMs:timestampMs+days*86_400_000,createdAtMs:timestampMs-86_400_000,settlementPeriod:"week",strikes:[100]})),candidates:[7,14,30].map((days,j)=>({instrumentName:`BTC-${days}D-100-C`,tradeId:`${timestampMs}-${days}`,tradeSeq:j,strike:100,optionType:"C" as const,expiryTimestampMs:timestampMs+days*86_400_000,settlementPeriod:"week",contractCreatedAtMs:timestampMs-86_400_000,timestampMs:timestampMs-60_000,ivApiPercent:40+days/10,indexPrice:100})),tenors:["7d","14d","30d"]}).rows);
+
+test("PERCENTILE CACHE: a genuine 720-hour same-tenor series is reused and makes percentiles available",async()=>withTempRoot(async root=>{
+ assert.equal(MINIMUM_PRIOR_OBSERVATIONS,720);await writeReferenceShards({rows:historyRows(),root});let currencyCalls=0;
+ const fake={instrumentManifest:async()=>[{instrumentName:"unused",strike:100,optionType:"C" as const,expiryTimestampMs:ENTRY+40*86_400_000,createdAtMs:ENTRY-40*86_400_000,settlementPeriod:"month"}],ivTrades:async()=>[],ivTradesByCurrency:async()=>{currencyCalls+=1;return[]},dvolRange:async()=>[]};
+ const state=await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:720,perpetualBars:async()=>[]});
+ assert.equal(currencyCalls,0,"complete hourly targets must prevent equivalent historical refetch");assert.ok(state.events!.every(e=>e.reference_iv_percentile.every(p=>p.status==="available"&&p.prior_observation_count===720)));
+}));
+
+test("PERCENTILE CACHE: missing hourly targets are populated once and monthly shards prevent a second refetch",async()=>withTempRoot(async root=>{
+ let currencyCalls=0;const expiries=[7,14,30].map(days=>({instrumentName:`BTC-${days}D-100-C`,strike:100,optionType:"C" as const,expiryTimestampMs:ENTRY+days*86_400_000,createdAtMs:ENTRY-40*86_400_000,settlementPeriod:"week"}));
+ const fake={instrumentManifest:async()=>expiries,ivTrades:async()=>[],ivTradesByCurrency:async(_start:number,end:number)=>{currencyCalls+=1;return expiries.map((m,i)=>({instrumentName:m.instrumentName,tradeId:`${end}-${i}`,tradeSeq:i,timestampMs:end-60_000,ivApiPercent:40+i,indexPrice:100,price:null,markPrice:null,direction:null,amount:null}))},dvolRange:async()=>[]};
+ await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:2,perpetualBars:async()=>[]});assert.equal(currencyCalls,3);currencyCalls=0;
+ await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:2,perpetualBars:async()=>[]});assert.equal(currencyCalls,0);assert.equal((await readReferenceShard("2026-08",root)).length,9);
+}));
