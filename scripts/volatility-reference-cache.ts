@@ -2,8 +2,8 @@ import {mkdir, readFile, readdir, writeFile} from "node:fs/promises";
 import {dirname, join} from "node:path";
 import {deribitApiRequest, type FetchLike} from "./deribit-api-client.ts";
 import {
-  DVOL_HOST, DVOL_SERIES_ID, OPTION_HISTORY_HOST, REFERENCE_SERIES_ID,
-  buildDvolRows, buildReferenceSeriesManifest, dvolSeriesIdentity, shardIdFor,
+  DERIBIT_OPTION_INDEX_UNDERLYING, DVOL_HOST, DVOL_SERIES_ID, OPTION_HISTORY_HOST, REFERENCE_SERIES_ID,
+  buildDvolRows, buildReferenceSeriesManifest, dvolSeriesIdentity, isCurrentReferenceRow, shardIdFor,
   type DvolPoint, type DvolSeriesRow, type ReferenceSeriesManifest, type ReferenceSeriesRow,
 } from "../app/lib/volatility/reference-series.ts";
 import {CANONICAL_RV_UNDERLYING, type HourlyClose} from "../app/lib/volatility/realized-volatility.ts";
@@ -242,7 +242,7 @@ export async function writeReferenceShards(input: {
     const path = shardPath(root, REFERENCE_SERIES_ID, shard);
     const existing = await readJsonl<ReferenceSeriesRow>(path);
     const merged = new Map<string, ReferenceSeriesRow>();
-    for (const row of [...existing, ...incoming]) merged.set(`${row.timestamp_ms}~${row.nominal_tenor}`, row);
+    for (const row of [...existing.filter(isCurrentReferenceRow), ...incoming.filter(isCurrentReferenceRow)]) merged.set(`${row.timestamp_ms}~${row.nominal_tenor}`, row);
     const ordered = [...merged.values()].sort((a, b) =>
       a.timestamp_ms - b.timestamp_ms || a.nominal_tenor.localeCompare(b.nominal_tenor));
     const serialized = ordered.map(r => JSON.stringify(r)).join("\n") + "\n";
@@ -255,10 +255,10 @@ export async function writeReferenceShards(input: {
 
   // The manifest describes the WHOLE series, not just this write.
   const all: ReferenceSeriesRow[] = [];
-  for (const shard of await listCachedShards(REFERENCE_SERIES_ID, root)) all.push(...await readReferenceShard(shard, root));
+  for (const shard of await listCachedShards(REFERENCE_SERIES_ID, root)) all.push(...(await readReferenceShard(shard, root)).filter(isCurrentReferenceRow));
   const manifest = buildReferenceSeriesManifest({
     rows: all.length ? all : [...input.rows],
-    underlyingInstrument: input.underlyingInstrument ?? CANONICAL_RV_UNDERLYING,
+    underlyingInstrument: input.underlyingInstrument ?? DERIBIT_OPTION_INDEX_UNDERLYING,
     generatedAtUtc: input.generatedAtUtc ?? new Date().toISOString(),
   });
   const mPath = manifestPath(root, REFERENCE_SERIES_ID);
