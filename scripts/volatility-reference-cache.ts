@@ -178,6 +178,9 @@ async function readJsonl<T>(path: string): Promise<T[]> {
 export async function readReferenceShard(shardId: string, root: string = VOLATILITY_CACHE_ROOT): Promise<ReferenceSeriesRow[]> {
   return readJsonl<ReferenceSeriesRow>(shardPath(root, REFERENCE_SERIES_ID, shardId));
 }
+export async function readDvolShard(shardId: string, root: string = VOLATILITY_CACHE_ROOT): Promise<DvolSeriesRow[]> {
+  return readJsonl<DvolSeriesRow>(shardPath(root, DVOL_SERIES_ID, shardId));
+}
 
 export async function listCachedShards(seriesId: string = REFERENCE_SERIES_ID, root: string = VOLATILITY_CACHE_ROOT): Promise<string[]> {
   try {
