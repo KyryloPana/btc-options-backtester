@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtemp, readFile, rm} from "node:fs/promises";
+import {mkdir, mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {
@@ -9,8 +9,8 @@ import {
   writeDvolShards, writeReferenceShards,
 } from "../scripts/volatility-reference-cache.ts";
 import {
-  DVOL_HOST, DVOL_SERIES_ID, OPTION_HISTORY_HOST, REFERENCE_SERIES_ID,
-  buildReferenceSeriesRows, type ReferenceSeriesRow,
+  DERIBIT_OPTION_INDEX_UNDERLYING, DVOL_HOST, DVOL_SERIES_ID, OPTION_HISTORY_HOST, REFERENCE_SERIES_ID, REFERENCE_SERIES_METHOD_VERSION,
+  buildReferenceSeriesRows, isReferenceTimestampComplete, type ReferenceSeriesRow,
 } from "../app/lib/volatility/reference-series.ts";
 import type {RawIvTradeCandidate} from "../app/lib/volatility/market-iv-evidence.ts";
 import {materializeVolatilityStates,MINIMUM_PRIOR_OBSERVATIONS} from "../scripts/materialize-volatility-states.ts";
@@ -115,7 +115,7 @@ const candidate = (over: Partial<RawIvTradeCandidate> = {}): RawIvTradeCandidate
 
 const rowsAt = (timestampMs: number, ivApiPercent = 42): readonly ReferenceSeriesRow[] =>
   buildReferenceSeriesRows({
-    timestampMs, underlyingInstrument: "BTC-PERPETUAL", underlyingPrice: SPOT,
+    timestampMs, underlyingInstrument: DERIBIT_OPTION_INDEX_UNDERLYING, underlyingPrice: SPOT,
     listedExpiries: [{expiryTimestampMs: EXPIRY, createdAtMs: Date.UTC(2025, 4, 1),
       settlementPeriod: "week", strikes: [104_000, 105_000, 106_000]}],
     candidates: [candidate({timestampMs: timestampMs - 600_000, ivApiPercent})],
@@ -205,7 +205,7 @@ test("CACHE: a missing cache reads as empty rather than throwing", async () => {
   });
 });
 
-const historyRows=()=>Array.from({length:721},(_,i)=>ENTRY-(720-i)*3_600_000).flatMap(timestampMs=>buildReferenceSeriesRows({timestampMs,underlyingInstrument:"BTC-PERPETUAL",underlyingPrice:100,listedExpiries:[7,14,30].map(days=>({expiryTimestampMs:timestampMs+days*86_400_000,createdAtMs:timestampMs-86_400_000,settlementPeriod:"week",strikes:[100]})),candidates:[7,14,30].map((days,j)=>({instrumentName:`BTC-${days}D-100-C`,tradeId:`${timestampMs}-${days}`,tradeSeq:j,strike:100,optionType:"C" as const,expiryTimestampMs:timestampMs+days*86_400_000,settlementPeriod:"week",contractCreatedAtMs:timestampMs-86_400_000,timestampMs:timestampMs-60_000,ivApiPercent:40+days/10,indexPrice:100})),tenors:["7d","14d","30d"]}).rows);
+const historyRows=()=>Array.from({length:721},(_,i)=>ENTRY-(720-i)*3_600_000).flatMap(timestampMs=>buildReferenceSeriesRows({timestampMs,underlyingInstrument:DERIBIT_OPTION_INDEX_UNDERLYING,underlyingPrice:100,listedExpiries:[7,14,30].map(days=>({expiryTimestampMs:timestampMs+days*86_400_000,createdAtMs:timestampMs-86_400_000,settlementPeriod:"week",strikes:[100]})),candidates:[7,14,30].map((days,j)=>({instrumentName:`BTC-${days}D-100-C`,tradeId:`${timestampMs}-${days}`,tradeSeq:j,strike:100,optionType:"C" as const,expiryTimestampMs:timestampMs+days*86_400_000,settlementPeriod:"week",contractCreatedAtMs:timestampMs-86_400_000,timestampMs:timestampMs-60_000,ivApiPercent:40+days/10,indexPrice:100})),tenors:["7d","14d","30d"]}).rows);
 
 test("PERCENTILE CACHE: a genuine 720-hour same-tenor series is reused and makes percentiles available",async()=>withTempRoot(async root=>{
  assert.equal(MINIMUM_PRIOR_OBSERVATIONS,720);await writeReferenceShards({rows:historyRows(),root});let currencyCalls=0;
@@ -236,4 +236,28 @@ test("PERCENTILE PERFORMANCE: widely separated events retrieve a union of local 
 test("CACHE COMPLETENESS: canonical unavailable tenor rows are not repeatedly retrieved",async()=>withTempRoot(async root=>{
  let calls=0;const expiry=ENTRY+7*86_400_000,meta={instrumentName:"BTC-U",strike:100,optionType:"C" as const,expiryTimestampMs:expiry,createdAtMs:ENTRY-86_400_000,settlementPeriod:"week"},fake={instrumentManifest:async()=>[meta],ivTrades:async()=>[],ivTradesByCurrency:async(_start:number,end:number)=>{calls+=1;return[{instrumentName:meta.instrumentName,tradeId:`u-${end}`,tradeSeq:1,timestampMs:end-1,ivApiPercent:null,indexPrice:100,price:null,markPrice:null,direction:null,amount:null}]},dvolRange:async()=>[]};
  await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:0,perpetualBars:async()=>[]});assert.equal(calls,1);calls=0;await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:0,perpetualBars:async()=>[]});assert.equal(calls,0);
+}));
+
+
+test("CACHE COMPATIBILITY: v1 rows cannot complete the v2 series and are rebuilt separately",async()=>withTempRoot(async root=>{
+ const v1="deribit-btc-same-expiry-reference-v1", timestamp=ENTRY;
+ const stale=buildReferenceSeriesRows({timestampMs:timestamp,underlyingInstrument:"BTC-PERPETUAL",underlyingPrice:100,listedExpiries:[7,14,30].map(days=>({expiryTimestampMs:timestamp+days*86_400_000,createdAtMs:timestamp-86_400_000,settlementPeriod:"week",strikes:[100]})),candidates:[],tenors:["7d","14d","30d"]}).rows.map(row=>({...row,series_id:v1,method_version:"volatility-reference-series-v1",underlying_instrument:"BTC-PERPETUAL"}));
+ await mkdir(join(root,v1),{recursive:true});await writeFile(join(root,v1,"2026-08.jsonl"),stale.map(JSON.stringify).join("\n")+"\n");
+ assert.equal(isReferenceTimestampComplete(stale,timestamp),false);
+ const metas=[7,14,30].map(days=>({instrumentName:`V2-${days}`,strike:100,optionType:"C" as const,expiryTimestampMs:timestamp+days*86_400_000,createdAtMs:timestamp-86_400_000,settlementPeriod:"week"}));let calls=0;
+ const fake={instrumentManifest:async()=>metas,ivTrades:async()=>[],ivTradesByCurrency:async(_s:number,end:number)=>{calls++;return metas.map((m,i)=>({instrumentName:m.instrumentName,tradeId:`v2-${i}`,tradeSeq:i,timestampMs:end-1,ivApiPercent:40,indexPrice:100,price:null,markPrice:null,direction:null,amount:null}))},dvolRange:async()=>[]};
+ await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:0,perpetualBars:async()=>[]});assert.equal(calls,1);const current=await readReferenceShard("2026-08",root);assert.equal(isReferenceTimestampComplete(current,timestamp),true);assert.ok(current.every(row=>row.series_id===REFERENCE_SERIES_ID&&row.method_version===REFERENCE_SERIES_METHOD_VERSION&&row.underlying_instrument===DERIBIT_OPTION_INDEX_UNDERLYING));
+}));
+
+for(const [name,trades] of [["empty tape",[]],["missing causal index",[{indexPrice:null}]]] as const)test(`CACHE COMPLETENESS: ${name} is honestly unavailable and reused`,async()=>withTempRoot(async root=>{
+ let calls=0;const meta={instrumentName:"BTC-E",strike:100,optionType:"C" as const,expiryTimestampMs:ENTRY+7*86_400_000,createdAtMs:ENTRY-86_400_000,settlementPeriod:"week"};
+ const fake={instrumentManifest:async()=>[meta],ivTrades:async()=>[],ivTradesByCurrency:async(_s:number,end:number)=>{calls++;return trades.map((x,i)=>({instrumentName:meta.instrumentName,tradeId:`e-${i}`,tradeSeq:i,timestampMs:end-1,ivApiPercent:42,indexPrice:x.indexPrice,price:null,markPrice:null,direction:null,amount:null}))},dvolRange:async()=>[]};
+ await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:0,perpetualBars:async()=>[]});assert.equal(calls,1);const rows=await readReferenceShard("2026-08",root);assert.equal(rows.length,3);assert.ok(rows.every(row=>row.reference_iv_decimal===null&&row.quality==="unavailable"&&row.unavailable_reason_code==="missing_index_price"));assert.equal(isReferenceTimestampComplete(rows,ENTRY),true);
+ calls=0;await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:0,perpetualBars:async()=>[]});assert.equal(calls,0);
+}));
+
+test("CACHE COMPLETENESS: failed currency retrieval writes no unavailable rows and retries",async()=>withTempRoot(async root=>{
+ let calls=0;const meta={instrumentName:"BTC-F",strike:100,optionType:"C" as const,expiryTimestampMs:ENTRY+7*86_400_000,createdAtMs:ENTRY-86_400_000,settlementPeriod:"week"};const fake={instrumentManifest:async()=>[meta],ivTrades:async()=>[],ivTradesByCurrency:async()=>{calls++;throw new Error("network failure")},dvolRange:async()=>[]};
+ await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:0,perpetualBars:async()=>[]});assert.equal(calls,1);assert.deepEqual(await readReferenceShard("2026-08",root),[]);
+ await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:0,perpetualBars:async()=>[]});assert.equal(calls,2);
 }));
