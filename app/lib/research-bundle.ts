@@ -15,9 +15,9 @@ import { EMPIRICAL_TAKER_EXECUTION_VERSION } from "./empirical-taker-execution.t
 import { EXECUTION_CALIBRATION_METHOD_VERSION } from "./execution-calibration.ts";
 import { EXPIRY_FORWARD_METHOD_VERSION } from "./volatility/expiry-forward.ts";
 
-export const RESEARCH_BUNDLE_SCHEMA_VERSION="3.8.0" as const;
+export const RESEARCH_BUNDLE_SCHEMA_VERSION="3.9.0" as const;
 /** Bundle schema versions this app can still import (see importResearchBundle). */
-export const LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS=["1.0.0","2.0.0","2.1.0","2.2.0","2.3.0","3.0.0","3.1.0","3.2.0","3.3.0","3.4.0","3.5.0","3.6.0","3.7.0"] as const;
+export const LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS=["1.0.0","2.0.0","2.1.0","2.2.0","2.3.0","3.0.0","3.1.0","3.2.0","3.3.0","3.4.0","3.5.0","3.6.0","3.7.0","3.8.0"] as const;
 export const RESEARCH_BUNDLE_FILES=["run.json","events.jsonl","underlying_path.jsonl","structure_economics.jsonl","candidates.jsonl","valuations.jsonl","outcomes.jsonl","availability.jsonl","margin_scenarios.jsonl","evidence_trades.jsonl","futures_comparisons.jsonl","futures_path.jsonl","event_volatility_state.jsonl","structure_volatility_state.jsonl"] as const;
 export const REQUIRED_OUTCOMES=["vpoc","invalidation","credit_capture_25","credit_capture_50","credit_capture_70","fixed_3d","fixed_5d","fixed_7d","settlement"] as const;
 export const RESEARCH_REASON_CODES=["entry_priced","entry_unavailable","direct_vwap","model_reconstructed","quality_green","quality_yellow","quality_red","quality_unavailable","valuation_priced","pricing_track_unavailable","outside_executable_window","raw_source_evidence","executable_evidence","missing_target_index","missing_pricing_track","outcome_priced","outcome_not_reached","outcome_after_expiry","outcome_ambiguous_sequence","outcome_reached_but_unpriced","outcome_source_absent","outcome_source_unavailable","outcome_label_unmapped","candidate_priced","candidate_unavailable","verified_historical_margin_model_unavailable","margin_no_canonical_valuation_path","margin_missing_index","margin_missing_short_mark","margin_missing_long_mark","margin_historical_rule_unverified","margin_deployment_unsupported","margin_not_recomputed","futures_instrument_unavailable","unsupported_futures_instrument","futures_reference_series_unavailable","futures_reference_series_incomplete","futures_entry_observation_unavailable","futures_exit_observation_unavailable","futures_series_gap_at_entry_decision","futures_series_gap_at_decision","futures_entry_bar_resolution_lag","futures_direction_unavailable","futures_event_vpoc_unavailable","futures_event_invalidation_unavailable","futures_event_resolution_ambiguous","futures_vpoc_target_not_reached","futures_event_vpoc_not_configured","futures_invalidation_not_reached","futures_event_invalidation_not_configured","futures_exit_endpoint_unavailable","funding_not_evaluated","futures_invalidation_distance_unavailable","futures_fee_schedule_unavailable","futures_no_funding_interval_elapsed","matched_endpoint_unavailable","observed_futures_execution_unavailable","funding_unavailable","funding_partial","futures_margin_unavailable"] as const;
@@ -800,6 +800,15 @@ export function validateResearchBundle(files:Partial<Record<string,string>>):{ok
     // Differencing a leg against a reference that included that same leg
     // measures the structure against itself.
     if(reference.excluded_own_legs!==true)errors.push(`${differentialContext} is available against a reference that did not exclude the structure's own legs.`);
+   }
+  }
+  for(const collection of ["post_entry_market_iv","market_iv_path"]){
+   if(!Array.isArray(r[collection]))errors.push(`${context} omits ${collection}.`);
+   for(const point of arr(r[collection])){
+    const pointContext=`${context} ${collection} ${String(point.endpoint_id??point.target_timestamp_utc)}`;
+    if(typeof point.target_timestamp_utc!=="string")errors.push(`${pointContext} has no exact target timestamp.`);
+    if(collection==="post_entry_market_iv"&&["vpoc","invalidation","credit_capture_50","credit_capture_70","fixed_3d","fixed_5d","fixed_7d"].includes(String(point.endpoint_id))){const outcome=outcomeRows.get(`${String(r.candidate_id)}~reference_fair_value~${String(point.endpoint_id)}`);if(outcome&&outcome.valuation_timestamp_utc!=null&&point.target_timestamp_utc!==outcome.valuation_timestamp_utc)errors.push(`${pointContext} target ${String(point.target_timestamp_utc)} disagrees with canonical Reference outcome ${String(outcome.valuation_timestamp_utc)}.`)}
+    for(const side of ["short","long"]){const evidence=obj(point[side]);nullWhenUnavailable(evidence,["iv_decimal"],`${pointContext} ${side}`);if(evidence.status==="available"&&evidence.source!=="deribit_trade_iv")errors.push(`${pointContext} ${side} is available without Deribit trade-IV provenance.`);const age=num(evidence.age_minutes);if(evidence.status==="available"&&(age===null||age<0||age>60))errors.push(`${pointContext} ${side} violates the market-state age rule.`)}
    }
   }
  }

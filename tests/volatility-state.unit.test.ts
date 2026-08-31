@@ -266,6 +266,21 @@ test("STRUCTURE: no synthesized spread IV exists, and the row says so explicitly
   assert.match(row.synthesized_spread_iv_note, /no single implied volatility/);
 });
 
+test("POST-ENTRY: exact target is immutable while the freshest causal trade may precede it",()=>{
+ const target=T+4*3_600_000,row=buildStructureVolatilityState(structureInput({postEntryMarketIv:[{endpointId:"4h",targetTimestampMs:target,short:{ivDecimal:.44,ivSource:"deribit_trade_iv",ivSourceTimestampMs:target-17*60_000,observation:"observed"},long:null}]})),point=row.post_entry_market_iv[0]!;
+ assert.equal(point.target_timestamp_utc,new Date(target).toISOString());assert.equal(point.short.observation_timestamp_utc,new Date(target-17*60_000).toISOString());assert.equal(point.short.age_minutes,17);assert.equal(point.short.status,"available");
+});
+
+test("POST-ENTRY: stale, future, reconstructed, and constant IV are unavailable",()=>{
+ const target=T+4*3_600_000,snapshot=(ivSourceTimestampMs:number,observation:string)=>({ivDecimal:.44,ivSource:observation,ivSourceTimestampMs,observation}),row=buildStructureVolatilityState(structureInput({postEntryMarketIv:[{endpointId:"stale",targetTimestampMs:target,short:snapshot(target-61*60_000,"observed"),long:null},{endpointId:"future",targetTimestampMs:target,short:snapshot(target+1,"observed"),long:null},{endpointId:"model",targetTimestampMs:target,short:snapshot(target-1,"reconstructed"),long:null},{endpointId:"constant",targetTimestampMs:target,short:snapshot(target-1,"constant-entry-IV"),long:null}]}));
+ assert.ok(row.post_entry_market_iv.every(x=>x.short.status==="unavailable"&&x.short.iv_decimal===null));
+});
+
+test("MARKET PATH: missing targets are not interpolated or carried forward",()=>{
+ const first=T+4*3_600_000,later=first+2*3_600_000,row=buildStructureVolatilityState(structureInput({marketIvPath:[{targetTimestampMs:first,short:{ivDecimal:.4,ivSource:"deribit_trade_iv",ivSourceTimestampMs:first-1,observation:"observed"},long:null},{targetTimestampMs:later,short:null,long:null}]}));
+ assert.equal(row.market_iv_path[0]!.short.status,"available");assert.equal(row.market_iv_path[1]!.short.status,"unavailable");assert.equal(row.market_iv_path[1]!.short.iv_decimal,null);
+});
+
 test("CIRCULARITY: a reconstructed leg is never market evidence, whatever IV it carries", () => {
   const row = buildStructureVolatilityState(structureInput({
     shortLeg: {ivDecimal: 0.48, ivSource: "model-reconstructed",

@@ -23,8 +23,10 @@ import {
  * see `dvolSeriesIdentity` and the `dvol_cannot_substitute` rejection.
  */
 
-export const REFERENCE_SERIES_METHOD_VERSION = "volatility-reference-series-v1" as const;
-export const REFERENCE_SERIES_ID = "deribit-btc-same-expiry-reference-v1" as const;
+export const REFERENCE_SERIES_METHOD_VERSION = "volatility-reference-series-v2" as const;
+export const REFERENCE_SERIES_ID = "deribit-btc-same-expiry-reference-v2" as const;
+/** `index_price` carried by Deribit BTC option trades. Not BTC-PERPETUAL. */
+export const DERIBIT_OPTION_INDEX_UNDERLYING = "deribit_btc_usd_index" as const;
 export const DVOL_SERIES_ID = "deribit-btc-dvol-hourly-v1" as const;
 export const DVOL_METHOD_VERSION = "deribit-dvol-index-v1" as const;
 /** DVOL history genuinely begins here; earlier targets have no broad reference. */
@@ -55,7 +57,7 @@ export interface ReferenceSeriesRow {
   readonly timestamp_utc: string;
   readonly timestamp_ms: number;
   readonly underlying_instrument: string;
-  readonly underlying_price: number;
+  readonly underlying_price: number | null;
   readonly nominal_tenor: NominalTenor;
   readonly reference_expiry_timestamp_utc: string | null;
   readonly actual_dte_days: number | null;
@@ -95,6 +97,52 @@ export interface ReferenceSeriesBuildResult {
   readonly rows: readonly ReferenceSeriesRow[];
   readonly admitted: number;
   readonly rejected: Readonly<Partial<Record<MarketIvRejectionCode, number>>>;
+}
+
+/** Canonical evaluated state for a complete tape with no causal option index. */
+export function buildUnavailableReferenceSeriesRows(input: {
+  readonly timestampMs: number;
+  readonly listedExpiries: readonly ListedExpiry[];
+  readonly tenors?: readonly NominalTenor[];
+  readonly reasonCode?: MarketIvRejectionCode;
+  readonly maxAgeMinutes?: number;
+}): readonly ReferenceSeriesRow[] {
+  const maxAge = input.maxAgeMinutes ?? MARKET_IV_MAX_AGE_MINUTES;
+  return (input.tenors ?? (["7d", "14d", "30d"] as const)).map(nominal => {
+    const tenor = resolveTenor(nominal, input.timestampMs, input.listedExpiries);
+    return {
+      series_id: REFERENCE_SERIES_ID, method_version: REFERENCE_SERIES_METHOD_VERSION,
+      timestamp_utc: new Date(input.timestampMs).toISOString(), timestamp_ms: input.timestampMs,
+      underlying_instrument: DERIBIT_OPTION_INDEX_UNDERLYING, underlying_price: null,
+      nominal_tenor: nominal, reference_expiry_timestamp_utc: iso(tenor.actualExpiryTimestampMs),
+      actual_dte_days: tenor.actualDteDays, tenor_tolerance_passed: tenor.tenorTolerancePassed,
+      reference_iv_decimal: null, iv_units: null, reference_strike: null, log_moneyness: null,
+      observation_class: "unavailable", observation_source: null, observation_timestamp_utc: null,
+      age_minutes: null, max_age_minutes: maxAge, passes_market_state_rule: false,
+      diagnostic_age_minutes: null, source_trade_ids: [], interpolation_inputs: [],
+      contract_settlement_period: null, own_legs_excluded: false, quality: "unavailable",
+      unavailable_reason_code: input.reasonCode ?? "missing_index_price",
+    };
+  });
+}
+
+/** Admission boundary for rows reused by the current reference-series cache. */
+export function isCurrentReferenceRow(row: unknown): row is ReferenceSeriesRow {
+  if (!row || typeof row !== "object") return false;
+  const r = row as Partial<ReferenceSeriesRow>;
+  if (r.series_id !== REFERENCE_SERIES_ID || r.method_version !== REFERENCE_SERIES_METHOD_VERSION ||
+      r.underlying_instrument !== DERIBIT_OPTION_INDEX_UNDERLYING ||
+      !Number.isFinite(r.timestamp_ms) || !(["7d", "14d", "30d"] as const).includes(r.nominal_tenor as NominalTenor)) return false;
+  if (r.observation_class === "unavailable")
+    return r.reference_iv_decimal === null && r.iv_units === null && r.passes_market_state_rule === false && r.quality === "unavailable" && r.unavailable_reason_code !== null;
+  return typeof r.reference_iv_decimal === "number" && r.reference_iv_decimal > 0 &&
+    r.iv_units === "decimal" && r.passes_market_state_rule === true && typeof r.underlying_price === "number" && r.underlying_price > 0;
+}
+
+/** A timestamp is reusable only after all canonical current-method tenors were evaluated. */
+export function isReferenceTimestampComplete(rows: readonly unknown[], timestampMs: number): boolean {
+  const found = new Set(rows.filter(isCurrentReferenceRow).filter(r => r.timestamp_ms === timestampMs).map(r => r.nominal_tenor));
+  return (["7d", "14d", "30d"] as const).every(tenor => found.has(tenor));
 }
 
 const iso = (ms: number | null): string | null => ms === null || !Number.isFinite(ms) ? null : new Date(ms).toISOString();
@@ -247,7 +295,7 @@ export function buildReferenceSeriesManifest(input: {
     method_version: REFERENCE_SERIES_METHOD_VERSION,
     market_iv_method_version: MARKET_IV_METHOD_VERSION,
     source_host: input.sourceHost ?? OPTION_HISTORY_HOST,
-    source_endpoints: ["get_instruments", "get_last_trades_by_instrument_and_time"],
+    source_endpoints: ["get_instruments", "get_last_trades_by_currency_and_time"],
     underlying_instrument: input.underlyingInstrument,
     coverage_start_utc: timestamps.length ? new Date(Math.min(...timestamps)).toISOString() : null,
     coverage_end_utc: timestamps.length ? new Date(Math.max(...timestamps)).toISOString() : null,

@@ -27,7 +27,7 @@ import {
 import type {IvPercentileResult} from "./iv-percentile.ts";
 
 export const EVENT_VOLATILITY_STATE_METHOD_VERSION = "event-volatility-state-v1" as const;
-export const STRUCTURE_VOLATILITY_STATE_METHOD_VERSION = "structure-volatility-state-v1" as const;
+export const STRUCTURE_VOLATILITY_STATE_METHOD_VERSION = "structure-volatility-state-v2" as const;
 
 /** The tenor pairs a term-structure slope may be computed across. */
 export const SLOPE_PAIRS = [
@@ -380,6 +380,30 @@ export interface StructureReferenceState {
   readonly unavailable_reason_code: MarketIvRejectionCode | null;
 }
 
+export interface MarketIvTargetState {
+  readonly status: "available" | "unavailable";
+  readonly instrument: string | null;
+  readonly iv_decimal: number | null;
+  readonly observation_timestamp_utc: Iso;
+  readonly age_minutes: number | null;
+  readonly max_age_minutes: number;
+  readonly source: "deribit_trade_iv" | null;
+  readonly unavailable_reason: string | null;
+}
+
+export interface PostEntryMarketIvState {
+  readonly endpoint_id: string;
+  readonly target_timestamp_utc: string;
+  readonly short: MarketIvTargetState;
+  readonly long: MarketIvTargetState;
+}
+
+export interface MarketIvPathState {
+  readonly target_timestamp_utc: string;
+  readonly short: MarketIvTargetState;
+  readonly long: MarketIvTargetState;
+}
+
 export interface StructureVolatilityStateRow {
   readonly event_id: string;
   readonly candidate_id: string;
@@ -395,6 +419,8 @@ export interface StructureVolatilityStateRow {
   readonly legs: readonly LegVolatilityState[];
   readonly same_expiry_reference: StructureReferenceState;
   readonly differentials: readonly StructureDifferential[];
+  readonly post_entry_market_iv: readonly PostEntryMarketIvState[];
+  readonly market_iv_path: readonly MarketIvPathState[];
   /**
    * A vertical has no single implied volatility. The field exists to say so
    * explicitly, so no consumer invents one from the two legs.
@@ -480,6 +506,8 @@ export interface StructureVolatilityStateInput {
    * the differential is not measured against itself.
    */
   readonly reference: ReferenceSeriesRow | null;
+  readonly postEntryMarketIv?: readonly {endpointId:string;targetTimestampMs:number;short:LegVolatilitySnapshot|null;long:LegVolatilitySnapshot|null}[];
+  readonly marketIvPath?: readonly {targetTimestampMs:number;short:LegVolatilitySnapshot|null;long:LegVolatilitySnapshot|null}[];
   readonly maxAgeMinutes?: number;
 }
 
@@ -531,6 +559,15 @@ export function buildStructureVolatilityState(input: StructureVolatilityStateInp
     differential("short_minus_long_iv", shortLeg.iv_decimal, longLeg.iv_decimal,
       shortLeg.status === "available" && longLeg.status === "available"),
   ];
+  const targetLeg=(snapshot:LegVolatilitySnapshot|null,leg:"short"|"long",targetTimestampMs:number):MarketIvTargetState=>{
+    const state=legState(leg,snapshot,{instrument:leg==="short"?input.shortInstrument??null:input.longInstrument??null,strike:leg==="short"?input.shortStrike:input.longStrike,entryTimestampMs:targetTimestampMs,maxAgeMinutes});
+    return {status:state.status,instrument:state.instrument,iv_decimal:state.iv_decimal,
+      observation_timestamp_utc:state.iv_source_timestamp_utc,age_minutes:state.age_minutes,
+      max_age_minutes:state.max_age_minutes,source:state.status==="available"?"deribit_trade_iv":null,
+      unavailable_reason:state.unavailable_reason};
+  };
+  const postEntryMarketIv=(input.postEntryMarketIv??[]).map(x=>({endpoint_id:x.endpointId,target_timestamp_utc:new Date(x.targetTimestampMs).toISOString(),short:targetLeg(x.short,"short",x.targetTimestampMs),long:targetLeg(x.long,"long",x.targetTimestampMs)}));
+  const marketIvPath=(input.marketIvPath??[]).map(x=>({target_timestamp_utc:new Date(x.targetTimestampMs).toISOString(),short:targetLeg(x.short,"short",x.targetTimestampMs),long:targetLeg(x.long,"long",x.targetTimestampMs)}));
 
   return {
     event_id: input.eventId, candidate_id: input.candidateId,
@@ -546,6 +583,8 @@ export function buildStructureVolatilityState(input: StructureVolatilityStateInp
     legs: [shortLeg, longLeg],
     same_expiry_reference: reference,
     differentials,
+    post_entry_market_iv: postEntryMarketIv,
+    market_iv_path: marketIvPath,
     synthesized_spread_iv: null,
     synthesized_spread_iv_note: NO_SYNTHESIZED_SPREAD_IV_NOTE,
   };
