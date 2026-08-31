@@ -295,7 +295,7 @@ export function buildReferenceSeriesManifest(input: {
     method_version: REFERENCE_SERIES_METHOD_VERSION,
     market_iv_method_version: MARKET_IV_METHOD_VERSION,
     source_host: input.sourceHost ?? OPTION_HISTORY_HOST,
-    source_endpoints: ["get_instruments", "get_last_trades_by_instrument_and_time"],
+    source_endpoints: ["get_instruments", "get_last_trades_by_currency_and_time"],
     underlying_instrument: input.underlyingInstrument,
     coverage_start_utc: timestamps.length ? new Date(Math.min(...timestamps)).toISOString() : null,
     coverage_end_utc: timestamps.length ? new Date(Math.max(...timestamps)).toISOString() : null,
