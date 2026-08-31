@@ -9,6 +9,7 @@ import {normalizeExecutionScenarioStatus} from "../app/lib/execution-scenario.ts
 import {normalizeShortStrikeStructures} from "../app/lib/short-strike/normalize.ts";
 import {normalizeWidthStructures} from "../app/lib/spread-width/normalize.ts";
 import {DEFAULT_ANALYSIS_CONFIGURATION} from "../app/lib/analysis-configuration.ts";
+import {formatUsdValue} from "../app/lib/duration-dte/format.ts";
 
 const D=(day:number,hour=0)=>new Date(Date.UTC(2026,0,day,hour)).toISOString();
 const ENTRY=D(1);
@@ -44,7 +45,7 @@ const events=[
 ];
 
 /** Structural identity shared by a structure's maker and taker rows. */
-const structural=(over:Record<string,unknown>)=>({strike_method:"delta_15",option_type:"P",structure_type:"bull_put_credit",actual_strikes:{short:100,long:99,width:1000},...over});
+const structural=(over:Record<string,unknown>)=>({strike_method:"delta_15",option_type:"P",structure_type:"bull_put_credit",actual_strikes:{short:100,long:99,width:1000},reference_structure_entry_timestamp_utc:over.structure_entry_timestamp_utc??null,...over});
 
 const candidates=[
  // c1a and c1b are the SAME structural variant of e1 at two horizons: the only
@@ -422,25 +423,24 @@ test("MATCHED DTE: economics are compared only across identical structural varia
  assert.equal(byId("c1a").structuralVariantKey,byId("c1b").structuralVariantKey);
 });
 
-test("G: capital-day return is Unavailable per-candidate unless a canonical margin scenario is genuinely available",()=>{
+test("G: structural candidates never compute legacy capital-day return",()=>{
  assert.equal(byId("c2a").requiredCapitalUsd,null,"e2/c2a has no margin_scenarios row at all");
  assert.equal(byId("c2a").capitalDayReturn,null);
  assert.equal(byId("c1a").requiredCapitalUsd,1000);
- assert.ok(Math.abs(byId("c1a").capitalDayReturn!-500/(1000*3))<1e-9,"500 pnl / (1000 usd * 3 holding days)");
+ assert.equal(byId("c1a").capitalDayReturn,null);
 });
 
-test("G: the capital-time summary aggregates only candidates with a genuinely usable return",()=>{
- assert.equal(report.capitalTime.available,true);
- assert.equal(report.capitalTime.points.length,1,"c1a only: c4a has margin but no single realized outcome");
- assert.equal(report.capitalTime.points[0]!.actualDteDays,5);
- assert.ok(Math.abs(report.capitalTime.medianCapitalDayReturn!-500/(1000*3))<1e-9);
+test("G: capital-time is gated on a complete selected exit policy",()=>{
+ assert.equal(report.capitalTime.available,false);
+ assert.equal(report.capitalTime.points.length,0);
+ assert.match(report.capitalTime.reason!,/complete exit policy/i);
 });
 
 test("G: capital-time is honestly Unavailable when no candidate anywhere has a usable return",()=>{
  const noMargin={...dataset,tables:{...dataset.tables,margin_scenarios:[]}} as unknown as AnalysisDataset;
  const r=buildDurationDteReport(noMargin,"taker");
  assert.equal(r.capitalTime.available,false);
- assert.match(r.capitalTime.reason!,/margin/i);
+ assert.match(r.capitalTime.reason!,/complete exit policy/i);
  assert.equal(r.capitalTime.medianCapitalDayReturn,null);
 });
 
@@ -500,6 +500,33 @@ test("ENTRY DELAY: a +12h experiment cannot backfill +4h or +8h",()=>{
  const entry_delay_sensitivity=[{candidate_id:"c1a",requested_delay_hours:12,execution_scenario:"taker",status:"available",actual_delay_hours:12.5}];
  const ed=buildEntryDelayReport({...dataset,tables:{...dataset.tables,entry_delay_sensitivity}} as unknown as AnalysisDataset);
  assert.deepEqual(ed.rows.map(r=>r.structuresWithRawEvidence.taker),[0,0,0,1]);
+});
+
+test("CANONICAL ENTRY: observed scenario fills are never structural fallbacks",()=>{
+ const stripped=candidates.filter(c=>c.candidate_id==="c2a").map((c,i)=>({...c,reference_structure_entry_timestamp_utc:null,structure_entry_timestamp_utc:i?D(1,2):D(1,1)}));
+ const r=normalizeDteCandidates({...dataset,tables:{...dataset.tables,candidates:stripped,structure_economics:[]}} as unknown as AnalysisDataset);
+ assert.ok(r.every(c=>c.structureEntryMs===null&&c.holdingDays===null));
+});
+
+test("STRUCTURAL CONFLICT: conflicting canonical entry excludes and diagnoses the event-horizon",()=>{
+ const conflicted=candidates.map(c=>c.candidate_id==="c4b"?{...c,reference_structure_entry_timestamp_utc:D(1,1)}:c);
+ const r=buildDurationDteReport({...dataset,tables:{...dataset.tables,candidates:conflicted}} as unknown as AnalysisDataset,"taker");
+ const conflict=r.structuralConflicts.find(c=>c.eventId==="e4")!;
+ assert.deepEqual(conflict.candidateIds.sort(),["c4a","c4b"]);
+ assert.match(conflict.reason,/Conflicting/);
+ assert.equal(r.overview.find(x=>x.horizon.nominalDays===7)!.eventsN,2);
+});
+
+test("RESOLUTION SPEED: Reference economics are invariant to width row ordering and carry metric Ns",()=>{
+ const permuted=[...candidates],a=permuted.findIndex(c=>c.candidate_id==="c4a"),b=permuted.findIndex(c=>c.candidate_id==="c4b");[permuted[a],permuted[b]]=[permuted[b]!,permuted[a]!];
+ const shuffled=buildDurationDteReport({...dataset,tables:{...dataset.tables,candidates:permuted}} as unknown as AnalysisDataset,"taker");
+ assert.deepEqual(shuffled.resolutionSpeed,report.resolutionSpeed);
+ assert.ok(report.resolutionSpeed.rows.flatMap(r=>r.cells).every(c=>c.economicN.pnl>=0&&c.economicN.worstAdverse>=0&&c.economicN.capture50>=0));
+});
+
+test("USD FORMAT: rounded zero never retains a sign",()=>{
+ assert.equal(formatUsdValue(-.001),"$0.00");assert.equal(formatUsdValue(.001,true),"$0.00");
+ assert.equal(formatUsdValue(-.37),"−$0.37");assert.equal(formatUsdValue(.37,true),"+$0.37");assert.equal(formatUsdValue(-12.4),"−$12");
 });
 
 test("ENTRY DELAY: scheduled close marks cannot masquerade as delayed openings",()=>{

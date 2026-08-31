@@ -93,10 +93,12 @@ void CANDIDATES; void candidateIdOf;
 
 /* ---------------- schema contract ---------------- */
 
-test("SCHEMA: 3.9.0 retains volatility tables and makes 3.8.0 legacy", () => {
-  assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION, "3.9.0");
+test("SCHEMA: 4.0.0 retains volatility and adds fixed-offset entry delay", () => {
+  assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION, "4.0.0");
   assert.ok(RESEARCH_BUNDLE_FILES.includes("event_volatility_state.jsonl"));
   assert.ok(RESEARCH_BUNDLE_FILES.includes("structure_volatility_state.jsonl"));
+  assert.ok(RESEARCH_BUNDLE_FILES.includes("entry_delay_sensitivity.jsonl"));
+  assert.ok((LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS as readonly string[]).includes("3.9.0"));
   assert.ok((LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS as readonly string[]).includes("3.8.0"));
 });
 

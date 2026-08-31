@@ -19,7 +19,7 @@ import {indexByCandidate,readCanonicalStructuralLoss} from "../canonical-structu
 export const DURATION_METRIC_ROUTES={
  structural:"event_structure",creditCapture:"reference",outcomePnl:"reference",adverseEconomicPath:"reference",matchedDte:"reference",
  makerCoverage:"immediate_maker",takerCoverage:"immediate_taker",observedSynchronization:"immediate_maker|immediate_taker",
- executionDrag:"immediate_maker+immediate_taker",entryDelay:"delayed_maker|delayed_taker",executionSensitivity:"modeled_expected|modeled_conservative|penalty_sensitivity",capitalTime:"margin",
+ executionDrag:"immediate_maker+immediate_taker",entryDelay:"entry_delay_sensitivity",executionSensitivity:"modeled_expected|modeled_conservative|penalty_sensitivity",capitalTime:"configured_exit_policy+pricing_track+capital_basis",
 } as const;
 
 /**
@@ -215,7 +215,6 @@ const median=(values:readonly number[]):number|null=>pct(values,0.5);
 const defined=(values:readonly (number|null)[]):number[]=>values.filter((x):x is number=>x!==null);
 const eligible=(cs:readonly DteCandidate[])=>cs.filter(c=>c.ineligibilityReason===null);
 const atHorizon=(cs:readonly DteCandidate[],nominalDays:number)=>cs.filter(c=>c.horizonNominalDays===nominalDays);
-const evaluatedOnly=(cs:readonly DteCandidate[])=>cs.filter(c=>c.executionScenarioStatus==="evaluated");
 
 /**
  * One row per candidate_id, preferring a genuinely evaluated row so the
@@ -227,7 +226,7 @@ function toStructures(all:readonly DteCandidate[]):readonly DteCandidate[]{
  const byId=new Map<string,DteCandidate>();
  for(const c of all){
   const existing=byId.get(c.candidateId);
-  if(!existing||(existing.executionScenarioStatus!=="evaluated"&&c.executionScenarioStatus==="evaluated"))byId.set(c.candidateId,c);
+  if(!existing||(existing.executionScenarioStatus!=="evaluated"&&c.executionScenarioStatus==="evaluated")||(existing.executionScenarioStatus===c.executionScenarioStatus&&String(c.executionScenario).localeCompare(String(existing.executionScenario))<0))byId.set(c.candidateId,c);
  }
  return [...byId.values()];
 }
@@ -247,9 +246,9 @@ function eventHorizonPopulation(structures:readonly DteCandidate[]){
  return {population,conflicts};
 }
 
-function overviewRow(horizon:HorizonFamily,structures:readonly DteCandidate[],scenarioRows:readonly DteCandidate[],availability:HorizonAvailability,referenceRows:readonly DteCandidate[]=scenarioRows,nestedStructures:readonly DteCandidate[]=structures):OverviewRow{
+function overviewRow(horizon:HorizonFamily,structures:readonly DteCandidate[],scenarioRows:readonly DteCandidate[],availability:HorizonAvailability,referenceRows:readonly DteCandidate[]=scenarioRows,nestedStructures:readonly DteCandidate[]=structures,policyCapitalReturns:readonly number[]=[]):OverviewRow{
  const struct=atHorizon(eligible(structures),horizon.nominalDays);
- const rows=atHorizon(eligible(scenarioRows),horizon.nominalDays),evaluated=evaluatedOnly(rows);
+ const rows=atHorizon(eligible(scenarioRows),horizon.nominalDays);
  const determinate=struct.filter(c=>c.resolvedBeforeExpiry!==null);
  return {
   horizon,
@@ -265,7 +264,7 @@ function overviewRow(horizon:HorizonFamily,structures:readonly DteCandidate[],sc
   noResolutionBeforeExpiryShare:share(determinate.filter(c=>c.outcomeBeforeExpiry==="no_resolution_before_expiry").length,determinate.length),
   medianDteBufferDays:median(defined(struct.map(c=>c.dteBufferDays))),
   medianTimeToCapture50Days:median(defined(atHorizon(eligible(referenceRows),horizon.nominalDays).map(c=>c.capture50?.reached?c.capture50.timeToCaptureDays:null))),
-  medianCapitalDayReturn:median(defined(evaluated.map(c=>c.capitalDayReturn))),
+  medianCapitalDayReturn:median(policyCapitalReturns),
  };
 }
 
@@ -341,21 +340,6 @@ function pnlRow(horizon:HorizonFamily,scenarioRows:readonly DteCandidate[]):PnlB
  })};
 }
 
-function capitalTimeSummary(scenarioRows:readonly DteCandidate[]):CapitalTimeSummary{
- const withCapital=evaluatedOnly(eligible(scenarioRows)).filter(c=>c.requiredCapitalUsd!==null&&c.requiredCapitalUsd>0&&c.holdingDays!==null&&c.holdingDays>0&&c.capitalDayReturn!==null);
- if(!withCapital.length)return {
-  available:false,
-  reason:"No canonical margin scenario in this bundle reports an available required-capital figure. Capital-day return is not computed from long-leg cost or theoretical maximum loss as a substitute. The holding-period analysis is unaffected: it needs no capital data.",
-  points:[],medianCapitalDays:null,medianCapitalDayReturn:null,
- };
- return {
-  available:true,reason:null,
-  points:withCapital.filter(c=>c.actualDteDays!==null).map(c=>({actualDteDays:c.actualDteDays!,capitalDayReturn:c.capitalDayReturn!})),
-  medianCapitalDays:median(withCapital.map(c=>c.requiredCapitalUsd!*c.holdingDays!)),
-  medianCapitalDayReturn:median(withCapital.map(c=>c.capitalDayReturn!)),
- };
-}
-
 /** Aggregated so a column of "Unavailable" always carries a traceable cause. */
 function adverseDiagnostics(scenarioRows:readonly DteCandidate[]):AdversePathDiagnostics{
  const byStatus:Record<PathEvidenceStatus,number>={available:0,scenario_not_evaluated:0,no_observation_window:0,raw_evaluation_not_attempted:0,no_compatible_tape:0,insufficient_amount:0,missing_leg:0,synchronization_failure:0,no_raw_marks:0};
@@ -419,7 +403,8 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
   const value=configuration.capitalBasis==="incremental_opening_margin"?m.incremental_initial_margin:m.peak_initial_margin;
   return typeof value==="number"&&Number.isFinite(value)&&value>0?value:null;
  };
- const capitalReturns=pricedPolicy.flatMap(o=>{const cap=capitalFor(o.candidateId),days=o.holdingHours!/24;return cap!==null&&o.pnlBtc!==null&&days>0?[o.pnlBtc/(cap*days)]:[]});
+ const capitalReturnRows=pricedPolicy.flatMap(o=>{const cap=capitalFor(o.candidateId),days=o.holdingHours!/24;return cap!==null&&o.pnlBtc!==null&&days>0?[{candidateId:o.candidateId,value:o.pnlBtc/(cap*days)}]:[]});
+ const capitalReturns=capitalReturnRows.map(x=>x.value);
  const operationalHolding:OperationalHoldingSummary=!configuration.exitPolicy||!configuration.pricingTrack?{
   available:false,reason:"Requires complete exit policy and pricing track. No operational exit, holding period, or capital-day result is inferred from VPOC, first resolution, or expiry.",policy:null,pricingTrack:configuration.pricingTrack,capitalBasis:configuration.capitalBasis,pricedExits:0,medianHoldingDays:null,medianCapitalDayReturn:null,
  }:{
@@ -446,7 +431,7 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
    medianFirstResolutionDays:resolutionEndpoint.percentiles.find(p=>p.p===0.5)?.days??null,
    medianHoldingDays:median(defined(okStructures.map(c=>c.holdingDays))),
   },
-  overview:horizons.map(h=>overviewRow(h,structuralPopulation,scenarioRows,availabilityByHorizon.get(h.nominalDays)!,referenceRows,structures)),
+  overview:horizons.map(h=>overviewRow(h,structuralPopulation,scenarioRows,availabilityByHorizon.get(h.nominalDays)!,referenceRows,structures,capitalReturnRows.filter(x=>structures.some(c=>c.candidateId===x.candidateId&&c.horizonNominalDays===h.nominalDays)).map(x=>x.value))),
   availability,
   synchronization:horizons.map(h=>{
    const values=[...(availabilityByHorizon.get(h.nominalDays)?.synchronizationMinutes[scenario]??[])];
@@ -463,12 +448,12 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
   },
   pnlByOutcome:horizons.map(h=>pnlRow(h,referenceRows)),
   holdingPeriod:horizons.map(h=>holdingPeriodRow(h,structuralPopulation)),
-  capitalTime:capitalTimeSummary(scenarioRows),
+  capitalTime:operationalHolding.available?{available:true,reason:null,points:[],medianCapitalDays:null,medianCapitalDayReturn:operationalHolding.medianCapitalDayReturn}:{available:false,reason:operationalHolding.reason,points:[],medianCapitalDays:null,medianCapitalDayReturn:null},
   operationalHolding,
   adverseDiagnostics:adverseDiagnostics(referenceRows),
   matchedDte:buildMatchedDteComparison(referenceRows,horizons),
   matchedExecution:buildMatchedExecution(allScenarios,horizons),
-  resolutionSpeed:buildResolutionSpeedReport(dataset,structuralPopulation,horizons),
+  resolutionSpeed:buildResolutionSpeedReport(dataset,structuralPopulation,referenceRows,horizons),
   entryDelay:buildEntryDelayReport(dataset),
   excludedIneligible:structuralPopulation.length-okStructures.length,
   methodology:[
@@ -486,7 +471,7 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
    "Thesis-survival window (execution-independent). T_survival = min(post-entry first resolution, expiry) − structure entry. This structural window is not an operational holding period. Operational holding and capital-day return require the selected complete exit policy, its actual priced exit, positive holding days, and the explicitly selected capital basis; missing opening/peak margin is never replaced by width, long-leg cost, or maximum loss.",
    "Reference fair-value adverse path and MAE-before-profit use only the canonical Reference valuation path between structural entry and the resolution/censoring boundary. Maker/taker marks and execution ledgers never substitute for missing Reference marks.",
    "Resolution-speed cohorts are cut from distinct eligible events (fast < P25, normal P25-P75, slow > P75). Unresolved is a fourth cohort. Structural N and survival use one event x horizon observation and are never gated by maker/taker evidence; Reference economic cells remain unavailable when Reference evidence is missing.",
-   "Entry-delay sensitivity is produced only when the canonical export can support a causal reconstruction at each delayed order time. A delayed scenario may never reuse the original fill, borrow earlier tape, treat a model mark as a historical fill, or assume maker queue execution; where the bundle cannot meet that bar the section reports itself unsupported and names the missing canonical inputs.",
+   "Entry-delay sensitivity reads schema 4.0's independent 0h/+4h/+8h/+12h causal searches. Each experiment starts at Reference structural entry plus its requested offset, stops before opening when the thesis already resolved, and retains its own actual fill time, tape provenance and economics; offsets never borrow one another or the immediate fill.",
    "No strike selection, width selection, exit-policy optimization, futures comparison or strategy selection is computed anywhere in this report.",
   ],
  };

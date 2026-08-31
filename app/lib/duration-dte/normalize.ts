@@ -277,11 +277,12 @@ function structuralDte(rows:readonly Readonly<Record<string,unknown>>[]):number|
  * not_evaluated has none and stays null -- never falling back to the event's
  * own entry, which would silently move the pre-entry-VPOC boundary.
  */
-function structuralEntry(rows:readonly Readonly<Record<string,unknown>>[],reference?:ScenarioTrack):number|null{
+function structuralEntry(rows:readonly Readonly<Record<string,unknown>>[],reference:ScenarioTrack|undefined,economics:Readonly<Record<string,unknown>>|undefined):number|null{
  // Reference is the canonical structural target.  Candidate valuation timestamps
  // may be observed maker/taker completions and are deliberately not fallbacks.
  if(reference?.entryTime!==null&&reference?.entryTime!==undefined)return reference.entryTime;
- for(const row of rows){const t=ms(row.structure_entry_timestamp_utc)??ms(row.reference_structure_entry_timestamp_utc);if(t!==null)return t}
+ const canonical=ms(economics?.reference_entry_timestamp_utc)??ms(rows[0]?.reference_structure_entry_timestamp_utc);
+ if(canonical!==null)return canonical;
  return null;
 }
 
@@ -352,7 +353,9 @@ function referenceAdverse(track:ScenarioTrack|undefined,entry:number|null,bounda
 export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCandidate[]{
  const candidates=dataset.tables.candidates??[],outcomes=dataset.tables.outcomes??[],valuations=dataset.tables.valuations??[],margins=dataset.tables.margin_scenarios??[];
  const eventsById=new Map(normalizeMrEvents(dataset).map(e=>[e.eventId,e]));
- const analytical=buildResearchAnalyticsModel(dataset);
+ const canonicalCandidates=[...candidates].sort((a,b)=>String(a.candidate_id).localeCompare(String(b.candidate_id))||String(a.execution_scenario).localeCompare(String(b.execution_scenario)));
+ const analytical=buildResearchAnalyticsModel({...dataset,tables:{...dataset.tables,candidates:canonicalCandidates}});
+ const economicsByCandidate=new Map((dataset.tables.structure_economics??[]).map(r=>[String(r.candidate_id),r]));
  const observationFor=(eventId:string,candidateId:string)=>analytical.observations.find(o=>o.eventId===eventId&&o.candidateId===candidateId);
 
  // Group a structure's scenario rows so every execution-INDEPENDENT fact is
@@ -373,7 +376,7 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
 
   // Execution-independent structural facts, identical across scenario rows.
   const reference=observationFor(eventId,candidateId)?.tracks.reference;
-  const entry=structuralEntry(siblings,reference),expiry=ms(row.expiry_timestamp_utc),dte=structuralDte(siblings);
+  const entry=structuralEntry(siblings,reference,economicsByCandidate.get(candidateId)),expiry=ms(row.expiry_timestamp_utc),dte=structuralDte(siblings);
   const structural={
    eventId,candidateId,structureExecutionId,horizonNominalDays:num(row.target_horizon_days),structureType:str(row.structure_type),
    executionScenario:scenario,executionScenarioStatus:scenarioStatus,executionScenarioReason:str(row.execution_scenario_reason),
@@ -456,15 +459,9 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
   // value an outcome at a timestamp before the position existed.
   const pnlAtVpocUsd=vpocBeforeStructureEntry?null:pnlAtVpocRaw;
 
-  // Candidate-relative realized PnL: keyed off what happened WHILE THE
-  // STRUCTURE EXISTED, never the event's eventual outcome.
-  const realizedPnl=
-   outcomeBeforeExpiry==="vpoc_before_expiry"?pnlAtVpocUsd
-   :outcomeBeforeExpiry==="invalidation_before_expiry"?pnlAtInvalidationUsd
-   :outcomeBeforeExpiry==="no_resolution_before_expiry"?pnlAtSettlementUsd
-   :null;
-  const capitalDayReturn=requiredCapitalUsd!==null&&requiredCapitalUsd!==0&&realizedPnl!==null&&holdingDays!==null&&holdingDays>0
-   ?realizedPnl/(requiredCapitalUsd*holdingDays):null;
+  // Structural thesis-survival time is not an operational holding period.
+  // Capital efficiency is calculated only by the configured exit-policy path.
+  const capitalDayReturn=null;
 
   // The adverse-path window ends at the post-entry resolution, or at whichever
   // of expiry / canonical observation end comes first when it never resolved.
