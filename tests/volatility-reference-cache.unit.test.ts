@@ -6,7 +6,7 @@ import {join} from "node:path";
 import {
   VolatilityReferenceRetrieval, hourlyClosesFromPerpetualSeries,
   listCachedShards, readReferenceManifest, readReferenceShard,
-  writeDvolShards, writeReferenceShards,
+  VOLATILITY_RETRIEVAL_VERSION, writeDvolShards, writeReferenceShards,
 } from "../scripts/volatility-reference-cache.ts";
 import {
   DERIBIT_OPTION_INDEX_UNDERLYING, DVOL_HOST, DVOL_SERIES_ID, OPTION_HISTORY_HOST, REFERENCE_SERIES_ID, REFERENCE_SERIES_METHOD_VERSION,
@@ -134,6 +134,9 @@ test("CACHE: rows land in monthly shards with a manifest carrying series identit
     assert.equal(result.manifest.series_id, REFERENCE_SERIES_ID);
     assert.equal(result.manifest.row_count, 1);
     assert.ok(result.manifest.content_hash);
+    assert.deepEqual(result.manifest.source_endpoints,
+      ["get_instruments", "get_last_trades_by_currency_and_time"]);
+    assert.equal(VOLATILITY_RETRIEVAL_VERSION, "volatility-reference-retrieval-v2");
     assert.deepEqual(await listCachedShards(REFERENCE_SERIES_ID, root), ["2025-06"]);
     const persisted = await readReferenceShard("2025-06", root);
     assert.equal(persisted.length, 1);

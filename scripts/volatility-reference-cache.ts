@@ -27,7 +27,7 @@ import {CANONICAL_RV_UNDERLYING, type HourlyClose} from "../app/lib/volatility/r
  */
 
 export const VOLATILITY_CACHE_ROOT = ".local-cache/volatility-reference" as const;
-export const VOLATILITY_RETRIEVAL_VERSION = "volatility-reference-retrieval-v1" as const;
+export const VOLATILITY_RETRIEVAL_VERSION = "volatility-reference-retrieval-v2" as const;
 export const VOLATILITY_TRADE_PAGE_SIZE = 1000 as const;
 
 export interface DeribitOptionInstrument {
