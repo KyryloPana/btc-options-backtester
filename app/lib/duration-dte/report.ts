@@ -56,6 +56,8 @@ export interface OverviewRow {
  readonly unavailableN:number;
  readonly actualDte:FiveNumberSummary|null;
  readonly pricedShare:number|null;
+ readonly pricedN:number;
+ readonly pricedEligibleN:number;
  readonly taker:ScenarioCoverage;
  readonly maker:ScenarioCoverage;
  readonly resolutionCoverageShare:number|null;
@@ -182,6 +184,8 @@ export interface DurationDteReport {
  readonly candidates:readonly DteCandidate[];
  /** One row per structure, execution-independent. */
  readonly structures:readonly DteCandidate[];
+ readonly structuralPopulation:readonly DteCandidate[];
+ readonly structuralConflicts:readonly {eventId:string;horizonNominalDays:number|null;candidateIds:readonly string[];reason:string}[];
  readonly horizons:readonly HorizonFamily[];
  readonly headline:HeadlineSummary;
  readonly overview:readonly OverviewRow[];
@@ -228,18 +232,34 @@ function toStructures(all:readonly DteCandidate[]):readonly DteCandidate[]{
  return [...byId.values()];
 }
 
-function overviewRow(horizon:HorizonFamily,structures:readonly DteCandidate[],scenarioRows:readonly DteCandidate[],availability:HorizonAvailability,referenceRows:readonly DteCandidate[]=scenarioRows):OverviewRow{
+/** One independent observation per MR event x nominal horizon. */
+function eventHorizonPopulation(structures:readonly DteCandidate[]){
+ const groups=new Map<string,DteCandidate[]>();
+ for(const c of structures){const key=`${c.eventId}|${c.horizonNominalDays??"unknown"}`;(groups.get(key)??(groups.set(key,[]),groups.get(key)!)).push(c)}
+ const population:DteCandidate[]=[],conflicts:{eventId:string;horizonNominalDays:number|null;candidateIds:string[];reason:string}[]=[];
+ const same=(xs:(number|null)[])=>new Set(xs.map(x=>x===null?"null":String(Math.round(x*1e9)/1e9))).size===1;
+ for(const group of groups.values()){
+  if(!same(group.map(x=>x.expiryTimestampMs))||!same(group.map(x=>x.actualDteDays))||!same(group.map(x=>x.structureEntryMs))){
+   conflicts.push({eventId:group[0].eventId,horizonNominalDays:group[0].horizonNominalDays,candidateIds:group.map(x=>x.candidateId),reason:"Conflicting expiry, actual DTE, or canonical Reference structural-entry timestamp across nested variants."});continue;
+  }
+  population.push(group[0]);
+ }
+ return {population,conflicts};
+}
+
+function overviewRow(horizon:HorizonFamily,structures:readonly DteCandidate[],scenarioRows:readonly DteCandidate[],availability:HorizonAvailability,referenceRows:readonly DteCandidate[]=scenarioRows,nestedStructures:readonly DteCandidate[]=structures):OverviewRow{
  const struct=atHorizon(eligible(structures),horizon.nominalDays);
  const rows=atHorizon(eligible(scenarioRows),horizon.nominalDays),evaluated=evaluatedOnly(rows);
  const determinate=struct.filter(c=>c.resolvedBeforeExpiry!==null);
  return {
   horizon,
-  structuresN:struct.length,
+  structuresN:atHorizon(eligible(nestedStructures),horizon.nominalDays).length,
   eventsN:new Set(struct.map(c=>c.eventId)).size,
   notEvaluatedN:rows.filter(c=>c.executionScenarioStatus==="not_evaluated").length,
   unavailableN:rows.filter(c=>c.executionScenarioStatus==="unavailable").length,
   actualDte:fiveNumber(defined(struct.map(c=>c.actualDteDays))),
   pricedShare:share(availability.priced,availability.eligibleEvents),
+  pricedN:availability.priced,pricedEligibleN:availability.eligibleEvents,
   taker:availability.taker,maker:availability.maker,
   resolutionCoverageShare:share(determinate.filter(c=>c.resolvedBeforeExpiry===true).length,determinate.length),
   noResolutionBeforeExpiryShare:share(determinate.filter(c=>c.outcomeBeforeExpiry==="no_resolution_before_expiry").length,determinate.length),
@@ -363,9 +383,10 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
  const scenarioRows=allScenarios.filter(c=>c.executionScenario===scenario);
  // Execution-INDEPENDENT population: one row per structure.
  const structures=toStructures(allScenarios);
+ const {population:structuralPopulation,conflicts:structuralConflicts}=eventHorizonPopulation(structures);
  const qualityAllowed=(c:DteCandidate)=>!configuration.includedQualityLevels.length||(c.referenceSourceTier!==null&&configuration.includedQualityLevels.includes(c.referenceSourceTier));
  const referenceRows=structures.filter(qualityAllowed);
- const okStructures=eligible(structures);
+ const okStructures=eligible(structuralPopulation);
  const resolutionEndpoint=underlying.endpoints.find(b=>b.endpoint==="resolution")!;
  const determinate=okStructures.filter(c=>c.resolvedBeforeExpiry!==null);
  const policyObservations=configuration.exitPolicy&&configuration.pricingTrack
@@ -416,7 +437,7 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
    independentOf:["Effective events and actual DTE","Thesis resolution and coverage curve","Outcome before expiry","DTE buffer","Matched horizon comparison","Matched maker-vs-taker comparison, which reads both scenarios directly"],
    note:"One display scenario scopes the execution-dependent subsections listed above. It is not a report-wide track selector, and the execution-independent analyses do not change with it.",
   },
-  candidates:scenarioRows,structures,horizons,
+  candidates:scenarioRows,structures,structuralPopulation,structuralConflicts,horizons,
   headline:{
    effectiveEvents:underlying.effectiveN,totalEvents:underlying.totalEvents,
    taker:global.taker,maker:global.maker,
@@ -425,31 +446,31 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
    medianFirstResolutionDays:resolutionEndpoint.percentiles.find(p=>p.p===0.5)?.days??null,
    medianHoldingDays:median(defined(okStructures.map(c=>c.holdingDays))),
   },
-  overview:horizons.map(h=>overviewRow(h,structures,scenarioRows,availabilityByHorizon.get(h.nominalDays)!,referenceRows)),
+  overview:horizons.map(h=>overviewRow(h,structuralPopulation,scenarioRows,availabilityByHorizon.get(h.nominalDays)!,referenceRows,structures)),
   availability,
   synchronization:horizons.map(h=>{
    const values=[...(availabilityByHorizon.get(h.nominalDays)?.synchronizationMinutes[scenario]??[])];
-   return {horizon:h,medianMinutes:median(values),p95Minutes:pct(values,0.95),n:values.length};
+   return {horizon:h,medianMinutes:median(values),p95Minutes:values.length<2?null:pct(values,0.95),n:values.length};
   }),
   coverageCurve:coverageFromSurvival(underlying.survival),
   actualDteAll:defined(okStructures.map(c=>c.actualDteDays)),
-  outcomeBeforeExpiry:horizons.map(h=>outcomeBeforeExpiryRow(h,structures)),
-  dteBuffer:horizons.map(h=>dteBufferRow(h,structures)),
+  outcomeBeforeExpiry:horizons.map(h=>outcomeBeforeExpiryRow(h,structuralPopulation)),
+  dteBuffer:horizons.map(h=>dteBufferRow(h,structuralPopulation)),
   captureByThreshold:{
    25:horizons.map(h=>captureRow(h,referenceRows,25)),
    50:horizons.map(h=>captureRow(h,referenceRows,50)),
    70:horizons.map(h=>captureRow(h,referenceRows,70)),
   },
   pnlByOutcome:horizons.map(h=>pnlRow(h,referenceRows)),
-  holdingPeriod:horizons.map(h=>holdingPeriodRow(h,structures)),
+  holdingPeriod:horizons.map(h=>holdingPeriodRow(h,structuralPopulation)),
   capitalTime:capitalTimeSummary(scenarioRows),
   operationalHolding,
   adverseDiagnostics:adverseDiagnostics(referenceRows),
   matchedDte:buildMatchedDteComparison(referenceRows,horizons),
   matchedExecution:buildMatchedExecution(allScenarios,horizons),
-  resolutionSpeed:buildResolutionSpeedReport(dataset,referenceRows,horizons),
+  resolutionSpeed:buildResolutionSpeedReport(dataset,structuralPopulation,horizons),
   entryDelay:buildEntryDelayReport(dataset),
-  excludedIneligible:structures.length-okStructures.length,
+  excludedIneligible:structuralPopulation.length-okStructures.length,
   methodology:[
    `Execution scenario. This report is scoped to the ${scenario} scenario. Maker opportunity is the intended/preferred execution assumption -- historical evidence consistent with a passive fill, never a guaranteed one, and never proof of queue position. Taker is the conservative, tape-based robustness scenario. Both are evaluated independently for the same structure; neither is presented as the universal default strategy.`,
    "Analytical unit. Availability and thesis coverage are counted per MR EVENT x horizon family: one event contributes one observation per horizon however many width/strike variants it generated, so an event that produced six structures never outvotes an event that produced one. Economic comparisons (PnL, adverse path, capture) instead use MATCHED structural variants -- same event, same short-strike method, same width, same structure/option type, same execution scenario -- differing only in horizon/actual DTE, so a width or strike-placement difference is never attributed to duration.",
@@ -463,8 +484,8 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
    "Candidate-relative outcomes. Outcome buckets describe what happened WHILE THE STRUCTURE EXISTED, never the underlying event's eventual outcome: a structure whose event reached VPOC only after expiry is a settlement result, not a PnL-at-VPOC row. 'No resolution before expiry' stays one visual category because both cases mean the option did not survive long enough to observe resolution, but it is split internally into 'resolved later' (the MR did resolve, after this expiry) and 'still unresolved' (right-censored at canonical observation end); those states are never merged.",
    "Pre-entry VPOC. A structure entered after canonical VPOC is reported explicitly as 'VPOC already reached before structure entry'. It is never classified as VPOC before expiry, never assigned a PnL at VPOC (which would price an outcome at a timestamp preceding the position), and never given a DTE buffer against a pre-entry resolution. Such structures remain fully in availability, maker/taker, credit-capture, invalidation, adverse-path and settlement analysis.",
    "Thesis-survival window (execution-independent). T_survival = min(post-entry first resolution, expiry) − structure entry. This structural window is not an operational holding period. Operational holding and capital-day return require the selected complete exit policy, its actual priced exit, positive holding days, and the explicitly selected capital basis; missing opening/peak margin is never replaced by width, long-leg cost, or maximum loss.",
-   "Worst adverse mark-to-market and MAE-before-profit use only this scenario's RAW-VWAP valuation track between structure entry and the post-entry resolution/censoring boundary. Post-boundary marks never contribute and one scenario's marks never populate the other's. MAE-before-profit is the worst raw mark up to and including the first profitable raw mark, and is reported only for structures that genuinely reached one. Modelled (iv_normalized) marks are never substituted to fill either column; where the raw track carries no priced mark the value stays Unavailable with an inspectable reason.",
-   "Resolution-speed cohorts are cut from the naturally observed first-resolution distribution (fast < P25, normal P25-P75, slow > P75) over eligible events. Unresolved events remain an explicit fourth cohort rather than being folded into 'slow'. Cohort statistics are computed inside a single execution scenario.",
+   "Reference fair-value adverse path and MAE-before-profit use only the canonical Reference valuation path between structural entry and the resolution/censoring boundary. Maker/taker marks and execution ledgers never substitute for missing Reference marks.",
+   "Resolution-speed cohorts are cut from distinct eligible events (fast < P25, normal P25-P75, slow > P75). Unresolved is a fourth cohort. Structural N and survival use one event x horizon observation and are never gated by maker/taker evidence; Reference economic cells remain unavailable when Reference evidence is missing.",
    "Entry-delay sensitivity is produced only when the canonical export can support a causal reconstruction at each delayed order time. A delayed scenario may never reuse the original fill, borrow earlier tape, treat a model mark as a historical fill, or assume maker queue execution; where the bundle cannot meet that bar the section reports itself unsupported and names the missing canonical inputs.",
    "No strike selection, width selection, exit-policy optimization, futures comparison or strategy selection is computed anywhere in this report.",
   ],

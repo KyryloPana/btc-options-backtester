@@ -82,8 +82,8 @@ export function cohortOf(timeToResolutionDays:number|null,b:ResolutionSpeedBound
 }
 
 /**
- * @param candidates rows for ONE execution scenario only -- the caller scopes
- * the population so no cell can ever blend maker and taker evidence.
+ * Candidates are canonical event-horizon structural observations. Reference
+ * economics may be absent, but execution availability never gates membership.
  */
 export function buildResolutionSpeedReport(dataset:AnalysisDataset,candidates:readonly DteCandidate[],horizons:readonly HorizonFamily[]):ResolutionSpeedReport{
  const boundaries=resolutionSpeedBoundaries(dataset);
@@ -92,7 +92,7 @@ export function buildResolutionSpeedReport(dataset:AnalysisDataset,candidates:re
   reason:`Cohort boundaries need at least two resolved MR events to place a P25/P75 cut; this bundle has ${boundaries.resolvedEventsN}. Arbitrary day thresholds are not substituted.`,
  };
 
- const eligible=candidates.filter(c=>c.ineligibilityReason===null&&c.executionScenarioStatus==="evaluated");
+ const eligible=candidates.filter(c=>c.ineligibilityReason===null);
  const rows=horizons.map(horizon=>{
   const at=eligible.filter(c=>c.horizonNominalDays===horizon.nominalDays);
   const cells=RESOLUTION_SPEED_COHORTS.map(cohort=>{

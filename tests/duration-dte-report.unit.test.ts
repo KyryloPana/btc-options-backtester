@@ -147,9 +147,9 @@ test("A: actual DTE is read per candidate; horizon grouping never overwrites it"
  assert.equal(byId("c1b").actualDteDays,2);
  assert.equal(byId("c2a").actualDteDays,10);
  // Same nominal horizon (7), several actual DTEs -- the summary must reflect
- // all of them, not collapse to one representative value.
+ // one canonical observation per event × horizon, not every nested width.
  const h7=overviewFor(7);
- assert.equal(h7.actualDte!.n,4,"c1a, c2a and both width variants of e4");
+ assert.equal(h7.actualDte!.n,3,"e1, e2 and e4 each vote once");
  assert.equal(h7.actualDte!.median,8);
  assert.equal(h7.actualDte!.min,5);
  assert.equal(h7.actualDte!.max,10);
@@ -214,7 +214,7 @@ test("C: an unresolved (censored) candidate is a determinate no-resolution-befor
 
 test("C: ambiguous first resolution gets its own bucket, never folded into VPOC or invalidation",()=>{
  assert.equal(byId("c4a").outcomeBeforeExpiry,"ambiguous_before_expiry");
- assert.equal(outcomeRowFor(7).counts.ambiguous_before_expiry,2,"both width variants of e4");
+ assert.equal(outcomeRowFor(7).counts.ambiguous_before_expiry,1,"e4 votes once despite both width variants");
 });
 
 test("NO-RESOLUTION SPLIT: resolved-later and still-censored are diagnosed separately, never merged",()=>{
@@ -456,7 +456,7 @@ test("HOLDING: T_hold works with no margin data at all and never uses a pre-entr
  assert.equal(byId("c3a").holdingDays,20,"never resolved: held to expiry");
  assert.equal(byId("c8a").holdingDays,7,"pre-entry VPOC is not a holding endpoint");
  const h7=noMargin.holdingPeriod.find(r=>r.horizon.nominalDays===7)!;
- assert.equal(h7.n,4);
+ assert.equal(h7.n,3);
  assert.ok(h7.medianHoldingDays!>0);
  assert.ok(h7.p80HoldingDays!>=h7.medianHoldingDays!);
  assert.notEqual(h7.heldToSettlementShare,null);
@@ -484,8 +484,9 @@ test("RESOLUTION SPEED: an insufficient sample is reported, never cut with inven
  assert.deepEqual(r.resolutionSpeed.rows,[]);
 });
 
-test("ENTRY DELAY: causal support is detected from raw evidence, never assumed",()=>{
- const delayed={...dataset,tables:{...dataset.tables,valuations:valuations.map(v=>({...v,point_role:"delayed_entry"}))}} as unknown as AnalysisDataset;
+test("ENTRY DELAY: canonical fixed-offset rows are independent",()=>{
+ const entry_delay_sensitivity=[0,4,8,12].map(requested_delay_hours=>({candidate_id:"c1a",requested_delay_hours,execution_scenario:"taker",status:"available",actual_delay_hours:requested_delay_hours+.5,remaining_actual_dte:5-requested_delay_hours/24}));
+ const delayed={...dataset,tables:{...dataset.tables,entry_delay_sensitivity}} as unknown as AnalysisDataset;
  const ed=buildEntryDelayReport(delayed);
  // Dedicated delayed-entry rows are fresh opening evaluations. Ordinary
  // scheduled-close raw marks intentionally do not qualify.
@@ -493,6 +494,12 @@ test("ENTRY DELAY: causal support is detected from raw evidence, never assumed",
  assert.deepEqual(ed.rows.map(r=>r.delayHours),[0,4,8,12]);
  assert.ok(ed.rows.every(r=>r.structuresWithRawEvidence.taker>0));
  assert.equal(ed.requiredCanonicalInputs.length,0);
+});
+
+test("ENTRY DELAY: a +12h experiment cannot backfill +4h or +8h",()=>{
+ const entry_delay_sensitivity=[{candidate_id:"c1a",requested_delay_hours:12,execution_scenario:"taker",status:"available",actual_delay_hours:12.5}];
+ const ed=buildEntryDelayReport({...dataset,tables:{...dataset.tables,entry_delay_sensitivity}} as unknown as AnalysisDataset);
+ assert.deepEqual(ed.rows.map(r=>r.structuresWithRawEvidence.taker),[0,0,0,1]);
 });
 
 test("ENTRY DELAY: scheduled close marks cannot masquerade as delayed openings",()=>{

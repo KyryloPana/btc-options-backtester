@@ -27,9 +27,9 @@ const NOT_EVALUATED="Not evaluated";
 
 const d1=(x:number)=>x.toFixed(1);
 const days=(x:number|null)=>x===null?NOT_ESTIMABLE:`${d1(x)}d`;
-const usd=(x:number|null)=>x===null?UNAVAILABLE:`${x<0?"−":""}$${Math.abs(x).toLocaleString(undefined,{maximumFractionDigits:0})}`;
+export const usd=(x:number|null)=>x===null?UNAVAILABLE:`${x<0?"−":""}$${Math.abs(x).toLocaleString(undefined,{minimumFractionDigits:Math.abs(x)<10?2:0,maximumFractionDigits:Math.abs(x)<10?2:0})}`;
 const pct=(x:number|null)=>x===null?NOT_ESTIMABLE:`${(x*100).toFixed(1)}%`;
-const signedUsd=(x:number|null)=>x===null?UNAVAILABLE:`${x<0?"−":"+"}$${Math.abs(x).toLocaleString(undefined,{maximumFractionDigits:0})}`;
+export const signedUsd=(x:number|null)=>x===null?UNAVAILABLE:Math.abs(x)<0.005?"$0.00":`${x<0?"−":"+"}$${Math.abs(x).toLocaleString(undefined,{minimumFractionDigits:Math.abs(x)<10?2:0,maximumFractionDigits:Math.abs(x)<10?2:0})}`;
 const signedDays=(x:number|null)=>x===null?NOT_ESTIMABLE:`${x<0?"−":"+"}${Math.abs(x).toFixed(1)}d`;
 
 const OUTCOME_LABEL:Record<OutcomeBeforeExpiry,string>={
@@ -51,7 +51,7 @@ const OUTCOME_ORDER=Object.keys(OUTCOME_LABEL) as OutcomeBeforeExpiry[];
  * "Not evaluated" (never assessed) are visually and textually different.
  */
 function Coverage({coverage}:{coverage:ScenarioCoverage}){
- if(coverage.status==="measured")return <span title={`${coverage.events} of ${coverage.eligibleEvents} eligible MR events`}>{pct(coverage.share)}</span>;
+ if(coverage.status==="measured")return <span title={`${coverage.events} of ${coverage.eligibleEvents} eligible MR events`}>{coverage.events} / {coverage.eligibleEvents} · {pct(coverage.share)}</span>;
  return <span className="dd-muted" title={coverage.reason??undefined}>{coverage.status==="unavailable"?UNAVAILABLE:NOT_EVALUATED}</span>;
 }
 
@@ -70,7 +70,7 @@ function OverviewTable({rows}:{rows:readonly OverviewRow[]}){
    <td title="One MR event is one observation per horizon, however many width/strike variants it generated.">{r.eventsN}</td>
    <td className="dd-muted">{r.structuresN}</td>
    <td className={r.unavailableN>0?"dd-muted":undefined}>{r.unavailableN}</td><td className={r.notEvaluatedN>0?"dd-muted":undefined}>{r.notEvaluatedN}</td>
-   <td>{pct(r.pricedShare)}</td>
+   <td title="Priced eligible MR events / all eligible MR events in the availability layer">{r.pricedShare===null?NOT_ESTIMABLE:<>{r.pricedN} / {r.pricedEligibleN} · {pct(r.pricedShare)}</>}</td>
    <td><Coverage coverage={r.taker}/></td>
    <td><Coverage coverage={r.maker}/></td>
    <td className={r.resolutionCoverageShare===null?"dd-muted":"positive"}>{pct(r.resolutionCoverageShare)}</td>
@@ -118,7 +118,7 @@ function SynchronizationTable({rows,scenario}:{rows:readonly SynchronizationRow[
   <tbody>{rows.map(r=><tr key={r.horizon.nominalDays}>
    <td>{r.horizon.label}</td>
    <td>{r.medianMinutes===null?NOT_ESTIMABLE:`${r.medianMinutes.toFixed(2)}m`}</td>
-   <td>{r.p95Minutes===null?NOT_ESTIMABLE:`${r.p95Minutes.toFixed(2)}m`}</td>
+   <td title={r.n<2?"N < 2":undefined}>{r.p95Minutes===null?NOT_ESTIMABLE:`${r.p95Minutes.toFixed(2)}m`}</td>
    <td>{r.n}</td>
   </tr>)}</tbody>
  </table>
@@ -348,7 +348,7 @@ function ResolutionSpeedSection({report}:{report:DurationDteReport}){
     <td>{days(c.medianCapture50Days)}</td>
    </tr>))}</tbody>
  </table></div>
- <small className="dd-note">How dependent is each DTE choice on the MR thesis resolving quickly? Cohorts come from naturally observed resolution behaviour, never invented price paths. Unresolved events are kept explicit rather than folded into &ldquo;slow&rdquo;, and every cell is computed inside one execution scenario.</small>
+ <small className="dd-note">Structural N and survival are event × horizon weighted and are not gated by maker/taker evidence. Reference economic cells use canonical Reference evidence only. Unresolved events remain separate from &ldquo;slow&rdquo;.</small>
  </>;
 }
 
@@ -378,7 +378,7 @@ function AdverseDiagnosticsSection({report}:{report:DurationDteReport}){
  return <div className="dd-diagnostics">
   <div className="dd-endpoints">
    <div className="dd-endpoint"><span className="dd-label">Rows with a value</span><strong>{d.withValue} / {d.totalRows}</strong></div>
-   <div className="dd-endpoint"><span className="dd-label">Reached profit (raw)</span><strong>{d.profitObservedN}</strong></div>
+   <div className="dd-endpoint"><span className="dd-label">Reached profit (Reference)</span><strong>{d.profitObservedN}</strong></div>
    <div className="dd-endpoint"><span className="dd-label">MAE before profit</span><strong>{d.maeBeforeProfitN}</strong></div>
   </div>
   <div className="table-scroll"><table className="dd-table dd-compact">
@@ -387,7 +387,7 @@ function AdverseDiagnosticsSection({report}:{report:DurationDteReport}){
     <tr key={status}><td>{status.replaceAll("_"," ")}</td><td>{n}</td></tr>)}</tbody>
   </table></div>
   {d.dominantReason&&<p className="dd-note">{d.dominantReason}</p>}
-  <small className="dd-note">Worst adverse and MAE-before-profit are read only from this scenario&rsquo;s raw-VWAP valuation track. Where that track carries no priced mark the value stays Unavailable and the reason is shown here — a modelled mark is never substituted to fill the column.</small>
+  <small className="dd-note">Reference fair-value worst adverse and MAE-before-profit use only the canonical Reference valuation path. Maker/taker paths and execution ledgers never fill missing Reference marks.</small>
  </div>;
 }
 

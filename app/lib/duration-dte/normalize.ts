@@ -277,8 +277,11 @@ function structuralDte(rows:readonly Readonly<Record<string,unknown>>[]):number|
  * not_evaluated has none and stays null -- never falling back to the event's
  * own entry, which would silently move the pre-entry-VPOC boundary.
  */
-function structuralEntry(rows:readonly Readonly<Record<string,unknown>>[]):number|null{
- for(const row of rows){const t=ms(row.structure_entry_timestamp_utc)??ms(row.valuation_timestamp_utc);if(t!==null)return t}
+function structuralEntry(rows:readonly Readonly<Record<string,unknown>>[],reference?:ScenarioTrack):number|null{
+ // Reference is the canonical structural target.  Candidate valuation timestamps
+ // may be observed maker/taker completions and are deliberately not fallbacks.
+ if(reference?.entryTime!==null&&reference?.entryTime!==undefined)return reference.entryTime;
+ for(const row of rows){const t=ms(row.structure_entry_timestamp_utc)??ms(row.reference_structure_entry_timestamp_utc);if(t!==null)return t}
  return null;
 }
 
@@ -369,7 +372,8 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
   const evaluated=scenarioStatus==="evaluated";
 
   // Execution-independent structural facts, identical across scenario rows.
-  const entry=structuralEntry(siblings),expiry=ms(row.expiry_timestamp_utc),dte=structuralDte(siblings);
+  const reference=observationFor(eventId,candidateId)?.tracks.reference;
+  const entry=structuralEntry(siblings,reference),expiry=ms(row.expiry_timestamp_utc),dte=structuralDte(siblings);
   const structural={
    eventId,candidateId,structureExecutionId,horizonNominalDays:num(row.target_horizon_days),structureType:str(row.structure_type),
    executionScenario:scenario,executionScenarioStatus:scenarioStatus,executionScenarioReason:str(row.execution_scenario_reason),
@@ -447,7 +451,6 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
    marginAvailable=marginRow?.margin_status==="available",
    requiredCapitalUsd=marginAvailable?num(marginRow!.maximum_structural_loss_usd)??num(marginRow!.peak_initial_margin):null;
   const observedPnlAtVpocUsd=pnlAt(outcomes,candidateId,scenario,"vpoc"), observedPnlAtInvalidationUsd=pnlAt(outcomes,candidateId,scenario,"invalidation"), observedPnlAtSettlementUsd=pnlAt(outcomes,candidateId,scenario,"settlement");
-  const reference=observationFor(eventId,candidateId)?.tracks.reference;
   const pnlAtVpocRaw=reference?referencePnl(reference,"vpoc"):observedPnlAtVpocUsd, pnlAtInvalidationUsd=reference?referencePnl(reference,"invalidation"):observedPnlAtInvalidationUsd, pnlAtSettlementUsd=reference?referencePnl(reference,"settlement"):observedPnlAtSettlementUsd;
   // A VPOC that predates the structure has no post-entry PnL: pricing it would
   // value an outcome at a timestamp before the position existed.
