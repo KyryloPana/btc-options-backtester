@@ -13,7 +13,7 @@ import {
   buildReferenceSeriesRows, isReferenceTimestampComplete, type ReferenceSeriesRow,
 } from "../app/lib/volatility/reference-series.ts";
 import type {RawIvTradeCandidate} from "../app/lib/volatility/market-iv-evidence.ts";
-import {materializeVolatilityStates,MINIMUM_PRIOR_OBSERVATIONS} from "../scripts/materialize-volatility-states.ts";
+import {materializeVolatilityStates,MINIMUM_PRIOR_OBSERVATIONS,type VolatilityMaterializationDiagnostics} from "../scripts/materialize-volatility-states.ts";
 import {store as selectionStore,ts as ENTRY} from "./fixtures/research-selection-store.ts";
 
 /**
@@ -288,4 +288,14 @@ test("PERCENTILE BATCHING: shared tapes preserve per-target causality and 60-min
  await materializeVolatilityStates(selectionStore,root,{retrieval:fake,historyHours:1,perpetualBars:async()=>[]});
  const rows=await readReferenceShard("2026-08",root),at=(target:number)=>rows.find(row=>row.timestamp_ms===target)!;
  assert.equal(calls,1);assert.equal(at(A).underlying_price,101,"neither later batch trades nor the >60-minute trade leak into A");assert.equal(at(B).underlying_price,103,"B independently uses its latest causal observation and rejects its future trade");
+}));
+
+
+test("DIAGNOSTICS: one percentile batch reports every recursive Deribit HTTP request",async()=>withTempRoot(async root=>{
+ const fixture=structuredClone(selectionStore);for(const event of fixture.events)event.selectedStructures=[];
+ const start=ENTRY-168*3_600_000,end=ENTRY,total=1505,trades=Array.from({length:total},(_,i)=>({instrument_name:"BTC-DIAG",timestamp:start+i,iv:40,trade_id:`diag-${i}`,trade_seq:i,index_price:100}));
+ const fetcher=async(input:string|URL|Request)=>{const url=new URL(String(input)),method=url.pathname.split("/").at(-1);if(method==="get_instruments")return new Response(JSON.stringify({result:[{instrument_name:"BTC-DIAG",strike:100,option_type:"call",expiration_timestamp:ENTRY+30*86_400_000,creation_timestamp:start-3_600_000,settlement_period:"month"}]}));if(method==="get_volatility_index_data")return new Response(JSON.stringify({result:{data:[]}}));const a=Number(url.searchParams.get("start_timestamp")),b=Number(url.searchParams.get("end_timestamp")),matching=trades.filter(x=>x.timestamp>=a&&x.timestamp<=b),page=matching.slice(0,1000);return new Response(JSON.stringify({result:{trades:page,has_more:matching.length>1000}}))};
+ const retrieval=new VolatilityReferenceRetrieval({fetcher:fetcher as never}),diagnostics={} as VolatilityMaterializationDiagnostics;
+ await materializeVolatilityStates(fixture,root,{retrieval,diagnostics,historyHours:167,perpetualBars:async()=>[]});
+ assert.equal(diagnostics.percentileBatchRuns,1);assert.equal(diagnostics.percentileTargetsEvaluated,168);assert.equal(diagnostics.deribitRequests,retrieval.requestCount);assert.ok(diagnostics.deribitRequests>diagnostics.percentileBatchRuns,"completeTrades recursion and the other canonical retrieval phases are counted as actual HTTP requests");
 }));
