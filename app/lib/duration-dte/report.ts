@@ -114,6 +114,12 @@ export interface PnlByOutcomeRow {readonly horizon:HorizonFamily;readonly bucket
 export interface HoldingPeriodRow {
  readonly horizon:HorizonFamily;
  readonly n:number;
+ /** Number of structures with a computable structural survival window. */
+ readonly holdingN:number;
+ /** Number with a determinate held-to-settlement status. */
+ readonly settlementStatusN:number;
+ /** Number of determinate structures held through settlement. */
+ readonly heldToSettlementN:number;
  readonly medianHoldingDays:number|null;
  readonly p80HoldingDays:number|null;
  readonly heldToSettlementShare:number|null;
@@ -291,7 +297,7 @@ function holdingPeriodRow(horizon:HorizonFamily,structures:readonly DteCandidate
  const holding=defined(selected.map(c=>c.holdingDays));
  const settled=selected.filter(c=>c.heldToExpiry!==null);
  return {
-  horizon,n:holding.length,
+  horizon,n:holding.length,holdingN:holding.length,settlementStatusN:settled.length,heldToSettlementN:settled.filter(c=>c.heldToExpiry===true).length,
   medianHoldingDays:median(holding),p80HoldingDays:pct(holding,0.8),
   heldToSettlementShare:share(settled.filter(c=>c.heldToExpiry===true).length,settled.length),
  };
@@ -342,7 +348,7 @@ function pnlRow(horizon:HorizonFamily,scenarioRows:readonly DteCandidate[]):PnlB
 
 /** Aggregated so a column of "Unavailable" always carries a traceable cause. */
 function adverseDiagnostics(scenarioRows:readonly DteCandidate[]):AdversePathDiagnostics{
- const byStatus:Record<PathEvidenceStatus,number>={available:0,scenario_not_evaluated:0,no_observation_window:0,raw_evaluation_not_attempted:0,no_compatible_tape:0,insufficient_amount:0,missing_leg:0,synchronization_failure:0,no_raw_marks:0};
+ const byStatus:Record<PathEvidenceStatus,number>={available:0,scenario_not_evaluated:0,no_observation_window:0,raw_evaluation_not_attempted:0,no_compatible_tape:0,insufficient_amount:0,missing_leg:0,synchronization_failure:0,usd_representation_unavailable:0,no_raw_marks:0};
  let withValue=0,maeBeforeProfitN=0,profitObservedN=0;
  for(const c of scenarioRows){
   byStatus[c.adversePath.status]++;
