@@ -10,6 +10,7 @@ import type {DteCandidate,OutcomeBeforeExpiry,ScenarioCoverage} from "../lib/dur
 import {executionScenarioStatusLabel} from "../lib/execution-scenario";
 import type {VolatilityReport} from "../lib/volatility/volatility-report";
 import {EmbeddedVolatilityContext} from "./volatility-report";
+import {formatUsdValue} from "../lib/duration-dte/format";
 
 /**
  * Presentation only. Every number comes from the prebuilt Duration & DTE view
@@ -27,9 +28,10 @@ const NOT_EVALUATED="Not evaluated";
 
 const d1=(x:number)=>x.toFixed(1);
 const days=(x:number|null)=>x===null?NOT_ESTIMABLE:`${d1(x)}d`;
-const usd=(x:number|null)=>x===null?UNAVAILABLE:`${x<0?"−":""}$${Math.abs(x).toLocaleString(undefined,{maximumFractionDigits:0})}`;
+export const usd=(x:number|null)=>formatUsdValue(x);
 const pct=(x:number|null)=>x===null?NOT_ESTIMABLE:`${(x*100).toFixed(1)}%`;
-const signedUsd=(x:number|null)=>x===null?UNAVAILABLE:`${x<0?"−":"+"}$${Math.abs(x).toLocaleString(undefined,{maximumFractionDigits:0})}`;
+export const signedUsd=(x:number|null)=>formatUsdValue(x,true);
+const signedBtc=(x:number|null)=>x===null?UNAVAILABLE:Math.abs(x)<5e-9?"0.00000000 BTC":`${x<0?"−":"+"}${Math.abs(x).toFixed(8)} BTC`;
 const signedDays=(x:number|null)=>x===null?NOT_ESTIMABLE:`${x<0?"−":"+"}${Math.abs(x).toFixed(1)}d`;
 
 const OUTCOME_LABEL:Record<OutcomeBeforeExpiry,string>={
@@ -51,7 +53,7 @@ const OUTCOME_ORDER=Object.keys(OUTCOME_LABEL) as OutcomeBeforeExpiry[];
  * "Not evaluated" (never assessed) are visually and textually different.
  */
 function Coverage({coverage}:{coverage:ScenarioCoverage}){
- if(coverage.status==="measured")return <span title={`${coverage.events} of ${coverage.eligibleEvents} eligible MR events`}>{pct(coverage.share)}</span>;
+ if(coverage.status==="measured")return <span title={`${coverage.events} of ${coverage.eligibleEvents} eligible MR events`}>{coverage.events} / {coverage.eligibleEvents} · {pct(coverage.share)}</span>;
  return <span className="dd-muted" title={coverage.reason??undefined}>{coverage.status==="unavailable"?UNAVAILABLE:NOT_EVALUATED}</span>;
 }
 
@@ -70,7 +72,7 @@ function OverviewTable({rows}:{rows:readonly OverviewRow[]}){
    <td title="One MR event is one observation per horizon, however many width/strike variants it generated.">{r.eventsN}</td>
    <td className="dd-muted">{r.structuresN}</td>
    <td className={r.unavailableN>0?"dd-muted":undefined}>{r.unavailableN}</td><td className={r.notEvaluatedN>0?"dd-muted":undefined}>{r.notEvaluatedN}</td>
-   <td>{pct(r.pricedShare)}</td>
+   <td title="Priced eligible MR events / all eligible MR events in the availability layer">{r.pricedShare===null?NOT_ESTIMABLE:<>{r.pricedN} / {r.pricedEligibleN} · {pct(r.pricedShare)}</>}</td>
    <td><Coverage coverage={r.taker}/></td>
    <td><Coverage coverage={r.maker}/></td>
    <td className={r.resolutionCoverageShare===null?"dd-muted":"positive"}>{pct(r.resolutionCoverageShare)}</td>
@@ -83,6 +85,8 @@ function OverviewTable({rows}:{rows:readonly OverviewRow[]}){
  <small className="dd-note">Events, actual DTE, resolution coverage and DTE buffer are execution-independent and do not change with the selected scenario. Taker/maker coverage, T50% capture and capital-day return are execution-dependent.</small>
  </div>;
 }
+
+function StructuralConflictDiagnostic({report}:{report:DurationDteReport}){if(!report.structuralConflicts.length)return null;return <details className="dd-notice"><summary><strong>Structural timing conflicts: {report.structuralConflicts.length} event-horizon observation(s) excluded</strong></summary><div className="table-scroll"><table className="dd-table dd-compact"><thead><tr><th>Event</th><th>Horizon</th><th>Candidate IDs</th><th>Reason</th></tr></thead><tbody>{report.structuralConflicts.map(c=><tr key={`${c.eventId}-${c.horizonNominalDays}`}><td>{c.eventId}</td><td>{c.horizonNominalDays===null?UNAVAILABLE:`~${c.horizonNominalDays}D`}</td><td>{c.candidateIds.join(", ")}</td><td>{c.reason}</td></tr>)}</tbody></table></div></details>}
 
 /* ---------- 2. Availability & executability ---------- */
 
@@ -118,7 +122,7 @@ function SynchronizationTable({rows,scenario}:{rows:readonly SynchronizationRow[
   <tbody>{rows.map(r=><tr key={r.horizon.nominalDays}>
    <td>{r.horizon.label}</td>
    <td>{r.medianMinutes===null?NOT_ESTIMABLE:`${r.medianMinutes.toFixed(2)}m`}</td>
-   <td>{r.p95Minutes===null?NOT_ESTIMABLE:`${r.p95Minutes.toFixed(2)}m`}</td>
+   <td title={r.n<2?"N < 2":undefined}>{r.p95Minutes===null?NOT_ESTIMABLE:`${r.p95Minutes.toFixed(2)}m`}</td>
    <td>{r.n}</td>
   </tr>)}</tbody>
  </table>
@@ -311,9 +315,9 @@ function HoldingPeriodSection({rows}:{rows:readonly HoldingPeriodRow[]}){
  return <div className="table-scroll"><table className="dd-table dd-compact">
   <thead><tr><th>Horizon</th><th>N</th><th>Median survival window</th><th>P80 survival window</th><th>Window ends at expiry</th></tr></thead>
   <tbody>{rows.map(r=><tr key={r.horizon.nominalDays}>
-   <td>{r.horizon.label}</td><td>{r.n}</td>
+   <td>{r.horizon.label}</td><td>{r.holdingN}</td>
    <td>{days(r.medianHoldingDays)}</td><td>{days(r.p80HoldingDays)}</td>
-   <td>{pct(r.heldToSettlementShare)}</td>
+   <td>{r.heldToSettlementShare===null?UNAVAILABLE:`${pct(r.heldToSettlementShare)} · ${r.heldToSettlementN}/${r.settlementStatusN}`}</td>
   </tr>)}</tbody>
  </table>
  <small className="dd-note" title="Execution-independent structural metric">T_survival = min(post-entry first resolution, expiry) − structure entry. Execution-independent; this is not an operational holding period and makes no exit-policy or capital-use claim.</small>
@@ -338,17 +342,17 @@ function ResolutionSpeedSection({report}:{report:DurationDteReport}){
  if(!rs.available)return <p className="dd-empty-inline">{UNAVAILABLE} — {rs.reason}</p>;
  return <><p className="dd-sub">Cohorts cut from the observed first-resolution distribution: fast &lt; {days(rs.boundaries.p25Days)} (P25), slow &gt; {days(rs.boundaries.p75Days)} (P75), over {rs.boundaries.resolvedEventsN} resolved event(s). {rs.boundaries.unresolvedEventsN} unresolved event(s) stay in their own cohort.</p>
  <div className="table-scroll"><table className="dd-table dd-compact">
-  <thead><tr><th>Horizon</th><th>Cohort</th><th>N</th><th>Survived to resolution</th><th>Held to settlement</th><th>Median PnL</th><th>Median worst adverse</th><th>Median T50%</th></tr></thead>
+  <thead><tr><th>Horizon</th><th>Cohort</th><th>Structural N</th><th>Survived to resolution</th><th>Held to settlement</th><th>Median PnL · N</th><th>Median worst adverse · N</th><th>Median T50% · N</th></tr></thead>
   <tbody>{rs.rows.flatMap(row=>row.cells.filter(c=>c.n>0).map(c=>
    <tr key={`${row.horizon.nominalDays}-${c.cohort}`}>
     <td>{row.horizon.label}</td><td className={c.cohort==="unresolved"?"dd-muted":undefined}>{c.cohort}</td><td>{c.n}</td>
     <td>{pct(c.survivedToResolutionShare)}</td><td>{pct(c.settlementShare)}</td>
-    <td className={c.medianPnlUsd===null?"dd-muted":c.medianPnlUsd>=0?"positive":"negative"}>{usd(c.medianPnlUsd)}</td>
-    <td className={c.medianWorstAdverseUsd===null?"dd-muted":"negative"}>{usd(c.medianWorstAdverseUsd)}</td>
-    <td>{days(c.medianCapture50Days)}</td>
+    <td className={c.medianPnlUsd===null?"dd-muted":c.medianPnlUsd>=0?"positive":"negative"}>{usd(c.medianPnlUsd)} · {c.economicN.pnl}</td>
+    <td className={c.medianWorstAdverseUsd===null?"dd-muted":"negative"}>{usd(c.medianWorstAdverseUsd)} · {c.economicN.worstAdverse}</td>
+    <td>{days(c.medianCapture50Days)} · {c.economicN.capture50}</td>
    </tr>))}</tbody>
  </table></div>
- <small className="dd-note">How dependent is each DTE choice on the MR thesis resolving quickly? Cohorts come from naturally observed resolution behaviour, never invented price paths. Unresolved events are kept explicit rather than folded into &ldquo;slow&rdquo;, and every cell is computed inside one execution scenario.</small>
+ <small className="dd-note">Structural N and survival are event × horizon weighted and are not gated by maker/taker evidence. Reference economic cells use canonical Reference evidence only. Unresolved events remain separate from &ldquo;slow&rdquo;.</small>
  </>;
 }
 
@@ -362,10 +366,8 @@ function EntryDelaySection({report}:{report:DurationDteReport}){
   <ul className="fine-print">{ed.requiredCanonicalInputs.map((x,i)=><li key={i}>{x}</li>)}</ul>
  </div>;
  return <div className="table-scroll"><table className="dd-table dd-compact">
-  <thead><tr><th>Delay</th><th>Structures with maker evidence</th><th>Structures with taker evidence</th></tr></thead>
-  <tbody>{ed.rows.map(r=><tr key={r.delayHours}>
-   <td>+{r.delayHours}h</td><td>{r.structuresWithRawEvidence.maker}</td><td>{r.structuresWithRawEvidence.taker}</td>
-  </tr>)}</tbody>
+  <thead><tr><th>Delay</th><th>Scenario</th><th>Support N / denominator</th><th>Pre-entry resolution</th><th>Median actual delay</th><th>Median remaining DTE</th><th>Median Δ credit · BTC / USD at delayed entry index</th><th>Median outcome PnL</th><th>Economic N</th></tr></thead>
+  <tbody>{ed.rows.flatMap(r=>(["maker","taker"] as const).map(scenario=>{const s=r.summaries[scenario];return <tr key={`${r.delayHours}-${scenario}`}><td>+{r.delayHours}h</td><td>{scenario}</td><td>{s.supportN} / {s.denominatorN}</td><td>{s.preEntryResolutionCount} / {s.denominatorN}</td><td>{s.medianActualDelayHours===null?UNAVAILABLE:`${s.medianActualDelayHours.toFixed(2)}h`}</td><td>{days(s.medianRemainingDte)}</td><td>{signedBtc(s.medianCreditChangeVsReferenceNative)} / {signedUsd(s.medianCreditChangeVsReferenceUsd)}</td><td>{usd(s.medianOutcomePnl)}</td><td>{s.economicN}</td></tr>}))}</tbody>
  </table>
  <small className="dd-note">Delayed maker and taker scenarios each use only evidence available after the delayed order time; the original fill is never reused and a model mark is never treated as a historical fill.</small>
  </div>;
@@ -378,7 +380,7 @@ function AdverseDiagnosticsSection({report}:{report:DurationDteReport}){
  return <div className="dd-diagnostics">
   <div className="dd-endpoints">
    <div className="dd-endpoint"><span className="dd-label">Rows with a value</span><strong>{d.withValue} / {d.totalRows}</strong></div>
-   <div className="dd-endpoint"><span className="dd-label">Reached profit (raw)</span><strong>{d.profitObservedN}</strong></div>
+   <div className="dd-endpoint"><span className="dd-label">Reached profit (Reference)</span><strong>{d.profitObservedN}</strong></div>
    <div className="dd-endpoint"><span className="dd-label">MAE before profit</span><strong>{d.maeBeforeProfitN}</strong></div>
   </div>
   <div className="table-scroll"><table className="dd-table dd-compact">
@@ -387,7 +389,7 @@ function AdverseDiagnosticsSection({report}:{report:DurationDteReport}){
     <tr key={status}><td>{status.replaceAll("_"," ")}</td><td>{n}</td></tr>)}</tbody>
   </table></div>
   {d.dominantReason&&<p className="dd-note">{d.dominantReason}</p>}
-  <small className="dd-note">Worst adverse and MAE-before-profit are read only from this scenario&rsquo;s raw-VWAP valuation track. Where that track carries no priced mark the value stays Unavailable and the reason is shown here — a modelled mark is never substituted to fill the column.</small>
+  <small className="dd-note">Reference fair-value worst adverse and MAE-before-profit use only the canonical Reference valuation path. Maker/taker paths and execution ledgers never fill missing Reference marks.</small>
  </div>;
 }
 
@@ -478,6 +480,7 @@ export function DurationDteReportView({report,volatility,view="maker",onViewChan
   <p className="dd-note" data-testid="duration-execution-scope"><b>Analytical layer.</b> The primary comparisons on this report are computed on the execution-independent structure population — Reference — and are unchanged by any execution assumption: {report.executionScenarioScope.independentOf.join("; ")}. One display scenario ({report.executionScenarioScope.displayScenario}) scopes only the explicitly execution-dependent subsections: {report.executionScenarioScope.appliesTo.join("; ")}. {report.executionScenarioScope.note}</p>
 
   {report.excludedIneligible>0&&<p className="dd-notice">{report.excludedIneligible} structure(s) excluded — their underlying MR event is ineligible for time-to-event analysis, never counted as a resolution or a failure.</p>}
+  <StructuralConflictDiagnostic report={report}/>
 
   <div className="dd-cards">
    <HeadlineCard label="Effective MR events" value={String(h.effectiveEvents)} detail={h.totalEvents!==h.effectiveEvents?`of ${h.totalEvents}`:"100% of dataset"}/>

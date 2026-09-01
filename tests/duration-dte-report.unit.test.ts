@@ -9,6 +9,8 @@ import {normalizeExecutionScenarioStatus} from "../app/lib/execution-scenario.ts
 import {normalizeShortStrikeStructures} from "../app/lib/short-strike/normalize.ts";
 import {normalizeWidthStructures} from "../app/lib/spread-width/normalize.ts";
 import {DEFAULT_ANALYSIS_CONFIGURATION} from "../app/lib/analysis-configuration.ts";
+import {formatUsdValue} from "../app/lib/duration-dte/format.ts";
+import {buildResearchAnalyticsModel} from "../app/lib/research-analytics-model.ts";
 
 const D=(day:number,hour=0)=>new Date(Date.UTC(2026,0,day,hour)).toISOString();
 const ENTRY=D(1);
@@ -44,7 +46,7 @@ const events=[
 ];
 
 /** Structural identity shared by a structure's maker and taker rows. */
-const structural=(over:Record<string,unknown>)=>({strike_method:"delta_15",option_type:"P",structure_type:"bull_put_credit",actual_strikes:{short:100,long:99,width:1000},...over});
+const structural=(over:Record<string,unknown>)=>({strike_method:"delta_15",option_type:"P",structure_type:"bull_put_credit",actual_strikes:{short:100,long:99,width:1000},reference_structure_entry_timestamp_utc:over.structure_entry_timestamp_utc??null,...over});
 
 const candidates=[
  // c1a and c1b are the SAME structural variant of e1 at two horizons: the only
@@ -142,14 +144,58 @@ const overviewFor=(nominal:number)=>report.overview.find(r=>r.horizon.nominalDay
 const outcomeRowFor=(nominal:number)=>report.outcomeBeforeExpiry.find(r=>r.horizon.nominalDays===nominal)!;
 const availabilityFor=(nominal:number)=>report.availability.find(a=>a.nominalDays===nominal)!;
 
+function referenceCandidate(path:readonly Record<string,unknown>[],outcomes:readonly Record<string,unknown>[]=[],openingFees=.01){
+ const canonicalPath=path.map(point=>({...point,closing_spread_value_btc:point.closingSpreadValueBtc,scaled_closing_cash_flow_native:point.closingSpreadValueBtc}));
+ return candidates.map(c=>c.candidate_id!=="c1a"?c:{...c,reference_valuation:{status:"valued",entrySnapshot:{targetTimestamp:D(3),grossSpreadBtc:.1,openingFeesBtc:openingFees,netOpeningCashFlowBtc:.1-openingFees,estimateQuality:"green"},valuationPathSnapshot:canonicalPath,outcomeSnapshots:outcomes}});
+}
+function referenceDataset(){return {...dataset,schemaVersion:"4.0.0",tables:{...dataset.tables,structure_economics:[{candidate_id:"c1a",tracks:[{track:"reference_fair_value",status:"available"}]}]}} as unknown as AnalysisDataset}
+
+test("REFERENCE CAPTURE: gross debit, not net PnL or fees, determines every capture threshold",()=>{
+ const path=[
+  {timestamp:D(3),closingSpreadValueBtc:-.09,estimatedNetPnlBtc:99},
+  {timestamp:D(4),closingSpreadValueBtc:-.075,estimatedNetPnlBtc:99},
+  {timestamp:D(5),closingSpreadValueBtc:-.05,estimatedNetPnlBtc:-99},
+  {timestamp:D(6),closingSpreadValueBtc:-.03,estimatedNetPnlBtc:-99},
+ ];
+ const run=(fees:number)=>{const d={...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate(path,[],fees)}} as unknown as AnalysisDataset;const track=buildResearchAnalyticsModel(d).observations.find(x=>x.candidateId==="c1a")!.tracks.reference!;assert.equal(track.status,"available");assert.equal(track.valuationPath.length,path.length);assert.equal(track.valuationPath[0]!.closingSpreadValueBtc,-.09);return normalizeDteCandidates(d).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!};
+ const low=run(.001),high=run(.09);
+ for(const threshold of ["capture25","capture50","capture70"] as const)assert.equal(low[threshold]!.timeToCaptureDays,high[threshold]!.timeToCaptureDays,`${threshold} timing is fee-free`);
+ assert.equal(low.capture25!.timeToCaptureDays,1,`D=.075 reaches 25%: ${JSON.stringify(low.capture25)}`);
+ assert.equal(low.capture50!.timeToCaptureDays,2,"D=.05 exactly reaches 50%");
+ assert.equal(low.capture70!.timeToCaptureDays,3);
+});
+
+test("REFERENCE CAPTURE: missing gross debit is not replaced with PnL, and a fully evaluable miss stays not reached",()=>{
+ const missing=normalizeDteCandidates({...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate([{timestamp:D(4),estimatedNetPnlBtc:999}])}} as unknown as AnalysisDataset).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!;
+ assert.equal(missing.capture50!.evaluable,false);assert.equal(missing.capture50!.reached,false);assert.match(missing.capture50!.unavailableReason!,/gross closing-debit/i);
+ const miss=normalizeDteCandidates({...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate([{timestamp:D(4),closingSpreadValueBtc:-.09},{timestamp:D(5),closingSpreadValueBtc:-.08}])}} as unknown as AnalysisDataset).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!;
+ assert.equal(miss.capture50!.evaluable,true);assert.equal(miss.capture50!.reached,false);assert.equal(miss.capture50!.timeToCaptureDays,null);
+});
+
+test("REFERENCE CAPTURE: endpoint ordering compares absolute timestamps, not event-relative durations",()=>{
+ const before=normalizeDteCandidates({...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate([{timestamp:D(4),closingSpreadValueBtc:-.05}])}} as unknown as AnalysisDataset).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!;
+ const after=normalizeDteCandidates({...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate([{timestamp:D(5),closingSpreadValueBtc:-.05}])}} as unknown as AnalysisDataset).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!;
+ assert.equal(before.capture50!.beforeVpoc,true);assert.equal(after.capture50!.beforeVpoc,false);
+ // Shift only the event entry and duration origin while preserving VPOC's absolute timestamp.
+ const shifted={...referenceDataset(),tables:{...referenceDataset().tables,events:events.map(e=>e.event_id!=="e1"?e:{...e,entry_timestamp_utc:D(2),vpoc_trigger_timestamp_utc:D(4)}),candidates:referenceCandidate([{timestamp:D(4),closingSpreadValueBtc:-.05}])}} as unknown as AnalysisDataset;
+ assert.equal(normalizeDteCandidates(shifted).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!.capture50!.beforeVpoc,true);
+});
+
+test("REFERENCE USD ECONOMICS: native BTC PnL never fills USD outcomes or adverse metrics",()=>{
+ const nativeOnly=normalizeDteCandidates({...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate([{timestamp:D(3),closingSpreadValueBtc:-.09,estimatedNetPnlBtc:-.01},{timestamp:D(4),closingSpreadValueBtc:-.05,estimatedNetPnlBtc:.01}],[{label:"vpoc",valuationTimestamp:D(4),estimatedNetPnlBtc:.01}])}} as unknown as AnalysisDataset).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!;
+ assert.equal(nativeOnly.pnlAtVpocUsd,null);assert.equal(nativeOnly.worstAdverseUsd,null);assert.equal(nativeOnly.adversePath.maeBeforeProfitUsd,null);assert.equal(nativeOnly.adversePath.status,"usd_representation_unavailable");
+ const mixed=normalizeDteCandidates({...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate([{timestamp:D(3),closingSpreadValueBtc:-.09,estimatedNetPnlBtc:-.01,estimatedNetPnlUsd:-10},{timestamp:D(4),closingSpreadValueBtc:-.05,estimatedNetPnlBtc:-.5}],[{label:"vpoc",valuationTimestamp:D(4),estimatedNetPnlBtc:.01,estimatedNetPnlUsd:12}])}} as unknown as AnalysisDataset).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!;
+ assert.equal(mixed.pnlAtVpocUsd,12);assert.equal(mixed.worstAdverseUsd,-10);assert.match(mixed.adversePath.reason!,/native-only.*excluded/i);
+});
+
 test("A: actual DTE is read per candidate; horizon grouping never overwrites it",()=>{
  assert.equal(byId("c1a").actualDteDays,5);
  assert.equal(byId("c1b").actualDteDays,2);
  assert.equal(byId("c2a").actualDteDays,10);
  // Same nominal horizon (7), several actual DTEs -- the summary must reflect
- // all of them, not collapse to one representative value.
+ // one canonical observation per event × horizon, not every nested width.
  const h7=overviewFor(7);
- assert.equal(h7.actualDte!.n,4,"c1a, c2a and both width variants of e4");
+ assert.equal(h7.actualDte!.n,3,"e1, e2 and e4 each vote once");
  assert.equal(h7.actualDte!.median,8);
  assert.equal(h7.actualDte!.min,5);
  assert.equal(h7.actualDte!.max,10);
@@ -214,7 +260,7 @@ test("C: an unresolved (censored) candidate is a determinate no-resolution-befor
 
 test("C: ambiguous first resolution gets its own bucket, never folded into VPOC or invalidation",()=>{
  assert.equal(byId("c4a").outcomeBeforeExpiry,"ambiguous_before_expiry");
- assert.equal(outcomeRowFor(7).counts.ambiguous_before_expiry,2,"both width variants of e4");
+ assert.equal(outcomeRowFor(7).counts.ambiguous_before_expiry,1,"e4 votes once despite both width variants");
 });
 
 test("NO-RESOLUTION SPLIT: resolved-later and still-censored are diagnosed separately, never merged",()=>{
@@ -422,25 +468,24 @@ test("MATCHED DTE: economics are compared only across identical structural varia
  assert.equal(byId("c1a").structuralVariantKey,byId("c1b").structuralVariantKey);
 });
 
-test("G: capital-day return is Unavailable per-candidate unless a canonical margin scenario is genuinely available",()=>{
+test("G: structural candidates never compute legacy capital-day return",()=>{
  assert.equal(byId("c2a").requiredCapitalUsd,null,"e2/c2a has no margin_scenarios row at all");
  assert.equal(byId("c2a").capitalDayReturn,null);
  assert.equal(byId("c1a").requiredCapitalUsd,1000);
- assert.ok(Math.abs(byId("c1a").capitalDayReturn!-500/(1000*3))<1e-9,"500 pnl / (1000 usd * 3 holding days)");
+ assert.equal(byId("c1a").capitalDayReturn,null);
 });
 
-test("G: the capital-time summary aggregates only candidates with a genuinely usable return",()=>{
- assert.equal(report.capitalTime.available,true);
- assert.equal(report.capitalTime.points.length,1,"c1a only: c4a has margin but no single realized outcome");
- assert.equal(report.capitalTime.points[0]!.actualDteDays,5);
- assert.ok(Math.abs(report.capitalTime.medianCapitalDayReturn!-500/(1000*3))<1e-9);
+test("G: capital-time is gated on a complete selected exit policy",()=>{
+ assert.equal(report.capitalTime.available,false);
+ assert.equal(report.capitalTime.points.length,0);
+ assert.match(report.capitalTime.reason!,/complete exit policy/i);
 });
 
 test("G: capital-time is honestly Unavailable when no candidate anywhere has a usable return",()=>{
  const noMargin={...dataset,tables:{...dataset.tables,margin_scenarios:[]}} as unknown as AnalysisDataset;
  const r=buildDurationDteReport(noMargin,"taker");
  assert.equal(r.capitalTime.available,false);
- assert.match(r.capitalTime.reason!,/margin/i);
+ assert.match(r.capitalTime.reason!,/complete exit policy/i);
  assert.equal(r.capitalTime.medianCapitalDayReturn,null);
 });
 
@@ -456,7 +501,7 @@ test("HOLDING: T_hold works with no margin data at all and never uses a pre-entr
  assert.equal(byId("c3a").holdingDays,20,"never resolved: held to expiry");
  assert.equal(byId("c8a").holdingDays,7,"pre-entry VPOC is not a holding endpoint");
  const h7=noMargin.holdingPeriod.find(r=>r.horizon.nominalDays===7)!;
- assert.equal(h7.n,4);
+ assert.equal(h7.n,3);
  assert.ok(h7.medianHoldingDays!>0);
  assert.ok(h7.p80HoldingDays!>=h7.medianHoldingDays!);
  assert.notEqual(h7.heldToSettlementShare,null);
@@ -484,8 +529,9 @@ test("RESOLUTION SPEED: an insufficient sample is reported, never cut with inven
  assert.deepEqual(r.resolutionSpeed.rows,[]);
 });
 
-test("ENTRY DELAY: causal support is detected from raw evidence, never assumed",()=>{
- const delayed={...dataset,tables:{...dataset.tables,valuations:valuations.map(v=>({...v,point_role:"delayed_entry"}))}} as unknown as AnalysisDataset;
+test("ENTRY DELAY: canonical fixed-offset rows are independent",()=>{
+ const entry_delay_sensitivity=[0,4,8,12].map(requested_delay_hours=>({candidate_id:"c1a",requested_delay_hours,execution_scenario:"taker",status:"available",actual_delay_hours:requested_delay_hours+.5,remaining_actual_dte:5-requested_delay_hours/24}));
+ const delayed={...dataset,tables:{...dataset.tables,entry_delay_sensitivity}} as unknown as AnalysisDataset;
  const ed=buildEntryDelayReport(delayed);
  // Dedicated delayed-entry rows are fresh opening evaluations. Ordinary
  // scheduled-close raw marks intentionally do not qualify.
@@ -493,6 +539,47 @@ test("ENTRY DELAY: causal support is detected from raw evidence, never assumed",
  assert.deepEqual(ed.rows.map(r=>r.delayHours),[0,4,8,12]);
  assert.ok(ed.rows.every(r=>r.structuresWithRawEvidence.taker>0));
  assert.equal(ed.requiredCanonicalInputs.length,0);
+});
+
+test("ENTRY DELAY: a +12h experiment cannot backfill +4h or +8h",()=>{
+ const entry_delay_sensitivity=[{candidate_id:"c1a",requested_delay_hours:12,execution_scenario:"taker",status:"available",actual_delay_hours:12.5}];
+ const ed=buildEntryDelayReport({...dataset,tables:{...dataset.tables,entry_delay_sensitivity}} as unknown as AnalysisDataset);
+ assert.deepEqual(ed.rows.map(r=>r.structuresWithRawEvidence.taker),[0,0,0,1]);
+});
+
+test("ENTRY DELAY: credit deltas preserve native BTC and optional delayed-index USD",()=>{
+ const entry_delay_sensitivity=[{candidate_id:"c1a",requested_delay_hours:4,execution_scenario:"taker",status:"available",actual_delay_hours:4.5,credit_change_vs_reference_native:.0003,credit_change_vs_reference_usd:21}];
+ const summary=buildEntryDelayReport({...dataset,tables:{...dataset.tables,entry_delay_sensitivity}} as unknown as AnalysisDataset).rows.find(r=>r.delayHours===4)!.summaries.taker;
+ assert.equal(summary.medianCreditChangeVsReferenceNative,.0003);assert.equal(summary.medianCreditChangeVsReferenceUsd,21);
+ const noIndex=buildEntryDelayReport({...dataset,tables:{...dataset.tables,entry_delay_sensitivity:[{...entry_delay_sensitivity[0],credit_change_vs_reference_usd:null}]}} as unknown as AnalysisDataset).rows.find(r=>r.delayHours===4)!.summaries.taker;
+ assert.equal(noIndex.medianCreditChangeVsReferenceNative,.0003);assert.equal(noIndex.medianCreditChangeVsReferenceUsd,null);
+});
+
+test("CANONICAL ENTRY: observed scenario fills are never structural fallbacks",()=>{
+ const stripped=candidates.filter(c=>c.candidate_id==="c2a").map((c,i)=>({...c,reference_structure_entry_timestamp_utc:null,structure_entry_timestamp_utc:i?D(1,2):D(1,1)}));
+ const r=normalizeDteCandidates({...dataset,tables:{...dataset.tables,candidates:stripped,structure_economics:[]}} as unknown as AnalysisDataset);
+ assert.ok(r.every(c=>c.structureEntryMs===null&&c.holdingDays===null));
+});
+
+test("STRUCTURAL CONFLICT: conflicting canonical entry excludes and diagnoses the event-horizon",()=>{
+ const conflicted=candidates.map(c=>c.candidate_id==="c4b"?{...c,reference_structure_entry_timestamp_utc:D(1,1)}:c);
+ const r=buildDurationDteReport({...dataset,tables:{...dataset.tables,candidates:conflicted}} as unknown as AnalysisDataset,"taker");
+ const conflict=r.structuralConflicts.find(c=>c.eventId==="e4")!;
+ assert.deepEqual(conflict.candidateIds.sort(),["c4a","c4b"]);
+ assert.match(conflict.reason,/Conflicting/);
+ assert.equal(r.overview.find(x=>x.horizon.nominalDays===7)!.eventsN,2);
+});
+
+test("RESOLUTION SPEED: Reference economics are invariant to width row ordering and carry metric Ns",()=>{
+ const permuted=[...candidates],a=permuted.findIndex(c=>c.candidate_id==="c4a"),b=permuted.findIndex(c=>c.candidate_id==="c4b");[permuted[a],permuted[b]]=[permuted[b]!,permuted[a]!];
+ const shuffled=buildDurationDteReport({...dataset,tables:{...dataset.tables,candidates:permuted}} as unknown as AnalysisDataset,"taker");
+ assert.deepEqual(shuffled.resolutionSpeed,report.resolutionSpeed);
+ assert.ok(report.resolutionSpeed.rows.flatMap(r=>r.cells).every(c=>c.economicN.pnl>=0&&c.economicN.worstAdverse>=0&&c.economicN.capture50>=0));
+});
+
+test("USD FORMAT: rounded zero never retains a sign",()=>{
+ assert.equal(formatUsdValue(-.001),"$0.00");assert.equal(formatUsdValue(.001,true),"$0.00");
+ assert.equal(formatUsdValue(-.37),"−$0.37");assert.equal(formatUsdValue(.37,true),"+$0.37");assert.equal(formatUsdValue(-12.4),"−$12");
 });
 
 test("ENTRY DELAY: scheduled close marks cannot masquerade as delayed openings",()=>{

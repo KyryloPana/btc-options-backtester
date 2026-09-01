@@ -21,6 +21,8 @@ export type PathEvidenceStatus=
  /** Entry or the resolution/censoring boundary is unknown, so no window can be bounded. */
  |"no_observation_window"
  |"raw_evaluation_not_attempted"|"no_compatible_tape"|"insufficient_amount"|"missing_leg"|"synchronization_failure"
+ /** Native PnL exists, but there is no USD-valued evidence for a USD metric. */
+ |"usd_representation_unavailable"
  /** The window is well-defined but raw evidence is unavailable for another explicit reason. */
  |"no_raw_marks";
 

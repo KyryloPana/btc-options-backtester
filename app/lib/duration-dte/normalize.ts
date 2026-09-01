@@ -277,8 +277,12 @@ function structuralDte(rows:readonly Readonly<Record<string,unknown>>[]):number|
  * not_evaluated has none and stays null -- never falling back to the event's
  * own entry, which would silently move the pre-entry-VPOC boundary.
  */
-function structuralEntry(rows:readonly Readonly<Record<string,unknown>>[]):number|null{
- for(const row of rows){const t=ms(row.structure_entry_timestamp_utc)??ms(row.valuation_timestamp_utc);if(t!==null)return t}
+function structuralEntry(rows:readonly Readonly<Record<string,unknown>>[],reference:ScenarioTrack|undefined,economics:Readonly<Record<string,unknown>>|undefined):number|null{
+ // Reference is the canonical structural target.  Candidate valuation timestamps
+ // may be observed maker/taker completions and are deliberately not fallbacks.
+ if(reference?.entryTime!==null&&reference?.entryTime!==undefined)return reference.entryTime;
+ const canonical=ms(economics?.reference_entry_timestamp_utc)??ms(rows[0]?.reference_structure_entry_timestamp_utc);
+ if(canonical!==null)return canonical;
  return null;
 }
 
@@ -327,29 +331,40 @@ function namedOutcome(track:ScenarioTrack|undefined,kind:"vpoc"|"invalidation"|"
  return Object.entries(track.outcomes).find(([label])=>kind==="settlement"?/settlement|terminal|expiry/i.test(label):new RegExp(kind,"i").test(label))?.[1];
 }
 function referencePnl(track:ScenarioTrack|undefined,kind:"vpoc"|"invalidation"|"settlement"):number|null{
- const row=namedOutcome(track,kind);return row?(trackPnlUsd(row)??trackPnlNative(row)):null;
+ const row=namedOutcome(track,kind);return row?trackPnlUsd(row):null;
 }
-function referenceCapture(track:ScenarioTrack|undefined,threshold:25|50|70,entry:number|null,vpocDays:number|null,invalidationDays:number|null):CaptureObservation|null{
+/** A Reference path stores the closing cash flow as a negative amount; its
+ * positive negation is the gross debit required to close.  Only the total
+ * cash-flow field is compatible with the total opening credit. */
+function referenceClosingDebit(trackRow:Readonly<Record<string,unknown>>):number|null{
+ const cashFlow=num(trackRow.closingSpreadValueBtc)??num(trackRow.closing_spread_value_btc)??num(trackRow.scaled_closing_cash_flow_native);
+ return cashFlow!==null&&cashFlow<=0?-cashFlow:null;
+}
+function referenceCapture(track:ScenarioTrack|undefined,threshold:25|50|70,entry:number|null,vpocMs:number|null,invalidationMs:number|null):CaptureObservation|null{
  if(!track||track.status!=="available")return null;
- const credit=track.economics.netCredit??track.economics.grossCredit;
+ const credit=track.economics.grossCredit;
  if(credit===null||credit<=0)return {thresholdPct:threshold,reached:false,timeToCaptureDays:null,beforeVpoc:null,beforeInvalidation:null,evaluable:false,unavailableReason:"Reference opening credit is missing or non-positive."};
- const marks=track.valuationPath.map(r=>({t:trackTime(r),p:trackPnlNative(r)})).filter((x):x is {t:number;p:number}=>x.t!==null&&x.p!==null&&entry!==null&&x.t>=entry).sort((a,b)=>a.t-b.t);
- if(!marks.length)return {thresholdPct:threshold,reached:false,timeToCaptureDays:null,beforeVpoc:null,beforeInvalidation:null,evaluable:false,unavailableReason:"Reference valuation path has no priced mark in the candidate window."};
- const hit=marks.find(x=>x.p/credit>=threshold/100),days=hit&&entry!==null?(hit.t-entry)/DAY:null;
- return {thresholdPct:threshold,reached:!!hit,timeToCaptureDays:days,evaluable:true,unavailableReason:null,beforeVpoc:days!==null&&vpocDays!==null?days<=vpocDays:null,beforeInvalidation:days!==null&&invalidationDays!==null?days<=invalidationDays:null};
+ const marks=track.valuationPath.map(r=>({t:trackTime(r),debit:referenceClosingDebit(r)})).filter((x):x is {t:number;debit:number}=>x.t!==null&&x.debit!==null&&(entry===null||x.t>=entry)).sort((a,b)=>a.t-b.t);
+ if(!marks.length)return {thresholdPct:threshold,reached:false,timeToCaptureDays:null,beforeVpoc:null,beforeInvalidation:null,evaluable:false,unavailableReason:"Reference valuation path has no gross closing-debit mark in the candidate window."};
+ const hit=marks.find(x=>x.debit<=credit*(1-threshold/100)),days=hit&&entry!==null?(hit.t-entry)/DAY:null;
+ return {thresholdPct:threshold,reached:!!hit,timeToCaptureDays:days,evaluable:true,unavailableReason:null,beforeVpoc:hit&&vpocMs!==null?hit.t<=vpocMs:null,beforeInvalidation:hit&&invalidationMs!==null?hit.t<=invalidationMs:null};
 }
 function referenceAdverse(track:ScenarioTrack|undefined,entry:number|null,boundary:number|null):AdversePathObservation{
  if(!track||track.status!=="available")return {worstAdverseUsd:null,maeBeforeProfitUsd:null,profitObserved:false,rawMarksInWindow:0,status:"no_raw_marks",reason:"Reference track unavailable."};
- const marks=track.valuationPath.map(r=>({t:trackTime(r),p:trackPnlUsd(r)??trackPnlNative(r)})).filter((x):x is {t:number;p:number}=>x.t!==null&&x.p!==null&&entry!==null&&x.t>=entry&&(boundary===null||x.t<=boundary)).sort((a,b)=>a.t-b.t);
- if(!marks.length)return {worstAdverseUsd:null,maeBeforeProfitUsd:null,profitObserved:false,rawMarksInWindow:0,status:"no_raw_marks",reason:"Reference path has no priced mark in the candidate observation window."};
+ const inWindow=track.valuationPath.map(r=>({t:trackTime(r),usd:trackPnlUsd(r),native:trackPnlNative(r)})).filter(x=>x.t!==null&&(entry===null||x.t>=entry)&&(boundary===null||x.t<=boundary));
+ const marks=inWindow.flatMap(x=>x.t!==null&&x.usd!==null?[{t:x.t,p:x.usd}]:[]).sort((a,b)=>a.t-b.t);
+ if(!marks.length){const native=inWindow.some(x=>x.native!==null);return {worstAdverseUsd:null,maeBeforeProfitUsd:null,profitObserved:false,rawMarksInWindow:0,status:native?"usd_representation_unavailable":"no_raw_marks",reason:native?"Reference path has native PnL marks in the candidate observation window, but no USD-valued PnL evidence; BTC is not used as USD.":"Reference path has no USD-valued priced mark in the candidate observation window."};}
  const firstProfit=marks.findIndex(x=>x.p>0),before=firstProfit<0?[]:marks.slice(0,firstProfit+1);
- return {worstAdverseUsd:Math.min(...marks.map(x=>x.p)),maeBeforeProfitUsd:before.length?Math.min(...before.map(x=>x.p)):null,profitObserved:firstProfit>=0,rawMarksInWindow:marks.length,status:"available",reason:null};
+ const nativeOnly=inWindow.filter(x=>x.usd===null&&x.native!==null).length;
+ return {worstAdverseUsd:Math.min(...marks.map(x=>x.p)),maeBeforeProfitUsd:before.length?Math.min(...before.map(x=>x.p)):null,profitObserved:firstProfit>=0,rawMarksInWindow:marks.length,status:"available",reason:nativeOnly?`USD adverse metrics use ${marks.length} USD-valued mark(s); ${nativeOnly} native-only mark(s) were excluded rather than treated as USD.`:null};
 }
 
 export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCandidate[]{
  const candidates=dataset.tables.candidates??[],outcomes=dataset.tables.outcomes??[],valuations=dataset.tables.valuations??[],margins=dataset.tables.margin_scenarios??[];
  const eventsById=new Map(normalizeMrEvents(dataset).map(e=>[e.eventId,e]));
- const analytical=buildResearchAnalyticsModel(dataset);
+ const canonicalCandidates=[...candidates].sort((a,b)=>String(a.candidate_id).localeCompare(String(b.candidate_id))||String(a.execution_scenario).localeCompare(String(b.execution_scenario)));
+ const analytical=buildResearchAnalyticsModel({...dataset,tables:{...dataset.tables,candidates:canonicalCandidates}});
+ const economicsByCandidate=new Map((dataset.tables.structure_economics??[]).map(r=>[String(r.candidate_id),r]));
  const observationFor=(eventId:string,candidateId:string)=>analytical.observations.find(o=>o.eventId===eventId&&o.candidateId===candidateId);
 
  // Group a structure's scenario rows so every execution-INDEPENDENT fact is
@@ -369,7 +384,8 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
   const evaluated=scenarioStatus==="evaluated";
 
   // Execution-independent structural facts, identical across scenario rows.
-  const entry=structuralEntry(siblings),expiry=ms(row.expiry_timestamp_utc),dte=structuralDte(siblings);
+  const reference=observationFor(eventId,candidateId)?.tracks.reference;
+  const entry=structuralEntry(siblings,reference,economicsByCandidate.get(candidateId)),expiry=ms(row.expiry_timestamp_utc),dte=structuralDte(siblings);
   const structural={
    eventId,candidateId,structureExecutionId,horizonNominalDays:num(row.target_horizon_days),structureType:str(row.structure_type),
    executionScenario:scenario,executionScenarioStatus:scenarioStatus,executionScenarioReason:str(row.execution_scenario_reason),
@@ -447,21 +463,14 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
    marginAvailable=marginRow?.margin_status==="available",
    requiredCapitalUsd=marginAvailable?num(marginRow!.maximum_structural_loss_usd)??num(marginRow!.peak_initial_margin):null;
   const observedPnlAtVpocUsd=pnlAt(outcomes,candidateId,scenario,"vpoc"), observedPnlAtInvalidationUsd=pnlAt(outcomes,candidateId,scenario,"invalidation"), observedPnlAtSettlementUsd=pnlAt(outcomes,candidateId,scenario,"settlement");
-  const reference=observationFor(eventId,candidateId)?.tracks.reference;
   const pnlAtVpocRaw=reference?referencePnl(reference,"vpoc"):observedPnlAtVpocUsd, pnlAtInvalidationUsd=reference?referencePnl(reference,"invalidation"):observedPnlAtInvalidationUsd, pnlAtSettlementUsd=reference?referencePnl(reference,"settlement"):observedPnlAtSettlementUsd;
   // A VPOC that predates the structure has no post-entry PnL: pricing it would
   // value an outcome at a timestamp before the position existed.
   const pnlAtVpocUsd=vpocBeforeStructureEntry?null:pnlAtVpocRaw;
 
-  // Candidate-relative realized PnL: keyed off what happened WHILE THE
-  // STRUCTURE EXISTED, never the event's eventual outcome.
-  const realizedPnl=
-   outcomeBeforeExpiry==="vpoc_before_expiry"?pnlAtVpocUsd
-   :outcomeBeforeExpiry==="invalidation_before_expiry"?pnlAtInvalidationUsd
-   :outcomeBeforeExpiry==="no_resolution_before_expiry"?pnlAtSettlementUsd
-   :null;
-  const capitalDayReturn=requiredCapitalUsd!==null&&requiredCapitalUsd!==0&&realizedPnl!==null&&holdingDays!==null&&holdingDays>0
-   ?realizedPnl/(requiredCapitalUsd*holdingDays):null;
+  // Structural thesis-survival time is not an operational holding period.
+  // Capital efficiency is calculated only by the configured exit-policy path.
+  const capitalDayReturn=null;
 
   // The adverse-path window ends at the post-entry resolution, or at whichever
   // of expiry / canonical observation end comes first when it never resolved.
@@ -480,9 +489,9 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
    pnlAtVpocUsd,pnlAtInvalidationUsd,pnlAtSettlementUsd,
    observedPnlAtVpocUsd,observedPnlAtInvalidationUsd,observedPnlAtSettlementUsd,
    adversePath:path,observedAdversePath:observedPath,worstAdverseUsd:path.worstAdverseUsd,
-   capture25:reference?referenceCapture(reference,25,entry,event.timeToVpocDays,event.timeToInvalidationDays):captureObservation(outcomes,candidateId,scenario,25,entry,event.timeToVpocDays,event.timeToInvalidationDays),
-   capture50:reference?referenceCapture(reference,50,entry,event.timeToVpocDays,event.timeToInvalidationDays):captureObservation(outcomes,candidateId,scenario,50,entry,event.timeToVpocDays,event.timeToInvalidationDays),
-   capture70:reference?referenceCapture(reference,70,entry,event.timeToVpocDays,event.timeToInvalidationDays):captureObservation(outcomes,candidateId,scenario,70,entry,event.timeToVpocDays,event.timeToInvalidationDays),
+   capture25:reference?referenceCapture(reference,25,entry,vpocMs,invalidationMs):captureObservation(outcomes,candidateId,scenario,25,entry,event.timeToVpocDays,event.timeToInvalidationDays),
+   capture50:reference?referenceCapture(reference,50,entry,vpocMs,invalidationMs):captureObservation(outcomes,candidateId,scenario,50,entry,event.timeToVpocDays,event.timeToInvalidationDays),
+   capture70:reference?referenceCapture(reference,70,entry,vpocMs,invalidationMs):captureObservation(outcomes,candidateId,scenario,70,entry,event.timeToVpocDays,event.timeToInvalidationDays),
    observedCapture25:captureObservation(outcomes,candidateId,scenario,25,entry,event.timeToVpocDays,event.timeToInvalidationDays),
    observedCapture50:captureObservation(outcomes,candidateId,scenario,50,entry,event.timeToVpocDays,event.timeToInvalidationDays),
    observedCapture70:captureObservation(outcomes,candidateId,scenario,70,entry,event.timeToVpocDays,event.timeToInvalidationDays),

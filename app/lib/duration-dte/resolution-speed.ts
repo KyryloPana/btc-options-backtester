@@ -44,6 +44,7 @@ export interface ResolutionSpeedCell {
  readonly medianPnlUsd:number|null;
  readonly medianWorstAdverseUsd:number|null;
  readonly medianCapture50Days:number|null;
+ readonly economicN:{readonly pnl:number;readonly worstAdverse:number;readonly capture50:number};
 }
 
 export interface ResolutionSpeedRow {
@@ -82,29 +83,31 @@ export function cohortOf(timeToResolutionDays:number|null,b:ResolutionSpeedBound
 }
 
 /**
- * @param candidates rows for ONE execution scenario only -- the caller scopes
- * the population so no cell can ever blend maker and taker evidence.
+ * Candidates are canonical event-horizon structural observations. Reference
+ * economics may be absent, but execution availability never gates membership.
  */
-export function buildResolutionSpeedReport(dataset:AnalysisDataset,candidates:readonly DteCandidate[],horizons:readonly HorizonFamily[]):ResolutionSpeedReport{
+export function buildResolutionSpeedReport(dataset:AnalysisDataset,structural:readonly DteCandidate[],economics:readonly DteCandidate[],horizons:readonly HorizonFamily[]):ResolutionSpeedReport{
  const boundaries=resolutionSpeedBoundaries(dataset);
  if(boundaries.resolvedEventsN<2)return {
   boundaries,rows:[],available:false,
   reason:`Cohort boundaries need at least two resolved MR events to place a P25/P75 cut; this bundle has ${boundaries.resolvedEventsN}. Arbitrary day thresholds are not substituted.`,
  };
 
- const eligible=candidates.filter(c=>c.ineligibilityReason===null&&c.executionScenarioStatus==="evaluated");
+ const eligible=structural.filter(c=>c.ineligibilityReason===null);
+ const economic=[...new Map(economics.filter(c=>c.ineligibilityReason===null).map(c=>[c.candidateId,c])).values()];
  const rows=horizons.map(horizon=>{
   const at=eligible.filter(c=>c.horizonNominalDays===horizon.nominalDays);
   const cells=RESOLUTION_SPEED_COHORTS.map(cohort=>{
    const group=at.filter(c=>cohortOf(c.timeToResolutionDays,boundaries)===cohort);
+   const economicGroup=economic.filter(c=>c.horizonNominalDays===horizon.nominalDays&&cohortOf(c.timeToResolutionDays,boundaries)===cohort);
    const determinate=group.filter(c=>c.resolvedBeforeExpiry!==null);
+   const pnl=defined(economicGroup.map(realizedPnlOf)),adverse=defined(economicGroup.map(c=>c.worstAdverseUsd)),capture=defined(economicGroup.map(c=>c.capture50?.reached?c.capture50.timeToCaptureDays:null));
    return {
     cohort,n:group.length,
     survivedToResolutionShare:share(determinate.filter(c=>c.resolvedBeforeExpiry===true).length,determinate.length),
     settlementShare:share(group.filter(c=>c.heldToExpiry===true).length,group.filter(c=>c.heldToExpiry!==null).length),
-    medianPnlUsd:median(defined(group.map(realizedPnlOf))),
-    medianWorstAdverseUsd:median(defined(group.map(c=>c.worstAdverseUsd))),
-    medianCapture50Days:median(defined(group.map(c=>c.capture50?.reached?c.capture50.timeToCaptureDays:null))),
+    medianPnlUsd:median(pnl),medianWorstAdverseUsd:median(adverse),medianCapture50Days:median(capture),
+    economicN:{pnl:pnl.length,worstAdverse:adverse.length,capture50:capture.length},
    } satisfies ResolutionSpeedCell;
   });
   return {horizon,cells};

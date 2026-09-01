@@ -177,19 +177,17 @@ test("INTEGRATION: E -- futures equal-risk consumes the bounded structural risk"
  assert.equal(withoutFunding.funding_usd_per_unit,null);
 });
 
-test("INTEGRATION: F -- an older exported bundle is rejected, never reinterpreted",()=>{
+test("INTEGRATION: F -- older bundles require explicit degraded adapters, never direct reinterpretation",()=>{
  const {bundle}=composedBundle();
  const zip=(files:Record<string,string>)=>zipSync(Object.fromEntries(
   Object.entries(files).map(([name,text])=>[`research_bundle/${name}`,strToU8(text)])));
- // 3.4.0 carried fee-inclusive max loss; 3.5.0 carried null holding time.
- // Neither can be faithfully upgraded, so both must be refused on import.
  for(const previous of ["3.4.0","3.5.0","3.3.0","3.2.0"]){
   const files={...bundle.files,"run.json":bundle.files["run.json"].replace(`"${RESEARCH_BUNDLE_SCHEMA_VERSION}"`,`"${previous}"`)};
-  assert.equal(validateResearchBundle(files).ok,false,`${previous} must not validate under current semantics`);
+  assert.equal(validateResearchBundle(files).ok,false,`${previous} must not validate directly under current semantics`);
   const imported=importResearchBundle(zip(files),`old-${previous}.zip`);
-  assert.equal(imported.status,"invalid",`${previous} must not import under current semantics`);
+  assert.equal(imported.status,"degraded",`${previous} must pass only through its explicit degraded adapter`);
+  assert.equal(imported.dataset.migratedFrom,previous);
  }
- // The current bundle imports cleanly, so the rejection is about semantics.
  assert.notEqual(importResearchBundle(zip(bundle.files),"current.zip").status,"invalid");
 });
 
