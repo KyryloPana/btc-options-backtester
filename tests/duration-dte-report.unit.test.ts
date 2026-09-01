@@ -10,6 +10,7 @@ import {normalizeShortStrikeStructures} from "../app/lib/short-strike/normalize.
 import {normalizeWidthStructures} from "../app/lib/spread-width/normalize.ts";
 import {DEFAULT_ANALYSIS_CONFIGURATION} from "../app/lib/analysis-configuration.ts";
 import {formatUsdValue} from "../app/lib/duration-dte/format.ts";
+import {buildResearchAnalyticsModel} from "../app/lib/research-analytics-model.ts";
 
 const D=(day:number,hour=0)=>new Date(Date.UTC(2026,0,day,hour)).toISOString();
 const ENTRY=D(1);
@@ -142,6 +143,50 @@ const makerReport=buildDurationDteReport(dataset,"maker");
 const overviewFor=(nominal:number)=>report.overview.find(r=>r.horizon.nominalDays===nominal)!;
 const outcomeRowFor=(nominal:number)=>report.outcomeBeforeExpiry.find(r=>r.horizon.nominalDays===nominal)!;
 const availabilityFor=(nominal:number)=>report.availability.find(a=>a.nominalDays===nominal)!;
+
+function referenceCandidate(path:readonly Record<string,unknown>[],outcomes:readonly Record<string,unknown>[]=[],openingFees=.01){
+ const canonicalPath=path.map(point=>({...point,closing_spread_value_btc:point.closingSpreadValueBtc,scaled_closing_cash_flow_native:point.closingSpreadValueBtc}));
+ return candidates.map(c=>c.candidate_id!=="c1a"?c:{...c,reference_valuation:{status:"valued",entrySnapshot:{targetTimestamp:D(3),grossSpreadBtc:.1,openingFeesBtc:openingFees,netOpeningCashFlowBtc:.1-openingFees,estimateQuality:"green"},valuationPathSnapshot:canonicalPath,outcomeSnapshots:outcomes}});
+}
+function referenceDataset(){return {...dataset,schemaVersion:"4.0.0",tables:{...dataset.tables,structure_economics:[{candidate_id:"c1a",tracks:[{track:"reference_fair_value",status:"available"}]}]}} as unknown as AnalysisDataset}
+
+test("REFERENCE CAPTURE: gross debit, not net PnL or fees, determines every capture threshold",()=>{
+ const path=[
+  {timestamp:D(3),closingSpreadValueBtc:-.09,estimatedNetPnlBtc:99},
+  {timestamp:D(4),closingSpreadValueBtc:-.075,estimatedNetPnlBtc:99},
+  {timestamp:D(5),closingSpreadValueBtc:-.05,estimatedNetPnlBtc:-99},
+  {timestamp:D(6),closingSpreadValueBtc:-.03,estimatedNetPnlBtc:-99},
+ ];
+ const run=(fees:number)=>{const d={...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate(path,[],fees)}} as unknown as AnalysisDataset;const track=buildResearchAnalyticsModel(d).observations.find(x=>x.candidateId==="c1a")!.tracks.reference!;assert.equal(track.status,"available");assert.equal(track.valuationPath.length,path.length);assert.equal(track.valuationPath[0]!.closingSpreadValueBtc,-.09);return normalizeDteCandidates(d).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!};
+ const low=run(.001),high=run(.09);
+ for(const threshold of ["capture25","capture50","capture70"] as const)assert.equal(low[threshold]!.timeToCaptureDays,high[threshold]!.timeToCaptureDays,`${threshold} timing is fee-free`);
+ assert.equal(low.capture25!.timeToCaptureDays,1,`D=.075 reaches 25%: ${JSON.stringify(low.capture25)}`);
+ assert.equal(low.capture50!.timeToCaptureDays,2,"D=.05 exactly reaches 50%");
+ assert.equal(low.capture70!.timeToCaptureDays,3);
+});
+
+test("REFERENCE CAPTURE: missing gross debit is not replaced with PnL, and a fully evaluable miss stays not reached",()=>{
+ const missing=normalizeDteCandidates({...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate([{timestamp:D(4),estimatedNetPnlBtc:999}])}} as unknown as AnalysisDataset).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!;
+ assert.equal(missing.capture50!.evaluable,false);assert.equal(missing.capture50!.reached,false);assert.match(missing.capture50!.unavailableReason!,/gross closing-debit/i);
+ const miss=normalizeDteCandidates({...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate([{timestamp:D(4),closingSpreadValueBtc:-.09},{timestamp:D(5),closingSpreadValueBtc:-.08}])}} as unknown as AnalysisDataset).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!;
+ assert.equal(miss.capture50!.evaluable,true);assert.equal(miss.capture50!.reached,false);assert.equal(miss.capture50!.timeToCaptureDays,null);
+});
+
+test("REFERENCE CAPTURE: endpoint ordering compares absolute timestamps, not event-relative durations",()=>{
+ const before=normalizeDteCandidates({...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate([{timestamp:D(4),closingSpreadValueBtc:-.05}])}} as unknown as AnalysisDataset).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!;
+ const after=normalizeDteCandidates({...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate([{timestamp:D(5),closingSpreadValueBtc:-.05}])}} as unknown as AnalysisDataset).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!;
+ assert.equal(before.capture50!.beforeVpoc,true);assert.equal(after.capture50!.beforeVpoc,false);
+ // Shift only the event entry and duration origin while preserving VPOC's absolute timestamp.
+ const shifted={...referenceDataset(),tables:{...referenceDataset().tables,events:events.map(e=>e.event_id!=="e1"?e:{...e,entry_timestamp_utc:D(2),vpoc_trigger_timestamp_utc:D(4)}),candidates:referenceCandidate([{timestamp:D(4),closingSpreadValueBtc:-.05}])}} as unknown as AnalysisDataset;
+ assert.equal(normalizeDteCandidates(shifted).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!.capture50!.beforeVpoc,true);
+});
+
+test("REFERENCE USD ECONOMICS: native BTC PnL never fills USD outcomes or adverse metrics",()=>{
+ const nativeOnly=normalizeDteCandidates({...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate([{timestamp:D(3),closingSpreadValueBtc:-.09,estimatedNetPnlBtc:-.01},{timestamp:D(4),closingSpreadValueBtc:-.05,estimatedNetPnlBtc:.01}],[{label:"vpoc",valuationTimestamp:D(4),estimatedNetPnlBtc:.01}])}} as unknown as AnalysisDataset).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!;
+ assert.equal(nativeOnly.pnlAtVpocUsd,null);assert.equal(nativeOnly.worstAdverseUsd,null);assert.equal(nativeOnly.adversePath.maeBeforeProfitUsd,null);assert.equal(nativeOnly.adversePath.status,"usd_representation_unavailable");
+ const mixed=normalizeDteCandidates({...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate([{timestamp:D(3),closingSpreadValueBtc:-.09,estimatedNetPnlBtc:-.01,estimatedNetPnlUsd:-10},{timestamp:D(4),closingSpreadValueBtc:-.05,estimatedNetPnlBtc:-.5}],[{label:"vpoc",valuationTimestamp:D(4),estimatedNetPnlBtc:.01,estimatedNetPnlUsd:12}])}} as unknown as AnalysisDataset).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!;
+ assert.equal(mixed.pnlAtVpocUsd,12);assert.equal(mixed.worstAdverseUsd,-10);assert.match(mixed.adversePath.reason!,/native-only.*excluded/i);
+});
 
 test("A: actual DTE is read per candidate; horizon grouping never overwrites it",()=>{
  assert.equal(byId("c1a").actualDteDays,5);

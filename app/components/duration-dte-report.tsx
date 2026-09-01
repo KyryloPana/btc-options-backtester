@@ -315,9 +315,9 @@ function HoldingPeriodSection({rows}:{rows:readonly HoldingPeriodRow[]}){
  return <div className="table-scroll"><table className="dd-table dd-compact">
   <thead><tr><th>Horizon</th><th>N</th><th>Median survival window</th><th>P80 survival window</th><th>Window ends at expiry</th></tr></thead>
   <tbody>{rows.map(r=><tr key={r.horizon.nominalDays}>
-   <td>{r.horizon.label}</td><td>{r.n}</td>
+   <td>{r.horizon.label}</td><td>{r.holdingN}</td>
    <td>{days(r.medianHoldingDays)}</td><td>{days(r.p80HoldingDays)}</td>
-   <td>{pct(r.heldToSettlementShare)}</td>
+   <td>{r.heldToSettlementShare===null?UNAVAILABLE:`${pct(r.heldToSettlementShare)} · ${r.heldToSettlementN}/${r.settlementStatusN}`}</td>
   </tr>)}</tbody>
  </table>
  <small className="dd-note" title="Execution-independent structural metric">T_survival = min(post-entry first resolution, expiry) − structure entry. Execution-independent; this is not an operational holding period and makes no exit-policy or capital-use claim.</small>
