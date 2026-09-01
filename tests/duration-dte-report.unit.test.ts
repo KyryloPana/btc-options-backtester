@@ -502,6 +502,14 @@ test("ENTRY DELAY: a +12h experiment cannot backfill +4h or +8h",()=>{
  assert.deepEqual(ed.rows.map(r=>r.structuresWithRawEvidence.taker),[0,0,0,1]);
 });
 
+test("ENTRY DELAY: credit deltas preserve native BTC and optional delayed-index USD",()=>{
+ const entry_delay_sensitivity=[{candidate_id:"c1a",requested_delay_hours:4,execution_scenario:"taker",status:"available",actual_delay_hours:4.5,credit_change_vs_reference_native:.0003,credit_change_vs_reference_usd:21}];
+ const summary=buildEntryDelayReport({...dataset,tables:{...dataset.tables,entry_delay_sensitivity}} as unknown as AnalysisDataset).rows.find(r=>r.delayHours===4)!.summaries.taker;
+ assert.equal(summary.medianCreditChangeVsReferenceNative,.0003);assert.equal(summary.medianCreditChangeVsReferenceUsd,21);
+ const noIndex=buildEntryDelayReport({...dataset,tables:{...dataset.tables,entry_delay_sensitivity:[{...entry_delay_sensitivity[0],credit_change_vs_reference_usd:null}]}} as unknown as AnalysisDataset).rows.find(r=>r.delayHours===4)!.summaries.taker;
+ assert.equal(noIndex.medianCreditChangeVsReferenceNative,.0003);assert.equal(noIndex.medianCreditChangeVsReferenceUsd,null);
+});
+
 test("CANONICAL ENTRY: observed scenario fills are never structural fallbacks",()=>{
  const stripped=candidates.filter(c=>c.candidate_id==="c2a").map((c,i)=>({...c,reference_structure_entry_timestamp_utc:null,structure_entry_timestamp_utc:i?D(1,2):D(1,1)}));
  const r=normalizeDteCandidates({...dataset,tables:{...dataset.tables,candidates:stripped,structure_economics:[]}} as unknown as AnalysisDataset);

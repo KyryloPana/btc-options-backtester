@@ -109,6 +109,13 @@ test("LEGACY: schema 3.8 volatility rows import with new market collections expl
  if(result.status==="invalid")assert.fail(result.errors.join("\n"));assert.equal(result.status,"degraded");assert.equal(result.dataset.migratedFrom,"3.8.0");assert.deepEqual(result.dataset.tables.structure_volatility_state[0]!.post_entry_market_iv,[]);
 });
 
+test("LEGACY: schema 3.9 adds only unavailable fixed-offset delay and preserves outcomes",()=>{
+ const bundle=withVolatility(),run=JSON.parse(bundle.files["run.json"]);run.schema_version="3.9.0";delete run.table_availability.entry_delay_sensitivity;
+ const {"entry_delay_sensitivity.jsonl":_omitted,...legacyFiles}=bundle.files;
+ const files={...legacyFiles,"run.json":JSON.stringify(run)+"\n"},beforeOutcomes=bundle.files["outcomes.jsonl"],beforeValuations=bundle.files["valuations.jsonl"],result=importResearchBundle(new Uint8Array(createResearchBundleZip(files as typeof bundle.files)),"legacy-3.9.zip");
+ void _omitted;if(result.status==="invalid")assert.fail(result.errors.join("\n"));assert.equal(result.status,"degraded");assert.equal(result.dataset.migratedFrom,"3.9.0");assert.deepEqual(result.dataset.tables.entry_delay_sensitivity,[]);assert.equal(result.dataset.tables.outcomes.length,beforeOutcomes.trim().split("\n").filter(Boolean).length);assert.deepEqual(result.dataset.tables.outcomes,beforeOutcomes.trim().split("\n").filter(Boolean).map(JSON.parse));assert.deepEqual(result.dataset.tables.valuations,beforeValuations.trim().split("\n").filter(Boolean).map(JSON.parse));assert.ok(result.warnings.some(w=>/fixed-offset entry-delay/i.test(w)));assert.equal(result.dataset.capabilities.find(c=>c.id==="delayed-entry")?.status,"unavailable");
+});
+
 test("SCHEMA: a bundle built without the volatility pipeline exports empty tables, not zeroes", () => {
   const bundle = buildResearchBundle(store, now);
   assert.equal(bundle.files["event_volatility_state.jsonl"], "");

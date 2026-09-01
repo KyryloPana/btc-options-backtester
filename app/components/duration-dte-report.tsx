@@ -31,6 +31,7 @@ const days=(x:number|null)=>x===null?NOT_ESTIMABLE:`${d1(x)}d`;
 export const usd=(x:number|null)=>formatUsdValue(x);
 const pct=(x:number|null)=>x===null?NOT_ESTIMABLE:`${(x*100).toFixed(1)}%`;
 export const signedUsd=(x:number|null)=>formatUsdValue(x,true);
+const signedBtc=(x:number|null)=>x===null?UNAVAILABLE:Math.abs(x)<5e-9?"0.00000000 BTC":`${x<0?"−":"+"}${Math.abs(x).toFixed(8)} BTC`;
 const signedDays=(x:number|null)=>x===null?NOT_ESTIMABLE:`${x<0?"−":"+"}${Math.abs(x).toFixed(1)}d`;
 
 const OUTCOME_LABEL:Record<OutcomeBeforeExpiry,string>={
@@ -365,8 +366,8 @@ function EntryDelaySection({report}:{report:DurationDteReport}){
   <ul className="fine-print">{ed.requiredCanonicalInputs.map((x,i)=><li key={i}>{x}</li>)}</ul>
  </div>;
  return <div className="table-scroll"><table className="dd-table dd-compact">
-  <thead><tr><th>Delay</th><th>Scenario</th><th>Support N / denominator</th><th>Pre-entry resolution</th><th>Median actual delay</th><th>Median remaining DTE</th><th>Median Δ credit</th><th>Median outcome PnL</th><th>Economic N</th></tr></thead>
-  <tbody>{ed.rows.flatMap(r=>(["maker","taker"] as const).map(scenario=>{const s=r.summaries[scenario];return <tr key={`${r.delayHours}-${scenario}`}><td>+{r.delayHours}h</td><td>{scenario}</td><td>{s.supportN} / {s.denominatorN}</td><td>{s.preEntryResolutionCount} / {s.denominatorN}</td><td>{s.medianActualDelayHours===null?UNAVAILABLE:`${s.medianActualDelayHours.toFixed(2)}h`}</td><td>{days(s.medianRemainingDte)}</td><td>{signedUsd(s.medianCreditChangeVsReference)}</td><td>{usd(s.medianOutcomePnl)}</td><td>{s.economicN}</td></tr>}))}</tbody>
+  <thead><tr><th>Delay</th><th>Scenario</th><th>Support N / denominator</th><th>Pre-entry resolution</th><th>Median actual delay</th><th>Median remaining DTE</th><th>Median Δ credit · BTC / USD at delayed entry index</th><th>Median outcome PnL</th><th>Economic N</th></tr></thead>
+  <tbody>{ed.rows.flatMap(r=>(["maker","taker"] as const).map(scenario=>{const s=r.summaries[scenario];return <tr key={`${r.delayHours}-${scenario}`}><td>+{r.delayHours}h</td><td>{scenario}</td><td>{s.supportN} / {s.denominatorN}</td><td>{s.preEntryResolutionCount} / {s.denominatorN}</td><td>{s.medianActualDelayHours===null?UNAVAILABLE:`${s.medianActualDelayHours.toFixed(2)}h`}</td><td>{days(s.medianRemainingDte)}</td><td>{signedBtc(s.medianCreditChangeVsReferenceNative)} / {signedUsd(s.medianCreditChangeVsReferenceUsd)}</td><td>{usd(s.medianOutcomePnl)}</td><td>{s.economicN}</td></tr>}))}</tbody>
  </table>
  <small className="dd-note">Delayed maker and taker scenarios each use only evidence available after the delayed order time; the original fill is never reused and a model mark is never treated as a historical fill.</small>
  </div>;
