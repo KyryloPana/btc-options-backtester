@@ -1,4 +1,4 @@
-import { delayedEconomicPathAvailable } from "./research-tracks.ts";
+import { delayedEconomicPathAvailable, type CanonicalTrack } from "./research-tracks.ts";
 import { canonicalOutcomeId, outcomeHoldingHours, outcomeSourceStatus, outcomeTriggerStatus } from "./research-outcomes.ts";
 import { indexByCandidate, readCanonicalStructuralLoss, type StructuralLossReading } from "./canonical-structural-loss.ts";
 import type { AnalysisDataset } from "./research-analysis";
@@ -17,6 +17,11 @@ export const ANALYTICS_TRACKS = [
   "penalty_sensitivity",
 ] as const;
 export type AnalyticsTrack = (typeof ANALYTICS_TRACKS)[number];
+const CANONICAL_TRACK_FOR_ANALYTICS:Readonly<Partial<Record<AnalyticsTrack,CanonicalTrack>>>={
+ reference:"reference_fair_value",immediate_maker:"strict_maker",immediate_taker:"strict_taker",
+ delayed_maker:"delayed_maker",delayed_taker:"delayed_taker",
+ modeled_expected:"modeled_expected",modeled_conservative:"modeled_conservative",
+};
 export const ANALYTICS_TRACK_METADATA: Readonly<Record<AnalyticsTrack, {
   label:string; observed:boolean; modeled:boolean; executionScenario:"maker"|"taker"|null;
   role:"central"|"counterfactual"|"conservative"|"sensitivity"; description:string;
@@ -623,6 +628,22 @@ function buildResearchAnalyticsModelUncached(
             economics: structureEconomicsById.get(candidateId),
             margin: marginById.get(candidateId),
           }),
+    canonicalDescriptorFor = (candidateId:string|null,track:AnalyticsTrack):Row|undefined => {
+      const canonical=CANONICAL_TRACK_FOR_ANALYTICS[track],economics=candidateId===null?undefined:structureEconomicsById.get(candidateId);
+      return canonical&&economics&&Array.isArray(economics.tracks)
+        ? economics.tracks.find(raw=>s(rec(raw).track)===canonical) as Row|undefined
+        : undefined;
+    },
+    gateCanonicalTrack = (candidateId:string|null,track:AnalyticsTrack,value:ScenarioTrack):ScenarioTrack => {
+      const descriptor=canonicalDescriptorFor(candidateId,track),status=s(descriptor?.status);
+      if(!descriptor||status==="available"||status==="evaluated"||status==="valued")return value;
+      return {...value,status:"unavailable",entryTime:null,actualDteDays:null,entryEvidence:null,openingLedger:null,
+        valuationPath:[],outcomes:{},economics:{grossCredit:null,netCredit:null,entryFees:null,closingFees:null,concession:null,
+          maximumEconomicLoss:null,openingIm:null,openingMm:null,peakIm:null,peakMm:null,pnlNative:null,pnlUsd:null,
+          returnOnMaxLoss:null,returnOnOpeningMargin:null,returnOnPeakCapital:null,capitalDays:null,
+          denominatorReasons:[s(descriptor.reason)??`${track} explicitly unavailable in canonical structure economics`]},
+        reason:s(descriptor.reason)??`${track} explicitly unavailable in canonical structure economics`};
+    },
     outcomes = t.outcomes ?? [],
     vals = t.valuations ?? [],
     groups = new Map<
@@ -695,7 +716,7 @@ function buildResearchAnalyticsModelUncached(
             s(r.valuation_source) ??
             s(rv.source) ??
             (tr.startsWith("modeled") ? "model" : "observed");
-        tracks[tr] = {
+        tracks[tr] = gateCanonicalTrack(s(r.candidate_id),tr,{
           id: `${id}~${tr}`,
           track: tr,
           status,
@@ -741,26 +762,20 @@ function buildResearchAnalyticsModelUncached(
           exitPolicy: s(r.exit_policy) ?? "settlement",
           economics: economics(r, margin, outcome, entry, structuralLossFor(s(r.candidate_id))),
           reason: s(r.execution_scenario_reason),
-        };
+        });
       }
       const baseLoss = structuralLossFor(s(base.candidate_id));
-      const ref = rec(base.reference_valuation);
-      if (Object.keys(ref).length)
-        tracks.reference = canonicalSnapshotTrack(
-          id,
-          "reference",
-          base,
-          ref,
-          expiry,
-          signal,
-          baseLoss,
-        );
+      const ref = rec(base.reference_valuation),candidateId=s(base.candidate_id),referenceDescriptor=canonicalDescriptorFor(candidateId,"reference");
+      if (Object.keys(ref).length||referenceDescriptor)
+        tracks.reference = gateCanonicalTrack(candidateId,"reference",canonicalSnapshotTrack(
+          id,"reference",base,ref,expiry,signal,baseLoss,
+        ));
       const delayed = rec(base.delayed_execution);
-      if (Object.keys(delayed).length) {
-        const maker = rec(delayed.maker),
-          taker = rec(delayed.taker);
-        if (Object.keys(maker).length)
-          tracks.delayed_maker = canonicalSnapshotTrack(
+      const delayedMakerDescriptor=canonicalDescriptorFor(candidateId,"delayed_maker"),delayedTakerDescriptor=canonicalDescriptorFor(candidateId,"delayed_taker");
+      if (Object.keys(delayed).length||delayedMakerDescriptor||delayedTakerDescriptor) {
+        const maker = rec(delayed.maker), taker = rec(delayed.taker);
+        if (Object.keys(maker).length||delayedMakerDescriptor)
+          tracks.delayed_maker = gateCanonicalTrack(candidateId,"delayed_maker",canonicalSnapshotTrack(
             id,
             "delayed_maker",
             base,
@@ -768,9 +783,9 @@ function buildResearchAnalyticsModelUncached(
             expiry,
             signal,
             baseLoss,
-          );
-        if (Object.keys(taker).length)
-          tracks.delayed_taker = canonicalSnapshotTrack(
+          ));
+        if (Object.keys(taker).length||delayedTakerDescriptor)
+          tracks.delayed_taker = gateCanonicalTrack(candidateId,"delayed_taker",canonicalSnapshotTrack(
             id,
             "delayed_taker",
             base,
@@ -778,8 +793,8 @@ function buildResearchAnalyticsModelUncached(
             expiry,
             signal,
             baseLoss,
-          );
-        if (!Object.keys(maker).length && !Object.keys(taker).length) {
+          ));
+        if (!Object.keys(maker).length && !Object.keys(taker).length && !delayedMakerDescriptor && !delayedTakerDescriptor) {
           tracks.delayed_maker = canonicalSnapshotTrack(
             id,
             "delayed_maker",
@@ -806,17 +821,11 @@ function buildResearchAnalyticsModelUncached(
         ["conservative", "modeled_conservative"],
         ["penaltySensitivity", "penalty_sensitivity"],
       ] as const) {
-        const snapshot = rec(modeled[name]);
-        if (Object.keys(snapshot).length)
-          tracks[track] = canonicalSnapshotTrack(
-            id,
-            track,
-            base,
-            snapshot,
-            expiry,
-            signal,
-            baseLoss,
-          );
+        const snapshot = rec(modeled[name]),descriptor=canonicalDescriptorFor(candidateId,track);
+        if (Object.keys(snapshot).length||descriptor)
+          tracks[track] = gateCanonicalTrack(candidateId,track,canonicalSnapshotTrack(
+            id,track,base,snapshot,expiry,signal,baseLoss,
+          ));
       }
       return {
         id,
