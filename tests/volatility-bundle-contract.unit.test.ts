@@ -269,8 +269,12 @@ test("LEGACY CONTRACT: every advertised 3.2-3.9 schema has an explicit truthful 
  const historical=(version:string)=>{
   const files={...source.files} as Record<string,string>,run=JSON.parse(files["run.json"]);run.schema_version=version;
   delete files["entry_delay_sensitivity.jsonl"];
+  const preEconomic=["1.0.0","2.0.0","2.1.0","2.2.0","2.3.0","3.0.0","3.1.0"];
+  if(preEconomic.includes(version)){delete files["structure_economics.jsonl"];delete files["event_volatility_state.jsonl"];delete files["structure_volatility_state.jsonl"];delete run.reference_valuation_methodology_version;delete run.modeled_execution_methodology_version;delete run.execution_estimator_version;delete run.execution_calibration_method_version;delete run.forward_method_versions}
   if(["3.2.0","3.3.0","3.4.0","3.5.0","3.6.0"].includes(version)){delete files["event_volatility_state.jsonl"];delete files["structure_volatility_state.jsonl"];delete run.volatility_method_versions}
-  if(version==="3.2.0"){
+  if(["3.2.0","3.3.0","3.4.0","3.5.0","3.6.0","3.7.0"].includes(version)){run.reference_valuation_methodology_version="causal-reference-v1";run.modeled_execution_methodology_version="modeled-execution-v2";files["structure_economics.jsonl"]&&=writeLegacy(parse(files["structure_economics.jsonl"]).map(row=>({...row,tracks:(row.tracks as Record<string,unknown>[]).map(track=>({...track,...(["reference_fair_value"].includes(String(track.track))?{engine_version:"causal-reference-v1"}:String(track.track).startsWith("modeled_")?{engine_version:"modeled-execution-v2"}:{} )}))})))}
+  if(["3.3.0","3.4.0","3.5.0","3.6.0","3.7.0"].includes(version)){const valuations=parse(files["valuations.jsonl"]),outcomes=parse(files["outcomes.jsonl"]),valuation=valuations[0],outcome=outcomes[0];if(valuation)valuations.push({...valuation,valuation_id:`${valuation.valuation_id}~legacy-reference`,analytics_track:"reference_fair_value",net_pnl_native:0.123,net_pnl_usd:12.3},{...valuation,valuation_id:`${valuation.valuation_id}~legacy-modeled`,analytics_track:"modeled_expected",net_pnl_native:0.234,net_pnl_usd:23.4});if(outcome)outcomes.push({...outcome,outcome_id:`${outcome.outcome_id}~legacy-reference`,analytics_track:"reference_fair_value",net_pnl_native:0.345,net_pnl_usd:34.5},{...outcome,outcome_id:`${outcome.outcome_id}~legacy-modeled`,analytics_track:"modeled_expected",net_pnl_native:0.456,net_pnl_usd:45.6});files["valuations.jsonl"]=writeLegacy(valuations);files["outcomes.jsonl"]=writeLegacy(outcomes)}
+  if(version==="3.2.0"||preEconomic.includes(version)){
    delete files["structure_economics.jsonl"];
    files["valuations.jsonl"]=writeLegacy(parse(files["valuations.jsonl"]).filter(row=>row.analytics_track==="strict_maker"||row.analytics_track==="strict_taker").map(row=>{const legacy={...row};delete legacy.analytics_track;return legacy}));
    files["outcomes.jsonl"]=writeLegacy(parse(files["outcomes.jsonl"]).filter(row=>row.analytics_track==="strict_maker"||row.analytics_track==="strict_taker").map(row=>{const legacy={...row};delete legacy.analytics_track;return legacy}));
@@ -287,16 +291,25 @@ test("LEGACY CONTRACT: every advertised 3.2-3.9 schema has an explicit truthful 
   files["run.json"]=JSON.stringify(run)+"\n";return files;
  };
  const writeLegacy=(rows:Record<string,unknown>[])=>rows.map(JSON.stringify).join("\n")+(rows.length?"\n":"");
- for(const version of ["3.2.0","3.3.0","3.4.0","3.5.0","3.6.0","3.7.0","3.8.0","3.9.0"]){
+ for(const version of LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS){
   assert.ok((LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS as readonly string[]).includes(version));
   const result=importResearchBundle(new Uint8Array(createResearchBundleZip(historical(version) as typeof source.files)),`legacy-${version}.zip`);
   if(result.status==="invalid")assert.fail(`${version}: ${result.errors.join("\n")}`);
   assert.equal(result.status,"degraded",version);assert.equal(result.dataset.migratedFrom,version);assert.equal(result.dataset.schemaVersion,RESEARCH_BUNDLE_SCHEMA_VERSION);
   assert.deepEqual(result.dataset.tables.entry_delay_sensitivity,[]);assert.equal((result.dataset.run.table_availability as Record<string,string>).entry_delay_sensitivity,"unavailable");
+  if(["3.2.0","3.3.0","3.4.0","3.5.0","3.6.0","3.7.0"].includes(version)){assert.equal(result.dataset.run.reference_valuation_methodology_version,"causal-reference-v1");assert.equal(result.dataset.run.modeled_execution_methodology_version,"modeled-execution-v2");assert.notEqual(result.dataset.run.reference_valuation_methodology_version,source.run.reference_valuation_methodology_version);if(version!=="3.2.0")assert.ok(result.dataset.tables.structure_economics.every(row=>(row.tracks as Record<string,unknown>[]).filter(track=>["reference_fair_value","modeled_expected","modeled_conservative"].includes(String(track.track))).every(track=>track.status==="unavailable"&&String((track.legacy_source_track as Record<string,unknown>)?.engine_version??track.engine_version).match(/causal-reference-v1|modeled-execution-v2/))),version)}
+  if(["1.0.0","2.0.0","2.1.0","2.2.0","2.3.0","3.0.0","3.1.0"].includes(version)){assert.equal((result.dataset.run.legacy_source_methodology as Record<string,unknown>).reference_valuation_methodology_version,null);assert.deepEqual(result.dataset.tables.valuations,[]);assert.ok(result.dataset.tables.structure_economics.every(row=>(row.tracks as Record<string,unknown>[]).every(track=>track.status==="unavailable")))}
   if(version==="3.2.0"){assert.deepEqual(result.dataset.tables.valuations,[]);assert.deepEqual(result.dataset.tables.outcomes,[]);assert.ok(result.dataset.tables.structure_economics.every(row=>(row.tracks as Record<string,unknown>[]).every(track=>track.status==="unavailable")))}
+  if(["3.3.0","3.4.0","3.5.0","3.6.0","3.7.0"].includes(version)){assert.ok(result.dataset.tables.valuations.every(row=>!["reference_fair_value","modeled_expected","modeled_conservative"].includes(String(row.analytics_track))),version);assert.ok(result.dataset.tables.outcomes.every(row=>!["reference_fair_value","modeled_expected","modeled_conservative"].includes(String(row.analytics_track))),version);assert.ok(result.dataset.tables.structure_economics.some(row=>(row.legacy_source_valuations as unknown[]).length>=2&&(row.legacy_source_outcomes as unknown[]).length>=2),version)}
   if(version==="3.3.0"||version==="3.4.0"){assert.ok(result.dataset.tables.structure_economics.every(row=>row.maximum_structural_loss_status==="unavailable"&&row.maximum_structural_loss_native===null&&row.maximum_structural_loss_usd===null))}
   if(version==="3.5.0"){assert.ok(result.dataset.tables.outcomes.every(row=>row.status==="unavailable"&&row.holding_hours===null&&row.outcome_identity_version===null));assert.ok(result.dataset.tables.valuations.length>0)}
   if(version==="3.6.0"){assert.deepEqual(result.dataset.tables.outcomes,parse(source.files["outcomes.jsonl"]));assert.deepEqual(result.dataset.tables.event_volatility_state,[]);assert.deepEqual(result.dataset.tables.structure_volatility_state,[])}
   if(version==="3.7.0"){assert.ok(result.dataset.tables.structure_volatility_state.length>0);assert.ok(result.dataset.tables.structure_volatility_state.every(row=>Array.isArray(row.post_entry_market_iv)&&row.post_entry_market_iv.length===0&&Array.isArray(row.market_iv_path)&&row.market_iv_path.length===0))}
  }
+});
+
+
+test("LEGACY PROVENANCE: historical engines are quarantined and native 4.0 cannot claim them",()=>{
+ const bundle=withVolatility(),run=JSON.parse(bundle.files["run.json"]);
+ for(const [field,value] of [["reference_valuation_methodology_version","causal-reference-v1"],["modeled_execution_methodology_version","modeled-execution-v2"]] as const){const native={...bundle.files,"run.json":JSON.stringify({...run,[field]:value})+"\n"};assert.equal(validateResearchBundle(native).ok,false);const forged={...native,"run.json":JSON.stringify({...run,[field]:value,legacy_source_methodology:{}})+"\n"};assert.equal(validateResearchBundle(forged).ok,false,"a legacy-like object without a migration marker cannot bypass native validation")}
 });
