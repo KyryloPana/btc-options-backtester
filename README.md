@@ -24,6 +24,39 @@ DERIBIT_HISTORY_API_URL="https://history.deribit.com/api/v2/public"
 
 No API key is required. The browser calls project-local `/__deribit/history/*` routes; only the server contacts Deribit. The server combines active and expired BTC option manifests, caches only lightweight instrument metadata in `.local-cache/`, resolves eligible expiries and strikes, and downloads exact selected-leg trade ranges on demand. Raw historical responses are not written to disk.
 
+## Local volatility research data
+
+Volatility materialization can use an indexed, external Deribit option tape instead of
+downloading historical option trades. Set `BTC_OPTIONS_LOCAL_DATA_ROOT` to a directory
+with this layout:
+
+```text
+<DATA_ROOT>/
+  options-tape/
+    archive-manifest.json
+    YYYY-MM-DD.jsonl
+  aux/
+    deribit-option-instruments.json
+    btc-perpetual-hourly.json
+    dvol-hourly.json
+    source-manifest.json
+```
+
+After producing `options-tape` with `scripts/index-local-contract-archive.ts`, prepare
+only the missing auxiliary coverage explicitly:
+
+```bash
+BTC_OPTIONS_LOCAL_DATA_ROOT=/path/to/data npm run volatility:prepare-local-data -- \
+  --start 2021-03-24T00:00:00Z --end 2026-08-31T23:00:00Z
+```
+
+Alternatively pass `--data-root /path/to/data`. This command verifies the archive,
+updates genuine Deribit option listing metadata, BTC-PERPETUAL hourly bars, and DVOL
+hourly history, then records their identities and coverage in `source-manifest.json`.
+It never downloads option trades. `LocalVolatilityRetrieval` itself is network-free
+and fails with preparation guidance when a required local auxiliary file or requested
+coverage is absent.
+
 ## Workflow
 
 1. Select a bundled MR event or add one manually.
