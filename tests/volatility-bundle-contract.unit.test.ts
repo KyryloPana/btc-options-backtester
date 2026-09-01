@@ -13,7 +13,7 @@ import type {RealizedVolatilityResult} from "../app/lib/volatility/realized-vola
 import {HOUR_MS} from "../app/lib/volatility/realized-volatility.ts";
 import {now, store, ts} from "./fixtures/research-selection-store.ts";
 import {createResearchBundleZip} from "../scripts/research-bundle-service.ts";
-import {importResearchBundle} from "../app/lib/research-analysis.ts";
+import {LEGACY_SCHEMA_MIGRATION_SPEC, importResearchBundle} from "../app/lib/research-analysis.ts";
 
 /**
  * Schema 3.7.0: the two volatility tables as part of the serialized contract.
@@ -260,4 +260,43 @@ test("VALIDATOR: a non-canonical annualization factor is rejected", () => {
 
 test("VALIDATOR: post-entry outcome targets must match canonical Reference outcomes",()=>{
  const bundle=withVolatility(),rows=bundle.files["structure_volatility_state.jsonl"].trim().split("\n").map(line=>JSON.parse(line)),candidate=rows[0]!,outcomes=bundle.files["outcomes.jsonl"].trim().split("\n").map(line=>JSON.parse(line)),vpoc=outcomes.find(x=>x.candidate_id===candidate.candidate_id&&x.outcome_type==="vpoc");assert.ok(vpoc);vpoc.analytics_track="reference_fair_value";const unavailable={status:"unavailable",instrument:null,iv_decimal:null,observation_timestamp_utc:null,age_minutes:null,max_age_minutes:60,source:null,unavailable_reason:"fixture"};candidate.post_entry_market_iv.push({endpoint_id:"vpoc",target_timestamp_utc:new Date(Date.parse(vpoc.valuation_timestamp_utc)+60_000).toISOString(),short:unavailable,long:unavailable});const files={...bundle.files,"outcomes.jsonl":outcomes.map(JSON.stringify).join("\n")+"\n","structure_volatility_state.jsonl":rows.map(JSON.stringify).join("\n")+"\n"},result=validateResearchBundle(files);assert.equal(result.ok,false);assert.match(result.errors.join("\n"),/disagrees with canonical Reference outcome/);
+});
+
+test("LEGACY CONTRACT: every advertised 3.2-3.9 schema has an explicit truthful migration",()=>{
+ assert.deepEqual(Object.keys(LEGACY_SCHEMA_MIGRATION_SPEC),[...LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS]);
+ const source=withVolatility();
+ const parse=(text:string)=>text.trim().split("\n").filter(Boolean).map(JSON.parse);
+ const historical=(version:string)=>{
+  const files={...source.files} as Record<string,string>,run=JSON.parse(files["run.json"]);run.schema_version=version;
+  delete files["entry_delay_sensitivity.jsonl"];
+  if(["3.2.0","3.3.0","3.4.0","3.5.0","3.6.0"].includes(version)){delete files["event_volatility_state.jsonl"];delete files["structure_volatility_state.jsonl"];delete run.volatility_method_versions}
+  if(version==="3.2.0"){
+   delete files["structure_economics.jsonl"];
+   files["valuations.jsonl"]=writeLegacy(parse(files["valuations.jsonl"]).filter(row=>row.analytics_track==="strict_maker"||row.analytics_track==="strict_taker").map(row=>{const legacy={...row};delete legacy.analytics_track;return legacy}));
+   files["outcomes.jsonl"]=writeLegacy(parse(files["outcomes.jsonl"]).filter(row=>row.analytics_track==="strict_maker"||row.analytics_track==="strict_taker").map(row=>{const legacy={...row};delete legacy.analytics_track;return legacy}));
+  }
+  if(version==="3.3.0"||version==="3.4.0"){
+   files["structure_economics.jsonl"]=writeLegacy(parse(files["structure_economics.jsonl"]).map(row=>{row.maximum_economic_loss_native=row.maximum_structural_loss_native;row.maximum_economic_loss_usd=version==="3.4.0"?2.7e12:row.maximum_structural_loss_usd;for(const key of Object.keys(row))if(key.startsWith("maximum_structural_loss")||key==="credit_per_maximum_structural_loss")delete row[key];return row}));
+   files["margin_scenarios.jsonl"]=writeLegacy(parse(files["margin_scenarios.jsonl"]).map(row=>{row.maximum_loss_native=row.maximum_structural_loss_native;row.maximum_loss_usd=row.maximum_structural_loss_usd;for(const key of Object.keys(row))if(key.startsWith("maximum_structural_loss"))delete row[key];return row}));
+  }
+  if(version==="3.5.0")files["outcomes.jsonl"]=writeLegacy(parse(files["outcomes.jsonl"]).map(row=>({...row,outcome_identity_version:"legacy-fixed-label-v0",holding_hours:999})));
+  if(version==="3.7.0"){
+   run.volatility_method_versions.structure_volatility_state="structure-volatility-state-v1";
+   files["structure_volatility_state.jsonl"]=writeLegacy(parse(files["structure_volatility_state.jsonl"]).map(row=>{row.method_version="structure-volatility-state-v1";delete row.post_entry_market_iv;delete row.market_iv_path;return row}));
+  }
+  files["run.json"]=JSON.stringify(run)+"\n";return files;
+ };
+ const writeLegacy=(rows:Record<string,unknown>[])=>rows.map(JSON.stringify).join("\n")+(rows.length?"\n":"");
+ for(const version of ["3.2.0","3.3.0","3.4.0","3.5.0","3.6.0","3.7.0","3.8.0","3.9.0"]){
+  assert.ok((LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS as readonly string[]).includes(version));
+  const result=importResearchBundle(new Uint8Array(createResearchBundleZip(historical(version) as typeof source.files)),`legacy-${version}.zip`);
+  if(result.status==="invalid")assert.fail(`${version}: ${result.errors.join("\n")}`);
+  assert.equal(result.status,"degraded",version);assert.equal(result.dataset.migratedFrom,version);assert.equal(result.dataset.schemaVersion,RESEARCH_BUNDLE_SCHEMA_VERSION);
+  assert.deepEqual(result.dataset.tables.entry_delay_sensitivity,[]);assert.equal((result.dataset.run.table_availability as Record<string,string>).entry_delay_sensitivity,"unavailable");
+  if(version==="3.2.0"){assert.deepEqual(result.dataset.tables.valuations,[]);assert.deepEqual(result.dataset.tables.outcomes,[]);assert.ok(result.dataset.tables.structure_economics.every(row=>(row.tracks as Record<string,unknown>[]).every(track=>track.status==="unavailable")))}
+  if(version==="3.3.0"||version==="3.4.0"){assert.ok(result.dataset.tables.structure_economics.every(row=>row.maximum_structural_loss_status==="unavailable"&&row.maximum_structural_loss_native===null&&row.maximum_structural_loss_usd===null))}
+  if(version==="3.5.0"){assert.ok(result.dataset.tables.outcomes.every(row=>row.status==="unavailable"&&row.holding_hours===null&&row.outcome_identity_version===null));assert.ok(result.dataset.tables.valuations.length>0)}
+  if(version==="3.6.0"){assert.deepEqual(result.dataset.tables.outcomes,parse(source.files["outcomes.jsonl"]));assert.deepEqual(result.dataset.tables.event_volatility_state,[]);assert.deepEqual(result.dataset.tables.structure_volatility_state,[])}
+  if(version==="3.7.0"){assert.ok(result.dataset.tables.structure_volatility_state.length>0);assert.ok(result.dataset.tables.structure_volatility_state.every(row=>Array.isArray(row.post_entry_market_iv)&&row.post_entry_market_iv.length===0&&Array.isArray(row.market_iv_path)&&row.market_iv_path.length===0))}
+ }
 });
