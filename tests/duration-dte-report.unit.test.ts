@@ -186,6 +186,8 @@ test("REFERENCE USD ECONOMICS: native BTC PnL never fills USD outcomes or advers
  assert.equal(nativeOnly.pnlAtVpocUsd,null);assert.equal(nativeOnly.worstAdverseUsd,null);assert.equal(nativeOnly.adversePath.maeBeforeProfitUsd,null);assert.equal(nativeOnly.adversePath.status,"usd_representation_unavailable");
  const mixed=normalizeDteCandidates({...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate([{timestamp:D(3),closingSpreadValueBtc:-.09,estimatedNetPnlBtc:-.01,estimatedNetPnlUsd:-10},{timestamp:D(4),closingSpreadValueBtc:-.05,estimatedNetPnlBtc:-.5}],[{label:"vpoc",valuationTimestamp:D(4),estimatedNetPnlBtc:.01,estimatedNetPnlUsd:12}])}} as unknown as AnalysisDataset).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!;
  assert.equal(mixed.pnlAtVpocUsd,12);assert.equal(mixed.worstAdverseUsd,-10);assert.match(mixed.adversePath.reason!,/native-only.*excluded/i);
+ const converted=normalizeDteCandidates({...referenceDataset(),tables:{...referenceDataset().tables,candidates:referenceCandidate([{timestamp:D(3),closingSpreadValueBtc:-.09,estimatedNetPnlBtc:-.01,targetIndex:42000}],[{label:"vpoc",valuationTimestamp:D(4),estimatedNetPnlBtc:.01,targetIndex:42000}])}} as unknown as AnalysisDataset).find(c=>c.candidateId==="c1a"&&c.executionScenario==="taker")!;
+ assert.equal(converted.pnlAtVpocUsd,420);assert.equal(converted.worstAdverseUsd,-420,"native PnL converts only with that point's contemporaneous index");
 });
 
 test("A: actual DTE is read per candidate; horizon grouping never overwrites it",()=>{

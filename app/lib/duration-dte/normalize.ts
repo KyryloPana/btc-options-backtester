@@ -316,16 +316,29 @@ function pnlAt(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:
  const canonical=row.raw_status!==undefined;
  if(canonical&&(row.trigger_status!=="reached"||row.raw_status!=="priced"))return null;
  if(!canonical&&row.status!=="priced")return null;
- return canonical?(num(row.raw_net_pnl_usd)??num(row.raw_net_pnl_native)):(num(row.net_pnl_usd)??num(row.net_pnl_native));
+ const usd=canonical?num(row.raw_net_pnl_usd):num(row.net_pnl_usd);
+ if(usd!==null)return usd;
+ const native=canonical?num(row.raw_net_pnl_native):num(row.net_pnl_native);
+ const index=num(row.conversion_index)??num(row.conversionIndex)??num(row.target_index)??num(row.targetIndex);
+ return native!==null&&index!==null&&index>0?native*index:null;
 }
 
 const trackTime=(r:Readonly<Record<string,unknown>>):number|null=>{
  const value=num(r.timestamp)??num(r.valuationTimestamp)??num(r.decisionTimestamp);
  if(value!==null)return value;
- return ms(r.timestamp_utc)??ms(r.valuation_timestamp_utc)??ms(r.decision_timestamp_utc);
+ return ms(r.timestamp)??ms(r.valuationTimestamp)??ms(r.decisionTimestamp)??ms(r.timestamp_utc)??ms(r.valuation_timestamp_utc)??ms(r.decision_timestamp_utc);
 };
-const trackPnlUsd=(r:Readonly<Record<string,unknown>>):number|null=>num(r.estimatedNetPnlUsd)??num(r.net_pnl_usd)??num(r.raw_net_pnl_usd);
 const trackPnlNative=(r:Readonly<Record<string,unknown>>):number|null=>num(r.estimatedNetPnlBtc)??num(r.net_pnl_native)??num(r.raw_net_pnl_native);
+const trackPnlUsd=(r:Readonly<Record<string,unknown>>):number|null=>{
+ const explicit=num(r.estimatedNetPnlUsd)??num(r.net_pnl_usd)??num(r.raw_net_pnl_usd);
+ if(explicit!==null)return explicit;
+ const native=trackPnlNative(r),index=num(r.targetIndex)??num(r.target_index)??num(r.conversionIndex)??num(r.conversion_index);
+ return native!==null&&index!==null&&index>0?native*index:null;
+};
+const trackPointEvaluable=(r:Readonly<Record<string,unknown>>):boolean=>{
+ const status=str(r.valuation_status)??str(r.status);
+ return status===null||status==="priced"||status==="evaluated";
+};
 function namedOutcome(track:ScenarioTrack|undefined,kind:"vpoc"|"invalidation"|"settlement"):Readonly<Record<string,unknown>>|undefined{
  if(!track)return undefined;
  return Object.entries(track.outcomes).find(([label])=>kind==="settlement"?/settlement|terminal|expiry/i.test(label):new RegExp(kind,"i").test(label))?.[1];
@@ -340,18 +353,18 @@ function referenceClosingDebit(trackRow:Readonly<Record<string,unknown>>):number
  const cashFlow=num(trackRow.closingSpreadValueBtc)??num(trackRow.closing_spread_value_btc)??num(trackRow.scaled_closing_cash_flow_native);
  return cashFlow!==null&&cashFlow<=0?-cashFlow:null;
 }
-function referenceCapture(track:ScenarioTrack|undefined,threshold:25|50|70,entry:number|null,vpocMs:number|null,invalidationMs:number|null):CaptureObservation|null{
+function referenceCapture(track:ScenarioTrack|undefined,threshold:25|50|70,entry:number|null,expiry:number|null,vpocMs:number|null,invalidationMs:number|null):CaptureObservation|null{
  if(!track||track.status!=="available")return null;
  const credit=track.economics.grossCredit;
  if(credit===null||credit<=0)return {thresholdPct:threshold,reached:false,timeToCaptureDays:null,beforeVpoc:null,beforeInvalidation:null,evaluable:false,unavailableReason:"Reference opening credit is missing or non-positive."};
- const marks=track.valuationPath.map(r=>({t:trackTime(r),debit:referenceClosingDebit(r)})).filter((x):x is {t:number;debit:number}=>x.t!==null&&x.debit!==null&&(entry===null||x.t>=entry)).sort((a,b)=>a.t-b.t);
+ const marks=track.valuationPath.filter(trackPointEvaluable).map(r=>({t:trackTime(r),debit:referenceClosingDebit(r)})).filter((x):x is {t:number;debit:number}=>x.t!==null&&x.debit!==null&&(entry===null||x.t>=entry)&&(expiry===null||x.t<=expiry)).sort((a,b)=>a.t-b.t);
  if(!marks.length)return {thresholdPct:threshold,reached:false,timeToCaptureDays:null,beforeVpoc:null,beforeInvalidation:null,evaluable:false,unavailableReason:"Reference valuation path has no gross closing-debit mark in the candidate window."};
  const hit=marks.find(x=>x.debit<=credit*(1-threshold/100)),days=hit&&entry!==null?(hit.t-entry)/DAY:null;
  return {thresholdPct:threshold,reached:!!hit,timeToCaptureDays:days,evaluable:true,unavailableReason:null,beforeVpoc:hit&&vpocMs!==null?hit.t<=vpocMs:null,beforeInvalidation:hit&&invalidationMs!==null?hit.t<=invalidationMs:null};
 }
 function referenceAdverse(track:ScenarioTrack|undefined,entry:number|null,boundary:number|null):AdversePathObservation{
  if(!track||track.status!=="available")return {worstAdverseUsd:null,maeBeforeProfitUsd:null,profitObserved:false,rawMarksInWindow:0,status:"no_raw_marks",reason:"Reference track unavailable."};
- const inWindow=track.valuationPath.map(r=>({t:trackTime(r),usd:trackPnlUsd(r),native:trackPnlNative(r)})).filter(x=>x.t!==null&&(entry===null||x.t>=entry)&&(boundary===null||x.t<=boundary));
+ const inWindow=track.valuationPath.filter(trackPointEvaluable).map(r=>({t:trackTime(r),usd:trackPnlUsd(r),native:trackPnlNative(r)})).filter(x=>x.t!==null&&(entry===null||x.t>=entry)&&(boundary===null||x.t<=boundary));
  const marks=inWindow.flatMap(x=>x.t!==null&&x.usd!==null?[{t:x.t,p:x.usd}]:[]).sort((a,b)=>a.t-b.t);
  if(!marks.length){const native=inWindow.some(x=>x.native!==null);return {worstAdverseUsd:null,maeBeforeProfitUsd:null,profitObserved:false,rawMarksInWindow:0,status:native?"usd_representation_unavailable":"no_raw_marks",reason:native?"Reference path has native PnL marks in the candidate observation window, but no USD-valued PnL evidence; BTC is not used as USD.":"Reference path has no USD-valued priced mark in the candidate observation window."};}
  const firstProfit=marks.findIndex(x=>x.p>0),before=firstProfit<0?[]:marks.slice(0,firstProfit+1);
@@ -489,9 +502,9 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
    pnlAtVpocUsd,pnlAtInvalidationUsd,pnlAtSettlementUsd,
    observedPnlAtVpocUsd,observedPnlAtInvalidationUsd,observedPnlAtSettlementUsd,
    adversePath:path,observedAdversePath:observedPath,worstAdverseUsd:path.worstAdverseUsd,
-   capture25:reference?referenceCapture(reference,25,entry,vpocMs,invalidationMs):captureObservation(outcomes,candidateId,scenario,25,entry,event.timeToVpocDays,event.timeToInvalidationDays),
-   capture50:reference?referenceCapture(reference,50,entry,vpocMs,invalidationMs):captureObservation(outcomes,candidateId,scenario,50,entry,event.timeToVpocDays,event.timeToInvalidationDays),
-   capture70:reference?referenceCapture(reference,70,entry,vpocMs,invalidationMs):captureObservation(outcomes,candidateId,scenario,70,entry,event.timeToVpocDays,event.timeToInvalidationDays),
+   capture25:reference?referenceCapture(reference,25,entry,expiry,vpocMs,invalidationMs):captureObservation(outcomes,candidateId,scenario,25,entry,event.timeToVpocDays,event.timeToInvalidationDays),
+   capture50:reference?referenceCapture(reference,50,entry,expiry,vpocMs,invalidationMs):captureObservation(outcomes,candidateId,scenario,50,entry,event.timeToVpocDays,event.timeToInvalidationDays),
+   capture70:reference?referenceCapture(reference,70,entry,expiry,vpocMs,invalidationMs):captureObservation(outcomes,candidateId,scenario,70,entry,event.timeToVpocDays,event.timeToInvalidationDays),
    observedCapture25:captureObservation(outcomes,candidateId,scenario,25,entry,event.timeToVpocDays,event.timeToInvalidationDays),
    observedCapture50:captureObservation(outcomes,candidateId,scenario,50,entry,event.timeToVpocDays,event.timeToInvalidationDays),
    observedCapture70:captureObservation(outcomes,candidateId,scenario,70,entry,event.timeToVpocDays,event.timeToInvalidationDays),
