@@ -13,14 +13,13 @@ import {normalizeShortStrikeStructures,type ExecutionScenario,type ShortStrikeSt
  * THE UNIT OF COMPARISON is a MATCHED PAIR. A technical and a buffered
  * structure are only ever compared when they share the same MR event, the same
  * actual expiry (hence the same actual DTE), the same width and protective-long
- * rule, the same structure/option type, the same execution scenario and the
- * same exit policy. Every reported difference is therefore a paired delta
+ * rule, the same structure/option type and the same exit policy. Every
+ * reported difference is therefore a paired delta
  * attributable to strike placement alone -- never a difference of aggregate
  * means over two differently-composed populations.
  *
- * Maker and taker are separate scenarios of one structure and are never mixed
- * inside a statistic: the scenario is part of the match key, so a maker
- * technical strike can only ever be paired against a maker buffered strike.
+ * Maker and taker are separate scenarios of one structure and are never mixed:
+ * the report is scoped to one analytical track before structural pairing.
  *
  * NOT A SELECTION. This report deliberately does not choose a strike rule. It
  * puts credit sacrificed beside the risk reduction that credit purchased and
@@ -91,12 +90,16 @@ export interface ChallengeRow {
  readonly breachShare:number|null;
 }
 
-export type ConditionalBucket="touched"|"breached"|"invalidated"|"settled_untouched";
+export type ConditionalBucket="breached"|"touched_not_breached"|"never_touched";
 
 export interface ConditionalPnlRow {
  readonly bucket:ConditionalBucket;
  readonly technicalN:number;
  readonly bufferedN:number;
+ readonly technicalPnlN:number;
+ readonly bufferedPnlN:number;
+ readonly technicalAdverseN:number;
+ readonly bufferedAdverseN:number;
  readonly technicalMedianPnlUsd:number|null;
  readonly bufferedMedianPnlUsd:number|null;
  readonly technicalMedianWorstAdverseUsd:number|null;
@@ -147,13 +150,12 @@ function bucketOf(s:ShortStrikeStructure):ConditionalBucket|null{
  const c=s.challenge;
  if(c.reason!==null)return null;
  if(c.breached===true)return "breached";
- if(c.invalidatedInWindow===true)return "invalidated";
- if(c.touched===true)return "touched";
- return "settled_untouched";
+ if(c.touched===true)return "touched_not_breached";
+ return "never_touched";
 }
 
-function geometryRow(method:StrikeMethod,structures:readonly ShortStrikeStructure[]):GeometryRow{
- const rows=structures.filter(s=>s.strikeMethod===method);
+function geometryRow(method:StrikeMethod,pairs:readonly MatchedPair[]):GeometryRow{
+ const rows=pairs.map(p=>method==="technical"?p.technical:p.buffered);
  return {
   method,n:rows.length,
   medianDistanceFromSpotUsd:median(defined(rows.map(s=>s.geometry.distanceFromEntrySpotUsd))),
@@ -166,8 +168,8 @@ function geometryRow(method:StrikeMethod,structures:readonly ShortStrikeStructur
  };
 }
 
-function challengeRow(method:StrikeMethod,structures:readonly ShortStrikeStructure[]):ChallengeRow{
- const rows=structures.filter(s=>s.strikeMethod===method);
+function challengeRow(method:StrikeMethod,pairs:readonly MatchedPair[]):ChallengeRow{
+ const rows=pairs.filter(p=>p.technical.challenge.reason===null&&p.buffered.challenge.reason===null).map(p=>method==="technical"?p.technical:p.buffered);
  // Only structures whose challenge is genuinely observable form the
  // denominator; an unobservable path is not a "no touch".
  const observable=rows.filter(s=>s.challenge.reason===null);
@@ -220,9 +222,11 @@ function conditionalRow(bucket:ConditionalBucket,pairs:readonly MatchedPair[],st
  const buffered=structures.filter(s=>s.strikeMethod==="buffered"&&inBucket(s));
  // The paired delta only uses pairs where BOTH sides landed in this bucket, so
  // it never compares a touched technical against an untouched buffered.
- const paired=pairs.filter(p=>inBucket(p.technical)&&inBucket(p.buffered)&&p.economicsComparable);
+ const paired=pairs.filter(p=>inBucket(p.technical)&&inBucket(p.buffered)&&p.technical.realizedPnlUsd!==null&&p.buffered.realizedPnlUsd!==null);
  return {
   bucket,technicalN:technical.length,bufferedN:buffered.length,
+  technicalPnlN:defined(technical.map(s=>s.realizedPnlUsd)).length,bufferedPnlN:defined(buffered.map(s=>s.realizedPnlUsd)).length,
+  technicalAdverseN:defined(technical.map(s=>s.worstAdverseUsd)).length,bufferedAdverseN:defined(buffered.map(s=>s.worstAdverseUsd)).length,
   technicalMedianPnlUsd:median(defined(technical.map(s=>s.realizedPnlUsd))),
   bufferedMedianPnlUsd:median(defined(buffered.map(s=>s.realizedPnlUsd))),
   technicalMedianWorstAdverseUsd:median(defined(technical.map(s=>s.worstAdverseUsd))),
@@ -232,12 +236,12 @@ function conditionalRow(bucket:ConditionalBucket,pairs:readonly MatchedPair[],st
  };
 }
 
-const BUCKETS:readonly ConditionalBucket[]=["touched","breached","invalidated","settled_untouched"];
+const BUCKETS:readonly ConditionalBucket[]=["breached","touched_not_breached","never_touched"];
 
 export function buildShortStrikeReport(dataset:AnalysisDataset,scenario?:ExecutionScenario):ShortStrikeReport{
  const primary=scenario===undefined, selectedScenario=scenario??"maker";
  const all=normalizeShortStrikeStructures(primary?datasetForAnalyticsTrack(dataset,"reference"):dataset);
- const structures=all.filter(s=>s.executionScenario===selectedScenario);
+ const structures=all.filter(s=>primary?s.analyticsTrack==="reference":s.executionScenario===selectedScenario);
 
  // Pair strictly within the structural match key: same event, expiry, DTE, width and structure. A key holding anything other than exactly one technical and one
  // buffered structure is reported as unpaired rather than force-matched.
@@ -255,10 +259,9 @@ export function buildShortStrikeReport(dataset:AnalysisDataset,scenario?:Executi
  pairs.sort((a,b)=>a.eventId.localeCompare(b.eventId)||(a.actualDteDays??0)-(b.actualDteDays??0)||(a.widthUsd??0)-(b.widthUsd??0));
 
  const comparable=pairs.filter(p=>p.economicsComparable);
- const technicalBreach=pairs.filter(p=>p.technical.challenge.reason===null),
-  bufferedBreach=pairs.filter(p=>p.buffered.challenge.reason===null);
- const technicalBreachShare=share(technicalBreach.filter(p=>p.technical.challenge.breached===true).length,technicalBreach.length),
-  bufferedBreachShare=share(bufferedBreach.filter(p=>p.buffered.challenge.breached===true).length,bufferedBreach.length);
+ const observablePairs=pairs.filter(p=>p.technical.challenge.reason===null&&p.buffered.challenge.reason===null);
+ const technicalBreachShare=share(observablePairs.filter(p=>p.technical.challenge.breached===true).length,observablePairs.length),
+  bufferedBreachShare=share(observablePairs.filter(p=>p.buffered.challenge.breached===true).length,observablePairs.length);
 
  const report:ShortStrikeReport={
   scenario:primary?"reference":selectedScenario,structures,pairs,
@@ -277,8 +280,8 @@ export function buildShortStrikeReport(dataset:AnalysisDataset,scenario?:Executi
    breachRateDifference:bufferedBreachShare!==null&&technicalBreachShare!==null?bufferedBreachShare-technicalBreachShare:null,
    medianExtraDistanceUsd:median(defined(pairs.map(p=>p.extraDistanceUsd))),
   },
-  geometry:(["technical","buffered"] as const).map(m=>geometryRow(m,structures)),
-  challenge:(["technical","buffered"] as const).map(m=>challengeRow(m,structures)),
+  geometry:(["technical","buffered"] as const).map(m=>geometryRow(m,pairs)),
+  challenge:(["technical","buffered"] as const).map(m=>challengeRow(m,pairs)),
   conditionalPnl:BUCKETS.map(b=>conditionalRow(b,pairs,structures)),
   unpaired,
   methodology:[
@@ -291,8 +294,8 @@ export function buildShortStrikeReport(dataset:AnalysisDataset,scenario?:Executi
    "Touch and breach come from the canonical hourly underlying path and nothing else. A TOUCH is a candle whose extreme reached the strike (low <= K for a short put, high >= K for a short call). A BREACH is a candle that CLOSED beyond it -- a completed hourly close is the finest settled evidence the path provides.",
    "Causality. Only candles that OPEN at or after structure entry and at or before expiry are counted: a candle straddling entry is partly pre-entry, and letting it challenge the strike would use price action from before the position existed. Post-expiry candles are excluded for the mirror-image reason.",
    "Ordering is asserted only at the precision the path has. The path is stamped at candle open, so a breach and an invalidation falling inside one hourly candle cannot be ordered; that case is reported as ambiguous and excluded from 'breach before invalidation' rather than resolved by assumption.",
-   "Candidate-relative outcomes. PnL at invalidation is used only when the invalidation genuinely occurred inside the structure's life; an invalidation before entry or after expiry is never priced as though the option were still alive. Realized PnL is the invalidation result when the structure was invalidated in-window, and the settlement result otherwise.",
-   "Worst adverse and MAE use the shared canonical adverse-path primitive: this scenario's raw-VWAP valuation track only, bounded to the structure's post-entry life. Modelled marks are never substituted, so an absent raw track leaves the figure Unavailable with a reason rather than a zero.",
+   "Candidate-relative outcomes. Realized PnL follows the first post-entry resolution before expiry: VPOC, invalidation, or settlement when neither resolved. Pre-entry and post-expiry endpoints are never used.",
+   primary?"Reference adverse metrics use the Reference fair-value valuation path, bounded to the post-entry life and resolution boundary. USD metrics use USD marks only; native BTC is never labelled USD.":"Observed adverse metrics use this scenario's raw-VWAP track only. Modelled or Reference marks are never substituted, so absent tape remains Unavailable.",
    "Credit sacrificed = technical entry credit - buffered entry credit, reported gross and net, in USD at each structure's own entry index. Risk reduction is reported as buffered minus technical on the adverse figures, so a positive number always means buffering reduced the loss.",
    "Not evaluated, Unavailable and a true zero stay distinct throughout. A pair is marked economics-comparable only when BOTH sides were genuinely evaluated for the scenario; otherwise its economic deltas are Unavailable rather than zero.",
    "No selection. This report does not choose a strike rule. Lower loss alone does not make buffering superior, and higher average PnL alone does not make the technical strike superior: the tradeoff is credit given up against the reduction in challenged-position and tail losses that credit purchased.",

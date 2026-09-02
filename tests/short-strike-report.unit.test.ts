@@ -346,18 +346,36 @@ test("ECONOMICS: modelled marks never fill an adverse figure",()=>{
 test("CONDITIONAL: PnL is grouped by what the structure actually lived through",()=>{
  const breached=report.conditionalPnl.find(r=>r.bucket==="breached")!;
  assert.ok(breached.technicalN>0,"e3 and e4 breached under the technical strike");
- const invalidated=report.conditionalPnl.find(r=>r.bucket==="invalidated")!;
- assert.ok(invalidated.technicalN>0,"e2 was invalidated without a breach");
- const touched=report.conditionalPnl.find(r=>r.bucket==="touched")!;
+ const neverTouched=report.conditionalPnl.find(r=>r.bucket==="never_touched")!;
+ assert.ok(neverTouched.technicalN>0,"e2 was never touched even though it invalidated");
+ const touched=report.conditionalPnl.find(r=>r.bucket==="touched_not_breached")!;
  assert.ok(touched.technicalN>0,"e1 was touched but not breached");
 });
 
 test("CONDITIONAL: the paired delta only uses pairs where BOTH sides fell in the bucket",()=>{
  // e1: technical touched, buffered untouched -> the pair is not a touched pair.
- const touched=report.conditionalPnl.find(r=>r.bucket==="touched")!;
+ const touched=report.conditionalPnl.find(r=>r.bucket==="touched_not_breached")!;
  assert.equal(touched.pairedN,0,"a touched technical is never paired against an untouched buffered");
  assert.equal(touched.medianPairedPnlDeltaUsd,null,"so no paired delta is fabricated");
  assert.ok(touched.technicalN>0&&touched.bufferedN===0,"the unpaired population is still reported separately");
+});
+
+test("REFERENCE: default routing retains null-scenario Reference structures and uses fair-value outcomes and path",()=>{
+ const referenceCandidate=(method:"anchor"|"buffered")=>({
+  ...candidate("e1",method,"maker"),candidate_id:`reference-${method}`,
+  reference_valuation:{status:"valued",entrySnapshot:{valuationTimestamp:D(1),targetIndex:42000,grossSpreadBtc:method==="anchor"?.01:.006,netOpeningCashFlowBtc:method==="anchor"?.009:.005},
+   valuationPathSnapshot:[{timestamp:D(2),estimatedNetPnlUsd:method==="anchor"?-300:-120},{timestamp:D(3),estimatedNetPnlUsd:80}],
+   outcomeSnapshots:[{label:"vpoc",status:"priced",trigger_status:"reached",trigger_timestamp_utc:D(3),estimatedNetPnlUsd:method==="anchor"?300:180},{label:"settlement",status:"priced",trigger_status:"reached",estimatedNetPnlUsd:method==="anchor"?20:10}]},
+ });
+ const referenceDataset={...dataset,tables:{...dataset.tables,candidates:[referenceCandidate("anchor"),referenceCandidate("buffered")],outcomes:[],valuations:[]}} as unknown as AnalysisDataset;
+ const r=buildShortStrikeReport(referenceDataset);
+ assert.equal(r.scenario,"reference");
+ assert.equal(r.structures.length,2);
+ assert.equal(r.pairs.length,1);
+ assert.equal(r.pairs[0]!.technical.executionScenario,null);
+ assert.equal(r.pairs[0]!.technical.realizedPnlUsd,300,"post-entry VPOC is the realized outcome, not settlement");
+ assert.equal(r.pairs[0]!.worstAdverseReductionUsd,180,"Reference path is sufficient without raw tape");
+ assert.equal(r.robustness!.maker.summary.medianWorstAdverseReductionUsd,null,"Reference marks do not backfill observed maker evidence");
 });
 
 /* ---------------- summary and missing data ---------------- */

@@ -1,6 +1,6 @@
 import type {AnalysisDataset} from "../research-analysis.ts";
 import {normalizeExecutionScenarioStatus,type ExecutionScenarioStatus} from "../execution-scenario.ts";
-import {adversePath,type AdversePathObservation} from "../adverse-path.ts";
+import {adversePath,referenceAdversePath,type AdversePathObservation} from "../adverse-path.ts";
 // Touch/breach is a shared canonical primitive: Spread-Width asks the same
 // question of the same short strike, so both import one implementation.
 import {challengeOf,type ChallengeObservation} from "../strike-challenge.ts";
@@ -69,6 +69,7 @@ export interface ShortStrikeStructure {
  readonly executionScenarioStatus:ExecutionScenarioStatus|null;
  readonly executionScenarioReason:string|null;
  readonly executionScenarioLegacyUndifferentiated:boolean;
+ readonly analyticsTrack:"reference"|ExecutionScenario|null;
  readonly strikeMethod:StrikeMethod|null;
  readonly rawStrikeMethod:string|null;
  readonly direction:"long"|"short"|null;
@@ -146,8 +147,7 @@ function geometryOf(row:Readonly<Record<string,unknown>>,event:Readonly<Record<s
 }
 
 
-function pnlAt(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:string,scenario:ExecutionScenario|null,kind:"invalidation"|"settlement"):number|null{
- if(scenario===null)return null;
+function pnlAt(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:string,scenario:ExecutionScenario|null,kind:"vpoc"|"invalidation"|"settlement"):number|null{
  const row=outcomes.find(o=>o.candidate_id===candidateId&&o.execution_scenario===scenario&&o.outcome_type===kind);
  if(!row||row.status!=="priced")return null;
  return num(row.net_pnl_usd)??num(row.net_pnl_native);
@@ -163,6 +163,7 @@ export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly
  return candidates.map(row=>{
   const eventId=str(row.event_id)??"unknown-event",candidateId=str(row.candidate_id)??"unknown-candidate";
   const scenario=scenarioOf(row.execution_scenario),scenarioStatus=scenarioStatusOf(row.execution_scenario_status);
+  const reference=row.analytics_track==="reference";
   const evaluated=scenarioStatus==="evaluated";
   const event=eventById.get(eventId);
   const directionRaw=str(row.direction)??str(event?.direction);
@@ -174,6 +175,11 @@ export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly
   const actualDteDays=num(row.actual_dte)??num(row.actual_dte_days);
   const optionType=str(row.option_type),structureType=str(row.structure_type);
   const invalidationMs=ms(event?.invalidation_decision_timestamp_utc);
+  const outcomeTime=(kind:"vpoc"|"invalidation")=>{
+   const o=outcomes.find(x=>x.candidate_id===candidateId&&x.execution_scenario===scenario&&x.outcome_type===kind);
+   return ms(o?.trigger_timestamp_utc)??ms(o?.decision_timestamp_utc)??(kind==="invalidation"?invalidationMs:null);
+  };
+  const vpocMs=outcomeTime("vpoc"),resolvedInvalidationMs=outcomeTime("invalidation");
 
   const geometry=geometryOf(row,event,direction);
   const challenge=challengeOf(pathByEvent.get(eventId)??[],geometry.shortStrike,direction,structureEntryMs,expiryTimestampMs,invalidationMs);
@@ -183,17 +189,21 @@ export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly
   const netCreditNative=evaluated?num(row.net_opening_cash_flow_native):null;
   const toUsd=(v:number|null)=>v!==null&&entryIndex!==null?v*entryIndex:null;
 
+  const pnlAtVpocRaw=pnlAt(outcomes,candidateId,scenario,"vpoc");
   const pnlAtInvalidationRaw=pnlAt(outcomes,candidateId,scenario,"invalidation");
   // An invalidation outside the structure's life is not an outcome it lived
   // through, so it is never treated as one.
-  const pnlAtInvalidationUsd=challenge.invalidatedInWindow===true?pnlAtInvalidationRaw:null;
+  const vpocInWindow=vpocMs!==null&&structureEntryMs!==null&&vpocMs>=structureEntryMs&&(expiryTimestampMs===null||vpocMs<=expiryTimestampMs);
+  const invalidationInWindow=resolvedInvalidationMs!==null&&structureEntryMs!==null&&resolvedInvalidationMs>=structureEntryMs&&(expiryTimestampMs===null||resolvedInvalidationMs<=expiryTimestampMs);
+  const pnlAtInvalidationUsd=(challenge.invalidatedInWindow===true||invalidationInWindow)?pnlAtInvalidationRaw:null;
   const pnlAtSettlementUsd=pnlAt(outcomes,candidateId,scenario,"settlement");
-  const realizedPnlUsd=challenge.invalidatedInWindow===true?pnlAtInvalidationUsd:pnlAtSettlementUsd;
+  const firstVpoc=vpocInWindow&&( !invalidationInWindow||vpocMs!<resolvedInvalidationMs!);
+  const firstInvalidation=invalidationInWindow&&(!vpocInWindow||resolvedInvalidationMs!<vpocMs!);
+  const realizedPnlUsd=firstVpoc?pnlAtVpocRaw:firstInvalidation?pnlAtInvalidationUsd:(!vpocInWindow&&!invalidationInWindow?pnlAtSettlementUsd:null);
 
-  const boundaryMs=challenge.invalidatedInWindow===true&&invalidationMs!==null
-   ?Math.min(invalidationMs,expiryTimestampMs??invalidationMs)
-   :expiryTimestampMs;
-  const adverse=adversePath(valuations,candidateId,scenario,evaluated,structureEntryMs,boundaryMs);
+  const resolutionMs=firstVpoc?vpocMs:firstInvalidation?resolvedInvalidationMs:null;
+  const boundaryMs=resolutionMs??expiryTimestampMs;
+  const adverse=reference?referenceAdversePath(valuations,candidateId,structureEntryMs,boundaryMs):adversePath(valuations,candidateId,scenario,evaluated,structureEntryMs,boundaryMs);
 
   // Exit policy is uniform across a canonical bundle -- one outcome set is
   // exported for every structure -- so it is a constant in the key rather than
@@ -203,7 +213,7 @@ export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly
 
   return {
    eventId,candidateId,structureExecutionId:str(row.structure_execution_id)??`${candidateId}~${scenario??"unknown"}`,
-   executionScenario:scenario,executionScenarioStatus:scenarioStatus,executionScenarioReason:str(row.execution_scenario_reason),
+   executionScenario:scenario,analyticsTrack:reference?"reference":scenario,executionScenarioStatus:scenarioStatus,executionScenarioReason:str(row.execution_scenario_reason),
    executionScenarioLegacyUndifferentiated:row.execution_scenario_legacy_undifferentiated===true,
    strikeMethod,rawStrikeMethod,direction,optionType,structureType,widthUsd,
    expiryTimestampMs,actualDteDays,structureEntryMs,matchKey,

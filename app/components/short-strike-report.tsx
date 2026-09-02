@@ -28,7 +28,7 @@ const signedUsd=(x:number|null)=>x===null?UNAVAILABLE:`${x<0?"−":"+"}$${Math.a
 const pct=(x:number|null)=>x===null?NOT_ESTIMABLE:`${(x*100).toFixed(1)}%`;
 const money=(x:number|null)=>x===null?UNAVAILABLE:`$${x.toLocaleString(undefined,{maximumFractionDigits:0})}`;
 const BUCKET_LABEL:Record<ConditionalBucket,string>={
- touched:"Touched, not breached",breached:"Breached",invalidated:"Invalidated without breach",settled_untouched:"Settled untouched",
+ breached:"Breached",touched_not_breached:"Touched, not breached",never_touched:"Never touched",
 };
 
 function Card({label,value,detail,title}:{label:string;value:string;detail?:string;title?:string}){
@@ -80,7 +80,7 @@ function CreditVsProtection({report}:{report:ShortStrikeReport}){
     </>}
    </svg>
   </figure>
-  <small className="dd-note">Each point is one matched pair — same event, expiry, width, structure and execution scenario, differing only in short-strike placement. To the RIGHT means credit was given up to buffer; ABOVE the zero line means that purchased a smaller worst adverse mark. A point far right and near zero is buffering that cost credit without demonstrable protection; a point up and to the left is protection obtained cheaply. The chart states the tradeoff and does not rank the placements.</small>
+  <small className="dd-note">Each point is one matched pair — same event, expiry, width and structure, differing only in short-strike placement, scoped to this analytical track. To the RIGHT means credit was given up to buffer; ABOVE the zero line means that purchased a smaller worst adverse mark.</small>
  </>;
 }
 
@@ -99,7 +99,7 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
  const current=Math.min(page,pages-1);
  const rows=report.pairs.slice(current*pageSize,(current+1)*pageSize);
  const compare=view==="compare";
- const scenarioLabel=report.scenario==="reference"?"reference economics":report.scenario==="maker"?"maker opportunity":"taker";
+ const scenarioLabel=report.scenario==="reference"?"Reference fair-value economics":report.scenario==="maker"?"maker opportunity":"taker";
 
  return <section className="workspace-section dd-report" data-testid="short-strike-report">
   <header className="dd-header">
@@ -163,9 +163,9 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
   {/* 5 · Conditional PnL */}
   <section className="dd-block"><h3>4 · Conditional PnL</h3>
    <div className="table-scroll"><table className="dd-table dd-compact">
-    <thead><tr><th>Condition</th><th>Technical n</th><th>Buffered n</th><th>Technical median PnL</th><th>Buffered median PnL</th><th>Technical worst adverse</th><th>Buffered worst adverse</th><th>Paired Δ PnL</th></tr></thead>
+    <thead><tr><th>Challenge condition</th><th>Technical condition / PnL / adverse n</th><th>Buffered condition / PnL / adverse n</th><th>Technical median PnL</th><th>Buffered median PnL</th><th>Technical worst adverse</th><th>Buffered worst adverse</th><th>Paired Δ PnL</th></tr></thead>
     <tbody>{report.conditionalPnl.filter(r=>r.technicalN>0||r.bufferedN>0).map(r=><tr key={r.bucket}>
-     <td>{BUCKET_LABEL[r.bucket]}</td><td>{r.technicalN}</td><td>{r.bufferedN}</td>
+     <td>{BUCKET_LABEL[r.bucket]}</td><td>{r.technicalN} / {r.technicalPnlN} / {r.technicalAdverseN}</td><td>{r.bufferedN} / {r.bufferedPnlN} / {r.bufferedAdverseN}</td>
      <td className={r.technicalMedianPnlUsd===null?"dd-muted":r.technicalMedianPnlUsd>=0?"positive":"negative"}>{usd(r.technicalMedianPnlUsd)}</td>
      <td className={r.bufferedMedianPnlUsd===null?"dd-muted":r.bufferedMedianPnlUsd>=0?"positive":"negative"}>{usd(r.bufferedMedianPnlUsd)}</td>
      <td className={r.technicalMedianWorstAdverseUsd===null?"dd-muted":"negative"}>{usd(r.technicalMedianWorstAdverseUsd)}</td>
@@ -185,7 +185,7 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
      const realized=p.deltas.find(d=>d.label==="Δ realized PnL")?.value??null;
      return <tr key={p.matchKey}>
       <td>{p.eventId}</td><td>{p.actualDteDays===null?"—":d1(p.actualDteDays)}</td><td>{money(p.widthUsd)}</td>
-      <td className="dd-muted" title={p.technical.executionScenarioReason??p.buffered.executionScenarioReason??undefined}>{p.executionScenario??"—"} · {executionScenarioStatusLabel(p.technical.executionScenarioStatus)} / {executionScenarioStatusLabel(p.buffered.executionScenarioStatus)}</td>
+      <td className="dd-muted" title={p.technical.executionScenarioReason??p.buffered.executionScenarioReason??undefined}>{report.scenario==="reference"?"Reference fair value":p.executionScenario??"—"} · {executionScenarioStatusLabel(p.technical.executionScenarioStatus)} / {executionScenarioStatusLabel(p.buffered.executionScenarioStatus)}</td>
       <td>{money(p.technical.geometry.shortStrike)}</td><td>{money(p.buffered.geometry.shortStrike)}</td>
       <td>{usd(p.extraDistanceUsd)}</td>
       <td>{usd(p.technical.grossCreditUsd)}</td><td>{usd(p.buffered.grossCreditUsd)}</td>
