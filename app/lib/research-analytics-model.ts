@@ -411,12 +411,14 @@ function projectAnalyticsTrack(
       const nativePnl = n(x.net_pnl_native) ?? n(x.estimatedNetPnlBtc);
       const targetIndex = n(x.targetIndex) ?? n(x.target_index);
       const explicitUsd = n(x.net_pnl_usd) ?? n(x.estimatedNetPnlUsd);
+      const persistedStatus=s(x.valuation_status)??s(x.status);
+      const valuationStatus=persistedStatus==="priced"||persistedStatus==="evaluated"?"priced":persistedStatus??(nativePnl!==null||explicitUsd!==null?"priced":"unavailable");
       valuations.push({
         ...x,
         candidate_id: observation.candidateId,
         execution_scenario: scenario,
         pricing_track: requested === "reference" ? "reference" : requested,
-        valuation_status: "priced",
+        valuation_status: valuationStatus,
         timestamp_utc: s(x.timestamp_utc) ?? (n(x.timestamp) === null ? null : new Date(n(x.timestamp)!).toISOString()),
         net_pnl_native: nativePnl,
         net_pnl_usd: explicitUsd ?? (nativePnl !== null && targetIndex !== null && targetIndex > 0 ? nativePnl * targetIndex : null),

@@ -107,7 +107,7 @@ export interface ShortStrikeStructure {
 
 const str=(v:unknown):string|null=>typeof v==="string"&&v.trim()?v:null;
 const num=(v:unknown):number|null=>typeof v==="number"&&Number.isFinite(v)?v:null;
-const ms=(v:unknown):number|null=>{const s=str(v);if(!s)return null;const t=Date.parse(s);return Number.isFinite(t)?t:null};
+const ms=(v:unknown):number|null=>{if(typeof v==="number"&&Number.isFinite(v))return v;const s=str(v);if(!s)return null;const t=Date.parse(s);return Number.isFinite(t)?t:null};
 const nested=(v:unknown,key:string):unknown=>v&&typeof v==="object"&&!Array.isArray(v)?(v as Record<string,unknown>)[key]:undefined;
 const scenarioOf=(v:unknown):ExecutionScenario|null=>{const s=str(v);return s==="maker"||s==="taker"?s:null};
 const scenarioStatusOf=normalizeExecutionScenarioStatus;
@@ -185,14 +185,17 @@ export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly
   const actualDteDays=num(row.actual_dte)??num(row.actual_dte_days);
   const optionType=str(row.option_type),structureType=str(row.structure_type);
   const invalidationMs=ms(event?.invalidation_decision_timestamp_utc);
-  const outcomeTime=(kind:"vpoc"|"invalidation")=>{
+  const endpoint=(kind:"vpoc"|"invalidation")=>{
    const o=outcomes.find(x=>x.candidate_id===candidateId&&x.execution_scenario===scenario&&x.outcome_type===kind);
-   return outcomeTimestamp(o)??(kind==="vpoc"?ms(event?.vpoc_decision_timestamp_utc):invalidationMs);
+   const trigger=str(o?.trigger_status);
+   if(o&&trigger!==null&&trigger!=="reached")return {time:trigger==="ambiguous"?outcomeTimestamp(o):null,ambiguous:trigger==="ambiguous"};
+   const eventFallback=kind==="vpoc"?ms(event?.vpoc_decision_timestamp_utc):invalidationMs;
+   return {time:outcomeTimestamp(o)??eventFallback,ambiguous:false};
   };
-  const vpocMs=outcomeTime("vpoc"),resolvedInvalidationMs=outcomeTime("invalidation");
+  const vpoc=endpoint("vpoc"),invalidation=endpoint("invalidation");
+  const vpocMs=vpoc.time,resolvedInvalidationMs=invalidation.time;
 
   const geometry=geometryOf(row,event,direction);
-  const challenge=challengeOf(pathByEvent.get(eventId)??[],geometry.shortStrike,direction,structureEntryMs,expiryTimestampMs,invalidationMs);
 
   const entryIndex=geometry.entrySpot;
   const grossCreditNative=evaluated?num(row.gross_credit_debit_native):null;
@@ -205,12 +208,12 @@ export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly
   // through, so it is never treated as one.
   const vpocInWindow=vpocMs!==null&&structureEntryMs!==null&&vpocMs>=structureEntryMs&&(expiryTimestampMs===null||vpocMs<=expiryTimestampMs);
   const invalidationInWindow=resolvedInvalidationMs!==null&&structureEntryMs!==null&&resolvedInvalidationMs>=structureEntryMs&&(expiryTimestampMs===null||resolvedInvalidationMs<=expiryTimestampMs);
-  const pnlAtInvalidationUsd=(challenge.invalidatedInWindow===true||invalidationInWindow)?pnlAtInvalidationRaw:null;
+  const pnlAtInvalidationUsd=invalidationInWindow?pnlAtInvalidationRaw:null;
   const settlementOutcome=outcomes.find(x=>x.candidate_id===candidateId&&x.execution_scenario===scenario&&x.outcome_type==="settlement");
   const settlementMs=outcomeTimestamp(settlementOutcome);
   const settlementInWindow=settlementMs===null||(structureEntryMs!==null&&settlementMs>=structureEntryMs&&(expiryTimestampMs===null||settlementMs<=expiryTimestampMs));
   const pnlAtSettlementUsd=settlementInWindow?pnlAtUsd(outcomes,candidateId,scenario,"settlement"):null;
-  const ambiguousResolution=vpocInWindow&&invalidationInWindow&&vpocMs===resolvedInvalidationMs;
+  const ambiguousResolution=vpoc.ambiguous||invalidation.ambiguous||(vpocInWindow&&invalidationInWindow&&vpocMs===resolvedInvalidationMs);
   const firstVpoc=vpocInWindow&&( !invalidationInWindow||vpocMs!<resolvedInvalidationMs!);
   const firstInvalidation=invalidationInWindow&&(!vpocInWindow||resolvedInvalidationMs!<vpocMs!);
   const realizedPnlUsd=ambiguousResolution?null:firstVpoc?pnlAtVpocRaw:firstInvalidation?pnlAtInvalidationUsd:(!vpocInWindow&&!invalidationInWindow?pnlAtSettlementUsd:null);
@@ -218,7 +221,9 @@ export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly
   const resolutionReason=ambiguousResolution?"VPOC and invalidation share the same available timestamp precision; ordering is not identifiable, so Thesis Exit PnL is intentionally excluded.":realizedPnlUsd===null?"The selected Thesis Exit has no causally USD-valued PnL.":null;
 
   const resolutionMs=firstVpoc?vpocMs:firstInvalidation?resolvedInvalidationMs:null;
-  const boundaryMs=resolutionMs??expiryTimestampMs;
+  const ambiguousBoundaryMs=ambiguousResolution?([vpocMs,resolvedInvalidationMs].filter((x):x is number=>x!==null).sort((a,b)=>a-b)[0]??null):null;
+  const boundaryMs=resolutionMs??ambiguousBoundaryMs??expiryTimestampMs;
+  const challenge=challengeOf(pathByEvent.get(eventId)??[],geometry.shortStrike,direction,structureEntryMs,boundaryMs,invalidationMs,resolutionMs??ambiguousBoundaryMs);
   const adverse=reference?referenceAdversePath(valuations,candidateId,structureEntryMs,boundaryMs):adversePath(valuations,candidateId,scenario,evaluated,structureEntryMs,boundaryMs);
 
   // Exit policy is uniform across a canonical bundle -- one outcome set is

@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type {AnalysisDataset} from "../app/lib/research-analysis.ts";
 import {normalizeShortStrikeStructures,strikeMethodOf} from "../app/lib/short-strike/normalize.ts";
-import {buildShortStrikeReport} from "../app/lib/short-strike/report.ts";
+import {buildShortStrikeReport,eventWeighted,type MatchedPair} from "../app/lib/short-strike/report.ts";
 import {compactOutcomeSnapshot,compactValuationPoint,type EvidenceUsageDto} from "../app/lib/research-selections.ts";
 import {adversePath,referenceAdversePath} from "../app/lib/adverse-path.ts";
+import {datasetForAnalyticsTrack} from "../app/lib/research-analytics-model.ts";
 
 const H=36e5;
 const D=(day:number,hour=0)=>new Date(Date.UTC(2026,0,day,hour)).toISOString();
@@ -242,14 +243,13 @@ test("CHALLENGE: breach before invalidation is asserted only when the candles di
 
 test("CHALLENGE: same-candle ordering is preserved as ambiguous, never invented",()=>{
  const c=pick("e4-anchor").challenge;
- assert.equal(c.breached,true);
+ assert.equal(c.breached,null);
  assert.equal(c.invalidatedInWindow,true);
- assert.equal(c.ambiguousOrdering,true,"both fall inside the day-3 03:00 candle");
+ assert.equal(c.ambiguousWithExit,true,"both fall inside the day-3 03:00 candle");
  assert.equal(c.breachBeforeInvalidation,null,"the sequence is unknown at candle-open precision");
  // An ambiguous pair must not be counted as an ordered breach.
  const technical=report.challenge.find(r=>r.method==="technical")!;
- assert.equal(technical.ambiguousOrderingN,1);
- assert.ok(technical.breachBeforeInvalidationN<technical.breachedN,"the ambiguous case is excluded from the ordered count");
+ assert.equal(technical.exitAmbiguousN,1);
 });
 
 test("CHALLENGE: buffering moves the strike out of reach of the same path",()=>{
@@ -261,7 +261,7 @@ test("CHALLENGE: buffering moves the strike out of reach of the same path",()=>{
  // path; the method-level populations differ only because one extra technical
  // structure has no buffered partner at its width.
  const paired=report.pairs.filter(p=>p.technical.challenge.reason===null&&p.buffered.challenge.reason===null);
- assert.equal(paired.length,report.pairs.length,"every pair is observable on both sides");
+ assert.equal(paired.length,report.pairs.length-1,"challenge/exit ambiguity is excluded from the ordered population");
  assert.ok(paired.some(p=>p.technical.challenge.breached===true&&p.buffered.challenge.breached===false),
   "at least one pair is breached technically but survives when buffered");
  assert.ok(paired.every(p=>!(p.buffered.challenge.breached===true&&p.technical.challenge.breached===false)),
@@ -371,8 +371,8 @@ test("REFERENCE: default routing retains null-scenario Reference structures and 
     compactValuationPoint("deribit",`reference-${method}`,{timestamp:T(2),targetIndex:42000,estimatedNetPnlBtc:method==="anchor"?-.005:-.002},usages,catalog),
     compactValuationPoint("deribit",`reference-${method}`,{timestamp:T(3),targetIndex:42000,estimatedNetPnlBtc:.002},usages,catalog)],
    outcomeSnapshots:[
-    compactOutcomeSnapshot("deribit",`reference-${method}`,{label:"VPOC",status:"estimated",decisionTimestamp:D(3),valuationTimestamp:D(3),estimatedNetPnlBtc:.007,estimatedNetPnlUsd:method==="anchor"?300:180},usages,catalog),
-    compactOutcomeSnapshot("deribit",`reference-${method}`,{label:"Settlement",status:"estimated",decisionTimestamp:D(8),valuationTimestamp:D(8),estimatedNetPnlBtc:.001,estimatedNetPnlUsd:method==="anchor"?20:10},usages,catalog)]},
+    compactOutcomeSnapshot("deribit",`reference-${method}`,{label:"VPOC",status:"estimated",decisionTimestamp:T(3),valuationTimestamp:T(3),estimatedNetPnlBtc:.007,estimatedNetPnlUsd:method==="anchor"?300:180},usages,catalog),
+    compactOutcomeSnapshot("deribit",`reference-${method}`,{label:"Settlement",status:"estimated",decisionTimestamp:T(8),valuationTimestamp:T(8),estimatedNetPnlBtc:.001,estimatedNetPnlUsd:method==="anchor"?20:10},usages,catalog)]},
  });
  const referenceDataset={...dataset,tables:{...dataset.tables,candidates:[referenceCandidate("anchor"),referenceCandidate("buffered")],outcomes:[],valuations:[]}} as unknown as AnalysisDataset;
  const r=buildShortStrikeReport(referenceDataset);
@@ -389,6 +389,48 @@ test("REFERENCE: default routing retains null-scenario Reference structures and 
  assert.equal(r.robustness!.taker.summary.medianWorstAdverseReductionUsd,null,"nor taker evidence");
 });
 
+test("TIMING: Thesis Exit bounds challenge and preserves pre-exit challenges",()=>{
+ const base=candidate("e1","anchor","maker"),mk=(id:string,vpoc:string|null,challengeDay:number)=>({filename:"x",schemaVersion:"x",migratedFrom:null,run:{},tables:{events:[{...events[0],event_id:id,vpoc_decision_timestamp_utc:vpoc}],candidates:[{...base,event_id:id,candidate_id:id}],outcomes:[],valuations:[],underlying_path:[{event_id:id,timestamp_utc:D(1),high:42100,low:41900,close:42000},{event_id:id,timestamp_utc:D(challengeDay),high:42000,low:39000,close:39000}],availability:[],margin_scenarios:[]},counts:{},venues:[],sourceRuns:[],eventUniverseComplete:true,capabilities:[]} as unknown as AnalysisDataset);
+ const after=normalizeShortStrikeStructures(mk("after",D(2),4))[0]!;
+ assert.equal(after.challenge.touched,false);assert.equal(after.challenge.breached,false);
+ const before=normalizeShortStrikeStructures(mk("before",D(5),4))[0]!;
+ assert.equal(before.challenge.touched,true);assert.equal(before.challenge.breached,true);
+ const expiry=normalizeShortStrikeStructures(mk("expiry",null,4))[0]!;
+ assert.equal(expiry.challenge.breached,true,"expiry remains the boundary without thesis resolution");
+ const invalidated=mk("invalidated",null,4);(invalidated.tables.events[0] as Record<string,unknown>).invalidation_decision_timestamp_utc=D(2);
+ assert.equal(normalizeShortStrikeStructures(invalidated)[0]!.challenge.breached,false,"post-invalidation challenge is excluded");
+});
+
+test("TIMING: projected ISO and persisted numeric decision timestamps both resolve",()=>{
+ const row={...candidate("e1","anchor","maker"),candidate_id:"time"};
+ const make=(decision:unknown)=>({...dataset,tables:{...dataset.tables,candidates:[row],outcomes:[{candidate_id:"time",execution_scenario:"maker",outcome_type:"vpoc",status:"priced",trigger_status:"reached",decisionTimestamp:decision,net_pnl_usd:10}]}} as AnalysisDataset);
+ assert.equal(normalizeShortStrikeStructures(make(T(2)))[0]!.resolution,"vpoc");
+ const iso=make(undefined);(iso.tables.outcomes[0] as Record<string,unknown>).decision_available_timestamp_utc=D(2);
+ assert.equal(normalizeShortStrikeStructures(iso)[0]!.resolution,"vpoc");
+});
+
+test("TRIGGER STATUS: only reached candidate outcomes resolve Thesis Exit",()=>{
+ const row={...candidate("e1","anchor","maker"),candidate_id:"status"};
+ const resolution=(trigger_status:string)=>normalizeShortStrikeStructures({...dataset,tables:{...dataset.tables,candidates:[row],outcomes:[{candidate_id:"status",execution_scenario:"maker",outcome_type:"vpoc",status:"priced",trigger_status,decision_available_timestamp_utc:D(2),net_pnl_usd:10}]}} as AnalysisDataset)[0]!.resolution;
+ assert.equal(resolution("reached"),"vpoc");assert.equal(resolution("not_reached"),"settlement");assert.equal(resolution("after_expiry"),"settlement");
+});
+
+test("VALUATION FIDELITY: compact missing points are not promoted or admitted to adverse evidence",()=>{
+ const usages:EvidenceUsageDto[]=[],catalog=new Map(),id="valuation-status",base={...candidate("e1","anchor","maker"),candidate_id:id,reference_valuation:{status:"valued",entrySnapshot:{valuationTimestamp:T(1),targetIndex:42000,grossSpreadBtc:.01,netOpeningCashFlowBtc:.009},valuationPathSnapshot:[compactValuationPoint("deribit",id,{timestamp:T(2),status:"priced",targetIndex:42000,estimatedNetPnlBtc:-.005},usages,catalog),compactValuationPoint("deribit",id,{timestamp:T(3),status:"missing",targetIndex:42000},usages,catalog)],outcomeSnapshots:[]}};
+ const d={...dataset,tables:{...dataset.tables,candidates:[base],outcomes:[],valuations:[]}} as unknown as AnalysisDataset,projected=datasetForAnalyticsTrack(d,"reference");
+ assert.deepEqual(projected.tables.valuations.map(v=>v.valuation_status),["priced","missing"]);
+ const s=normalizeShortStrikeStructures(projected)[0]!;assert.equal(s.adverse.rawMarksInWindow,1);assert.equal(s.worstAdverseUsd,-210);
+});
+
+test("WEIGHTING: headline medians equally weight events and disclose metric-specific Ns",()=>{
+ const base=pairFor("e1"),fake=(eventId:string,gross:number,adverse:number|null,pnl:number|null)=>({...base,eventId,grossCreditSacrificedUsd:gross,netCreditSacrificedUsd:gross,relativeCreditSacrifice:gross/100,worstAdverseReductionUsd:adverse,maeReductionUsd:adverse,technical:{...base.technical,realizedPnlUsd:pnl===null?null:0},buffered:{...base.buffered,realizedPnlUsd:pnl}} as MatchedPair);
+ const weighted=eventWeighted([fake("many",0,null,null),fake("many",0,null,null),fake("many",0,null,null),fake("single",100,20,30)]);
+ assert.equal(weighted.grossCreditSacrifice.value,50,"three pairs from one event do not outvote the second event");
+ assert.equal(weighted.grossCreditSacrifice.eventN,2);
+ assert.equal(weighted.adverseReduction.eventN,1);
+ assert.equal(weighted.realizedPnlDelta.eventN,1);
+});
+
 test("OUTCOME USD: explicit USD wins, contemporaneous conversion is allowed, and native alone stays null",()=>{
  const make=(usd:number|null,index:number|null)=>{const d={...dataset,tables:{...dataset.tables,outcomes:dataset.tables.outcomes.map(o=>o.candidate_id==="e1-anchor"&&o.execution_scenario==="maker"&&o.outcome_type==="settlement"?{...o,net_pnl_usd:usd,net_pnl_native:.006,conversionIndex:index}:o)}} as AnalysisDataset;return normalizeShortStrikeStructures(d).find(s=>s.candidateId==="e1-anchor"&&s.executionScenario==="maker")!};
  assert.equal(make(250,42000).pnlAtSettlementUsd,250);
@@ -397,7 +439,7 @@ test("OUTCOME USD: explicit USD wins, contemporaneous conversion is allowed, and
 });
 
 test("THESIS EXIT: equal-time VPOC and invalidation is explicitly ambiguous",()=>{
- const same=D(3);const d={...dataset,tables:{...dataset.tables,events:events.map(e=>e.event_id==="e1"?{...e,invalidation_decision_timestamp_utc:same}:e),outcomes:[...dataset.tables.outcomes,{candidate_id:"e1-anchor",execution_scenario:"maker",outcome_type:"vpoc",status:"priced",decision_available_timestamp_utc:same,net_pnl_usd:100},{candidate_id:"e1-anchor",execution_scenario:"maker",outcome_type:"invalidation",status:"priced",decision_available_timestamp_utc:same,net_pnl_usd:-100}]}} as AnalysisDataset;
+ const same=D(3);const d={...dataset,tables:{...dataset.tables,events:events.map(e=>e.event_id==="e1"?{...e,invalidation_decision_timestamp_utc:same}:e),outcomes:[...dataset.tables.outcomes,{candidate_id:"e1-anchor",execution_scenario:"maker",outcome_type:"vpoc",status:"priced",trigger_status:"reached",decision_available_timestamp_utc:same,net_pnl_usd:100},{candidate_id:"e1-anchor",execution_scenario:"maker",outcome_type:"invalidation",status:"priced",trigger_status:"reached",decision_available_timestamp_utc:same,net_pnl_usd:-100}]}} as AnalysisDataset;
  const s=normalizeShortStrikeStructures(d).find(x=>x.candidateId==="e1-anchor"&&x.executionScenario==="maker")!;
  assert.equal(s.resolution,"ambiguous_resolution_order");assert.equal(s.realizedPnlUsd,null);assert.match(s.resolutionReason!,/intentionally excluded/);
 });
