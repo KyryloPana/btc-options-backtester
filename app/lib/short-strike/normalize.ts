@@ -98,6 +98,8 @@ export interface ShortStrikeStructure {
  readonly pnlAtSettlementUsd:number|null;
  /** The outcome that actually occurred while the structure existed. */
  readonly realizedPnlUsd:number|null;
+ readonly resolution:"vpoc"|"invalidation"|"settlement"|"ambiguous_resolution_order"|"unresolved";
+ readonly resolutionReason:string|null;
  readonly adverse:AdversePathObservation;
  readonly worstAdverseUsd:number|null;
  readonly maeUsd:number|null;
@@ -147,10 +149,18 @@ function geometryOf(row:Readonly<Record<string,unknown>>,event:Readonly<Record<s
 }
 
 
-function pnlAt(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:string,scenario:ExecutionScenario|null,kind:"vpoc"|"invalidation"|"settlement"):number|null{
+function pnlAtUsd(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:string,scenario:ExecutionScenario|null,kind:"vpoc"|"invalidation"|"settlement"):number|null{
  const row=outcomes.find(o=>o.candidate_id===candidateId&&o.execution_scenario===scenario&&o.outcome_type===kind);
  if(!row||row.status!=="priced")return null;
- return num(row.net_pnl_usd)??num(row.net_pnl_native);
+ const usd=num(row.net_pnl_usd);
+ if(usd!==null)return usd;
+ const native=num(row.net_pnl_native),index=num(row.conversion_index)??num(row.conversionIndex)??num(row.target_index)??num(row.targetIndex);
+ return native!==null&&index!==null&&index>0?native*index:null;
+}
+
+/** One causal timestamp adapter for projected rows and legacy persisted snapshots. */
+function outcomeTimestamp(row:Readonly<Record<string,unknown>>|undefined):number|null{
+ return ms(row?.trigger_timestamp_utc)??ms(row?.decision_available_timestamp_utc)??ms(row?.decision_timestamp_utc)??ms(row?.decisionTimestamp);
 }
 
 export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly ShortStrikeStructure[]{
@@ -177,7 +187,7 @@ export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly
   const invalidationMs=ms(event?.invalidation_decision_timestamp_utc);
   const outcomeTime=(kind:"vpoc"|"invalidation")=>{
    const o=outcomes.find(x=>x.candidate_id===candidateId&&x.execution_scenario===scenario&&x.outcome_type===kind);
-   return ms(o?.trigger_timestamp_utc)??ms(o?.decision_timestamp_utc)??(kind==="invalidation"?invalidationMs:null);
+   return outcomeTimestamp(o)??(kind==="vpoc"?ms(event?.vpoc_decision_timestamp_utc):invalidationMs);
   };
   const vpocMs=outcomeTime("vpoc"),resolvedInvalidationMs=outcomeTime("invalidation");
 
@@ -189,17 +199,23 @@ export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly
   const netCreditNative=evaluated?num(row.net_opening_cash_flow_native):null;
   const toUsd=(v:number|null)=>v!==null&&entryIndex!==null?v*entryIndex:null;
 
-  const pnlAtVpocRaw=pnlAt(outcomes,candidateId,scenario,"vpoc");
-  const pnlAtInvalidationRaw=pnlAt(outcomes,candidateId,scenario,"invalidation");
+  const pnlAtVpocRaw=pnlAtUsd(outcomes,candidateId,scenario,"vpoc");
+  const pnlAtInvalidationRaw=pnlAtUsd(outcomes,candidateId,scenario,"invalidation");
   // An invalidation outside the structure's life is not an outcome it lived
   // through, so it is never treated as one.
   const vpocInWindow=vpocMs!==null&&structureEntryMs!==null&&vpocMs>=structureEntryMs&&(expiryTimestampMs===null||vpocMs<=expiryTimestampMs);
   const invalidationInWindow=resolvedInvalidationMs!==null&&structureEntryMs!==null&&resolvedInvalidationMs>=structureEntryMs&&(expiryTimestampMs===null||resolvedInvalidationMs<=expiryTimestampMs);
   const pnlAtInvalidationUsd=(challenge.invalidatedInWindow===true||invalidationInWindow)?pnlAtInvalidationRaw:null;
-  const pnlAtSettlementUsd=pnlAt(outcomes,candidateId,scenario,"settlement");
+  const settlementOutcome=outcomes.find(x=>x.candidate_id===candidateId&&x.execution_scenario===scenario&&x.outcome_type==="settlement");
+  const settlementMs=outcomeTimestamp(settlementOutcome);
+  const settlementInWindow=settlementMs===null||(structureEntryMs!==null&&settlementMs>=structureEntryMs&&(expiryTimestampMs===null||settlementMs<=expiryTimestampMs));
+  const pnlAtSettlementUsd=settlementInWindow?pnlAtUsd(outcomes,candidateId,scenario,"settlement"):null;
+  const ambiguousResolution=vpocInWindow&&invalidationInWindow&&vpocMs===resolvedInvalidationMs;
   const firstVpoc=vpocInWindow&&( !invalidationInWindow||vpocMs!<resolvedInvalidationMs!);
   const firstInvalidation=invalidationInWindow&&(!vpocInWindow||resolvedInvalidationMs!<vpocMs!);
-  const realizedPnlUsd=firstVpoc?pnlAtVpocRaw:firstInvalidation?pnlAtInvalidationUsd:(!vpocInWindow&&!invalidationInWindow?pnlAtSettlementUsd:null);
+  const realizedPnlUsd=ambiguousResolution?null:firstVpoc?pnlAtVpocRaw:firstInvalidation?pnlAtInvalidationUsd:(!vpocInWindow&&!invalidationInWindow?pnlAtSettlementUsd:null);
+  const resolution=ambiguousResolution?"ambiguous_resolution_order" as const:firstVpoc?"vpoc" as const:firstInvalidation?"invalidation" as const:!vpocInWindow&&!invalidationInWindow?"settlement" as const:"unresolved" as const;
+  const resolutionReason=ambiguousResolution?"VPOC and invalidation share the same available timestamp precision; ordering is not identifiable, so Thesis Exit PnL is intentionally excluded.":realizedPnlUsd===null?"The selected Thesis Exit has no causally USD-valued PnL.":null;
 
   const resolutionMs=firstVpoc?vpocMs:firstInvalidation?resolvedInvalidationMs:null;
   const boundaryMs=resolutionMs??expiryTimestampMs;
@@ -220,7 +236,7 @@ export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly
    geometry,challenge,
    grossCreditNative,netCreditNative,
    grossCreditUsd:toUsd(grossCreditNative),netCreditUsd:toUsd(netCreditNative),
-   pnlAtInvalidationUsd,pnlAtSettlementUsd,realizedPnlUsd,
+   pnlAtInvalidationUsd,pnlAtSettlementUsd,realizedPnlUsd,resolution,resolutionReason,
    adverse,worstAdverseUsd:adverse.worstAdverseUsd,maeUsd:adverse.maeBeforeProfitUsd,
   } satisfies ShortStrikeStructure;
  });

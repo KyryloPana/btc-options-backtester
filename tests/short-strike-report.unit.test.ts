@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import type {AnalysisDataset} from "../app/lib/research-analysis.ts";
 import {normalizeShortStrikeStructures,strikeMethodOf} from "../app/lib/short-strike/normalize.ts";
 import {buildShortStrikeReport} from "../app/lib/short-strike/report.ts";
+import {compactOutcomeSnapshot,compactValuationPoint,type EvidenceUsageDto} from "../app/lib/research-selections.ts";
+import {adversePath,referenceAdversePath} from "../app/lib/adverse-path.ts";
 
 const H=36e5;
 const D=(day:number,hour=0)=>new Date(Date.UTC(2026,0,day,hour)).toISOString();
@@ -352,20 +354,25 @@ test("CONDITIONAL: PnL is grouped by what the structure actually lived through",
  assert.ok(touched.technicalN>0,"e1 was touched but not breached");
 });
 
-test("CONDITIONAL: the paired delta only uses pairs where BOTH sides fell in the bucket",()=>{
- // e1: technical touched, buffered untouched -> the pair is not a touched pair.
+test("CONDITIONAL: technical challenge state conditions the same matched pairs on both sides",()=>{
  const touched=report.conditionalPnl.find(r=>r.bucket==="touched_not_breached")!;
- assert.equal(touched.pairedN,0,"a touched technical is never paired against an untouched buffered");
- assert.equal(touched.medianPairedPnlDeltaUsd,null,"so no paired delta is fabricated");
- assert.ok(touched.technicalN>0&&touched.bufferedN===0,"the unpaired population is still reported separately");
+ assert.ok(touched.pairedN>0,"technical touches retain their exact buffered counterparts");
+ assert.equal(touched.technicalN,touched.bufferedN);
+ assert.ok(touched.bufferedTransitions.never_touched>0,"avoiding the challenge is retained as the effect of buffering");
+ assert.ok(touched.independentEventN<=touched.pairedN);
 });
 
 test("REFERENCE: default routing retains null-scenario Reference structures and uses fair-value outcomes and path",()=>{
+ const usages:EvidenceUsageDto[]=[],catalog=new Map();
  const referenceCandidate=(method:"anchor"|"buffered")=>({
   ...candidate("e1",method,"maker"),candidate_id:`reference-${method}`,
   reference_valuation:{status:"valued",entrySnapshot:{valuationTimestamp:D(1),targetIndex:42000,grossSpreadBtc:method==="anchor"?.01:.006,netOpeningCashFlowBtc:method==="anchor"?.009:.005},
-   valuationPathSnapshot:[{timestamp:D(2),estimatedNetPnlUsd:method==="anchor"?-300:-120},{timestamp:D(3),estimatedNetPnlUsd:80}],
-   outcomeSnapshots:[{label:"vpoc",status:"priced",trigger_status:"reached",trigger_timestamp_utc:D(3),estimatedNetPnlUsd:method==="anchor"?300:180},{label:"settlement",status:"priced",trigger_status:"reached",estimatedNetPnlUsd:method==="anchor"?20:10}]},
+   valuationPathSnapshot:[
+    compactValuationPoint("deribit",`reference-${method}`,{timestamp:T(2),targetIndex:42000,estimatedNetPnlBtc:method==="anchor"?-.005:-.002},usages,catalog),
+    compactValuationPoint("deribit",`reference-${method}`,{timestamp:T(3),targetIndex:42000,estimatedNetPnlBtc:.002},usages,catalog)],
+   outcomeSnapshots:[
+    compactOutcomeSnapshot("deribit",`reference-${method}`,{label:"VPOC",status:"estimated",decisionTimestamp:D(3),valuationTimestamp:D(3),estimatedNetPnlBtc:.007,estimatedNetPnlUsd:method==="anchor"?300:180},usages,catalog),
+    compactOutcomeSnapshot("deribit",`reference-${method}`,{label:"Settlement",status:"estimated",decisionTimestamp:D(8),valuationTimestamp:D(8),estimatedNetPnlBtc:.001,estimatedNetPnlUsd:method==="anchor"?20:10},usages,catalog)]},
  });
  const referenceDataset={...dataset,tables:{...dataset.tables,candidates:[referenceCandidate("anchor"),referenceCandidate("buffered")],outcomes:[],valuations:[]}} as unknown as AnalysisDataset;
  const r=buildShortStrikeReport(referenceDataset);
@@ -373,9 +380,36 @@ test("REFERENCE: default routing retains null-scenario Reference structures and 
  assert.equal(r.structures.length,2);
  assert.equal(r.pairs.length,1);
  assert.equal(r.pairs[0]!.technical.executionScenario,null);
+ assert.equal(r.pairs[0]!.technical.analyticsTrack,"reference");
+ assert.equal(r.pairs[0]!.technical.resolution,"vpoc");
  assert.equal(r.pairs[0]!.technical.realizedPnlUsd,300,"post-entry VPOC is the realized outcome, not settlement");
- assert.equal(r.pairs[0]!.worstAdverseReductionUsd,180,"Reference path is sufficient without raw tape");
+ assert.equal(r.pairs[0]!.technical.worstAdverseUsd,-210,"native BTC is converted at its contemporaneous target index");
+ assert.equal(r.pairs[0]!.worstAdverseReductionUsd,126,"Reference path is sufficient without raw tape");
  assert.equal(r.robustness!.maker.summary.medianWorstAdverseReductionUsd,null,"Reference marks do not backfill observed maker evidence");
+ assert.equal(r.robustness!.taker.summary.medianWorstAdverseReductionUsd,null,"nor taker evidence");
+});
+
+test("OUTCOME USD: explicit USD wins, contemporaneous conversion is allowed, and native alone stays null",()=>{
+ const make=(usd:number|null,index:number|null)=>{const d={...dataset,tables:{...dataset.tables,outcomes:dataset.tables.outcomes.map(o=>o.candidate_id==="e1-anchor"&&o.execution_scenario==="maker"&&o.outcome_type==="settlement"?{...o,net_pnl_usd:usd,net_pnl_native:.006,conversionIndex:index}:o)}} as AnalysisDataset;return normalizeShortStrikeStructures(d).find(s=>s.candidateId==="e1-anchor"&&s.executionScenario==="maker")!};
+ assert.equal(make(250,42000).pnlAtSettlementUsd,250);
+ assert.equal(make(null,42000).pnlAtSettlementUsd,252);
+ assert.equal(make(null,null).pnlAtSettlementUsd,null);
+});
+
+test("THESIS EXIT: equal-time VPOC and invalidation is explicitly ambiguous",()=>{
+ const same=D(3);const d={...dataset,tables:{...dataset.tables,events:events.map(e=>e.event_id==="e1"?{...e,invalidation_decision_timestamp_utc:same}:e),outcomes:[...dataset.tables.outcomes,{candidate_id:"e1-anchor",execution_scenario:"maker",outcome_type:"vpoc",status:"priced",decision_available_timestamp_utc:same,net_pnl_usd:100},{candidate_id:"e1-anchor",execution_scenario:"maker",outcome_type:"invalidation",status:"priced",decision_available_timestamp_utc:same,net_pnl_usd:-100}]}} as AnalysisDataset;
+ const s=normalizeShortStrikeStructures(d).find(x=>x.candidateId==="e1-anchor"&&x.executionScenario==="maker")!;
+ assert.equal(s.resolution,"ambiguous_resolution_order");assert.equal(s.realizedPnlUsd,null);assert.match(s.resolutionReason!,/intentionally excluded/);
+});
+
+test("ADVERSE SEMANTICS: MAE and worst adverse are loss excursions capped at zero",()=>{
+ const raw=(pnls:number[])=>pnls.map((net_pnl_usd,i)=>({candidate_id:"c",execution_scenario:"maker",pricing_track:"raw_vwap",valuation_status:"priced",timestamp_utc:new Date(T(1)+i*H).toISOString(),net_pnl_usd}));
+ const observe=(pnls:number[])=>adversePath(raw(pnls),"c","maker",true,T(1),T(2));
+ assert.deepEqual([observe([10,20]).worstAdverseUsd,observe([10,20]).maeBeforeProfitUsd],[0,0],"immediately profitable never has positive MAE");
+ assert.deepEqual([observe([-30,10]).worstAdverseUsd,observe([-30,10]).maeBeforeProfitUsd],[-30,-30]);
+ assert.deepEqual([observe([-20,-40]).worstAdverseUsd,observe([-20,-40]).maeBeforeProfitUsd],[-40,null],"MAE-before-profit is unavailable when profit never occurs");
+ const reference=referenceAdversePath([{candidate_id:"c",pricing_track:"reference",timestamp_utc:D(1),net_pnl_usd:12}],"c",T(1),T(2));
+ assert.equal(reference.worstAdverseUsd,0);assert.equal(reference.maeBeforeProfitUsd,0);
 });
 
 /* ---------------- summary and missing data ---------------- */
