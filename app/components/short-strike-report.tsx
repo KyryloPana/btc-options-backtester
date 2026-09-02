@@ -127,7 +127,7 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
    <Card label="Event-weighted adverse reduction" value={signedUsd(s.eventWeighted.adverseReduction.value)} detail={`${s.eventWeighted.adverseReduction.eventN} event(s)`}/>
    <Card label="Event-weighted MAE reduction" value={signedUsd(s.eventWeighted.maeReduction.value)} detail={`${s.eventWeighted.maeReduction.eventN} event(s)`}/>
    <Card label="Event-weighted realized PnL Δ" value={signedUsd(s.eventWeighted.realizedPnlDelta.value)} detail={`${s.eventWeighted.realizedPnlDelta.eventN} event(s)`}/>
-   <Card label="Breach-rate difference" value={s.breachRateDifference===null?NOT_ESTIMABLE:`${s.breachRateDifference>0?"+":""}${(s.breachRateDifference*100).toFixed(1)} pp`} detail="buffered − technical"/>
+   <Card label="Breach-rate difference" value={s.breachRateDifference.value===null?NOT_ESTIMABLE:`${s.breachRateDifference.value>0?"+":""}${(s.breachRateDifference.value*100).toFixed(1)} pp`} detail={`${s.breachRateDifference.eventN} event(s) · ${s.breachRateDifference.commonObservableN} common observable row(s)`}/>
    <Card label="Median extra distance" value={usd(s.medianExtraDistanceUsd)} detail="farther out of the money"/>
   </div>
   {report.robustness&&<section className="dd-block"><h3>Execution Robustness</h3><p className="dd-note">Observed execution remains strict and separate from the reference result. Matched N: Maker {report.robustness.maker.pairs.filter(p=>p.economicsComparable).length}; Taker {report.robustness.taker.pairs.filter(p=>p.economicsComparable).length}. Missing tape is not replaced by reference or modeled values.</p></section>}
@@ -150,9 +150,9 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
   {/* 3 · Challenge frequency */}
   <section className="dd-block"><h3>2 · Challenge frequency</h3>
    <div className="table-scroll"><table className="dd-table dd-compact">
-    <thead><tr><th>Placement</th><th>Observable</th><th>Touched</th><th>Breached</th><th>Breach before invalidation</th><th>Invalidated without breach</th><th>Ambiguous order</th><th>Challenge/exit ambiguous</th></tr></thead>
+    <thead><tr><th>Placement</th><th>Observable</th><th>Independent events</th><th>Touched</th><th>Breached</th><th>Breach before invalidation</th><th>Invalidated without breach</th><th>Ambiguous order</th><th>Challenge/exit ambiguous</th></tr></thead>
     <tbody>{report.challenge.map(c=><tr key={c.method}>
-     <td>{c.method==="technical"?"Technical":"Buffered"}</td><td>{c.observableN}</td>
+     <td>{c.method==="technical"?"Technical":"Buffered"}</td><td>{c.observableN}</td><td>{c.independentEventN}</td>
      <td>{c.touchedN} · {pct(c.touchShare)}</td>
      <td className={c.breachedN>0?"negative":undefined}>{c.breachedN} · {pct(c.breachShare)}</td>
      <td>{c.breachBeforeInvalidationN}</td><td>{c.invalidatedWithoutBreachN}</td>
@@ -169,9 +169,9 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
   {/* 5 · Conditional PnL */}
   <section className="dd-block"><h3>4 · Conditional PnL</h3>
    <div className="table-scroll"><table className="dd-table dd-compact">
-    <thead><tr><th>Technical challenge condition</th><th>Pairs / events</th><th>Common PnL / adverse n</th><th>Common PnL / adverse n</th><th>Technical median PnL</th><th>Buffered median PnL</th><th>Technical worst adverse</th><th>Buffered worst adverse</th><th>Paired Δ PnL / adverse</th><th>Buffered transition B / T / N</th></tr></thead>
+    <thead><tr><th>Technical challenge condition</th><th>Pairs / events</th><th>Common PnL N</th><th>Common adverse N</th><th>Technical median PnL</th><th>Buffered median PnL</th><th>Technical worst adverse</th><th>Buffered worst adverse</th><th>Paired Δ PnL / adverse</th><th>Buffered transition B / T / N</th></tr></thead>
     <tbody>{report.conditionalPnl.filter(r=>r.technicalN>0||r.bufferedN>0).map(r=><tr key={r.bucket}>
-     <td>{BUCKET_LABEL[r.bucket]}</td><td>{r.pairedN} / {r.independentEventN}</td><td>{r.bothPnlAvailablePairN} / {r.bothAdverseAvailablePairN}</td><td>{r.bothPnlAvailablePairN} / {r.bothAdverseAvailablePairN}</td>
+     <td>{BUCKET_LABEL[r.bucket]}</td><td>{r.pairedN} / {r.independentEventN}</td><td>{r.bothPnlAvailablePairN}</td><td>{r.bothAdverseAvailablePairN}</td>
      <td className={r.technicalMedianPnlUsd===null?"dd-muted":r.technicalMedianPnlUsd>=0?"positive":"negative"}>{usd(r.technicalMedianPnlUsd)}</td>
      <td className={r.bufferedMedianPnlUsd===null?"dd-muted":r.bufferedMedianPnlUsd>=0?"positive":"negative"}>{usd(r.bufferedMedianPnlUsd)}</td>
      <td className={r.technicalMedianWorstAdverseUsd===null?"dd-muted":"negative"}>{usd(r.technicalMedianWorstAdverseUsd)}</td>
