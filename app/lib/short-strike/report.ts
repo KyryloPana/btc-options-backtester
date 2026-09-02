@@ -81,6 +81,7 @@ export interface GeometryRow {
 export interface ChallengeRow {
  readonly method:StrikeMethod;
  readonly observableN:number;
+ readonly independentEventN:number;
  readonly touchedN:number;
  readonly breachedN:number;
  readonly breachBeforeInvalidationN:number;
@@ -129,8 +130,8 @@ export interface ShortStrikeSummary {
  readonly medianRelativeCreditSacrifice:number|null;
  readonly medianWorstAdverseReductionUsd:number|null;
  readonly medianMaeReductionUsd:number|null;
- /** Buffered breach share minus technical breach share, over matched pairs. */
- readonly breachRateDifference:number|null;
+ /** Event-weighted buffered-minus-technical breach share over common-observable comparisons. */
+ readonly breachRateDifference:Readonly<{value:number|null;eventN:number;commonObservableN:number}>;
  readonly medianExtraDistanceUsd:number|null;
  /** Equal-weight MR-event inference: pair deltas are first aggregated within event. */
  readonly eventWeighted:Readonly<Record<"grossCreditSacrifice"|"netCreditSacrifice"|"relativeCreditSacrifice"|"adverseReduction"|"maeReduction"|"realizedPnlDelta",Readonly<{value:number|null;eventN:number}>>>;
@@ -193,7 +194,7 @@ function challengeRow(method:StrikeMethod,pairs:readonly MatchedPair[]):Challeng
  const touchedN=observable.filter(s=>s.challenge.touched===true).length;
  const breachedN=observable.filter(s=>s.challenge.breached===true).length;
  return {
-  method,observableN:observable.length,touchedN,breachedN,
+  method,observableN:observable.length,independentEventN:new Set(observable.map(s=>s.eventId)).size,touchedN,breachedN,
   breachBeforeInvalidationN:observable.filter(s=>s.challenge.breachBeforeInvalidation===true).length,
   invalidatedWithoutBreachN:observable.filter(s=>s.challenge.invalidatedWithoutBreach===true).length,
   ambiguousOrderingN:observable.filter(s=>s.challenge.ambiguousOrdering).length,
@@ -267,6 +268,24 @@ export function eventWeighted(pairs:readonly MatchedPair[]){
   maeReduction:metric(p=>p.maeReductionUsd),realizedPnlDelta:metric(p=>diff(p.buffered.realizedPnlUsd,p.technical.realizedPnlUsd))};
 }
 
+export function eventWeightedBreachDifference(pairs:readonly MatchedPair[]){
+ // A comparison is admissible only when BOTH placements are observable. The
+ // paired identity includes both short strikes; width is deliberately absent.
+ const unique=new Map<string,MatchedPair>();
+ for(const pair of pairs){
+  if(pair.technical.challenge.reason!==null||pair.buffered.challenge.reason!==null)continue;
+  unique.set([pair.eventId,pair.technical.expiryTimestampMs,pair.technical.geometry.shortStrike,pair.buffered.geometry.shortStrike].join("|"),pair);
+ }
+ const byEvent=new Map<string,MatchedPair[]>();
+ for(const pair of unique.values()){const rows=byEvent.get(pair.eventId);if(rows)rows.push(pair);else byEvent.set(pair.eventId,[pair])}
+ const deltas=[...byEvent.values()].map(rows=>{
+  const technical=rows.filter(p=>p.technical.challenge.breached===true).length/rows.length;
+  const buffered=rows.filter(p=>p.buffered.challenge.breached===true).length/rows.length;
+  return buffered-technical;
+ });
+ return {value:median(deltas),eventN:deltas.length,commonObservableN:unique.size};
+}
+
 const BUCKETS:readonly ConditionalBucket[]=["breached","touched_not_breached","never_touched"];
 
 export function buildShortStrikeReport(dataset:AnalysisDataset,scenario?:ExecutionScenario):ShortStrikeReport{
@@ -290,11 +309,6 @@ export function buildShortStrikeReport(dataset:AnalysisDataset,scenario?:Executi
  pairs.sort((a,b)=>a.eventId.localeCompare(b.eventId)||(a.actualDteDays??0)-(b.actualDteDays??0)||(a.widthUsd??0)-(b.widthUsd??0));
 
  const comparable=pairs.filter(p=>p.economicsComparable);
- const challengeRows=(method:StrikeMethod)=>{const unique=new Map<string,ShortStrikeStructure>();for(const p of pairs.filter(p=>p.technical.challenge.reason===null&&p.buffered.challenge.reason===null)){const row=method==="technical"?p.technical:p.buffered;unique.set([row.eventId,row.expiryTimestampMs,row.geometry.shortStrike].join("|"),row)}return [...unique.values()]};
- const technicalChallenge=challengeRows("technical"),bufferedChallenge=challengeRows("buffered");
- const technicalBreachShare=share(technicalChallenge.filter(s=>s.challenge.breached===true).length,technicalChallenge.length),
-  bufferedBreachShare=share(bufferedChallenge.filter(s=>s.challenge.breached===true).length,bufferedChallenge.length);
-
  const report:ShortStrikeReport={
   scenario:primary?"reference":selectedScenario,structures,pairs,
   summary:{
@@ -311,7 +325,7 @@ export function buildShortStrikeReport(dataset:AnalysisDataset,scenario?:Executi
    medianRelativeCreditSacrifice:median(defined(comparable.map(p=>p.relativeCreditSacrifice))),
    medianWorstAdverseReductionUsd:median(defined(comparable.map(p=>p.worstAdverseReductionUsd))),
    medianMaeReductionUsd:median(defined(comparable.map(p=>p.maeReductionUsd))),
-   breachRateDifference:bufferedBreachShare!==null&&technicalBreachShare!==null?bufferedBreachShare-technicalBreachShare:null,
+   breachRateDifference:eventWeightedBreachDifference(pairs),
    medianExtraDistanceUsd:median(defined(pairs.map(p=>p.extraDistanceUsd))),
    eventWeighted:eventWeighted(comparable),
   },

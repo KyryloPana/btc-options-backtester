@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type {AnalysisDataset} from "../app/lib/research-analysis.ts";
 import {normalizeShortStrikeStructures,strikeMethodOf} from "../app/lib/short-strike/normalize.ts";
-import {buildShortStrikeReport,eventWeighted,type MatchedPair} from "../app/lib/short-strike/report.ts";
+import {buildShortStrikeReport,eventWeighted,eventWeightedBreachDifference,type MatchedPair} from "../app/lib/short-strike/report.ts";
 import {compactOutcomeSnapshot,compactValuationPoint,type EvidenceUsageDto} from "../app/lib/research-selections.ts";
 import {adversePath,referenceAdversePath} from "../app/lib/adverse-path.ts";
 import {datasetForAnalyticsTrack} from "../app/lib/research-analytics-model.ts";
@@ -250,6 +250,7 @@ test("CHALLENGE: same-candle ordering is preserved as ambiguous, never invented"
  // An ambiguous pair must not be counted as an ordered breach.
  const technical=report.challenge.find(r=>r.method==="technical")!;
  assert.equal(technical.exitAmbiguousN,1);
+ assert.equal(technical.independentEventN,4,"challenge diagnostics disclose independent events separately from expiry observations");
 });
 
 test("CHALLENGE: buffering moves the strike out of reach of the same path",()=>{
@@ -431,6 +432,19 @@ test("WEIGHTING: headline medians equally weight events and disclose metric-spec
  assert.equal(weighted.realizedPnlDelta.eventN,1);
 });
 
+test("BREACH HEADLINE: common-observable, width-deduplicated comparisons receive equal event weight",()=>{
+ const base=pairFor("e1"),fake=(eventId:string,expiry:number,width:number,technical:boolean|null,buffered:boolean|null,reason:string|null=null)=>({...base,eventId,widthUsd:width,technical:{...base.technical,eventId,expiryTimestampMs:expiry,widthUsd:width,challenge:{...base.technical.challenge,breached:technical,reason,ambiguousWithExit:reason!==null}},buffered:{...base.buffered,eventId,expiryTimestampMs:expiry,widthUsd:width,challenge:{...base.buffered.challenge,breached:buffered,reason,ambiguousWithExit:reason!==null}}} as MatchedPair);
+ const rows=[
+  fake("many",T(8),1000,true,false),fake("many",T(8),2000,true,false), // width duplicate
+  fake("many",T(9),1000,true,false),fake("single",T(8),1000,false,true),
+  fake("missing",T(8),1000,null,null,"no path"),fake("ambiguous",T(8),1000,null,null,"same-hour exit"),
+ ];
+ const result=eventWeightedBreachDifference(rows);
+ assert.equal(result.commonObservableN,3,"two widths collapse and unavailable/ambiguous rows are excluded");
+ assert.equal(result.eventN,2);
+ assert.equal(result.value,0,"events with deltas -1 and +1 receive equal weight despite unequal expiry counts");
+});
+
 test("OUTCOME USD: explicit USD wins, contemporaneous conversion is allowed, and native alone stays null",()=>{
  const make=(usd:number|null,index:number|null)=>{const d={...dataset,tables:{...dataset.tables,outcomes:dataset.tables.outcomes.map(o=>o.candidate_id==="e1-anchor"&&o.execution_scenario==="maker"&&o.outcome_type==="settlement"?{...o,net_pnl_usd:usd,net_pnl_native:.006,conversionIndex:index}:o)}} as AnalysisDataset;return normalizeShortStrikeStructures(d).find(s=>s.candidateId==="e1-anchor"&&s.executionScenario==="maker")!};
  assert.equal(make(250,42000).pnlAtSettlementUsd,250);
@@ -463,7 +477,9 @@ test("SUMMARY: matched coverage and medians are reported over pairs, not over al
  assert.ok(s.technicalStructures>s.matchedPairs,"the extra 2000-wide technical structure is counted but unpaired");
  assert.equal(s.unmatchedTechnical,1);
  assert.equal(s.medianExtraDistanceUsd,1000);
- assert.ok(s.breachRateDifference!<0,"buffering breached less often across matched pairs");
+ assert.equal(s.breachRateDifference.value,0,"event median is not a pair-weighted aggregate");
+ assert.equal(s.breachRateDifference.eventN,4);
+ assert.equal(s.breachRateDifference.commonObservableN,4);
 });
 
 test("MISSING DATA: a not-evaluated scenario yields Unavailable economics, never zero",()=>{
@@ -498,7 +514,7 @@ test("MISSING DATA: an empty bundle produces no pairs and no fabricated statisti
  assert.equal(r.pairs.length,0);
  assert.equal(r.summary.matchedPairs,0);
  assert.equal(r.summary.medianGrossCreditSacrificedUsd,null);
- assert.equal(r.summary.breachRateDifference,null);
+ assert.deepEqual(r.summary.breachRateDifference,{value:null,eventN:0,commonObservableN:0});
 });
 
 test("SCOPE: width is held constant inside pairs and is never the reported variable",()=>{
