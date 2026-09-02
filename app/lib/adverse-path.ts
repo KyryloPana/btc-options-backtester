@@ -73,7 +73,7 @@ export function adversePath(
   if(row.valuation_status!=="priced")continue;
   const t=ms(row.timestamp_utc);
   if(t===null||t<entryMs||t>boundaryMs)continue;
-  const pnl=num(row.net_pnl_usd)??num(row.net_pnl_native);
+  const pnl=num(row.net_pnl_usd);
   if(pnl===null)continue;
   marks.push({t,pnl});
  }
@@ -89,9 +89,9 @@ export function adversePath(
  }
 
  marks.sort((a,b)=>a.t-b.t);
- const worstAdverseUsd=Math.min(...marks.map(m=>m.pnl));
+ const worstAdverseUsd=Math.min(0,...marks.map(m=>m.pnl));
  const firstProfit=marks.find(m=>m.pnl>0);
- const maeBeforeProfitUsd=firstProfit?Math.min(...marks.filter(m=>m.t<=firstProfit.t).map(m=>m.pnl)):null;
+ const maeBeforeProfitUsd=firstProfit?Math.min(0,...marks.filter(m=>m.t<=firstProfit.t).map(m=>m.pnl)):null;
  return {worstAdverseUsd,maeBeforeProfitUsd,profitObserved:firstProfit!==undefined,rawMarksInWindow:marks.length,status:"available",reason:null};
 }
 
@@ -111,5 +111,5 @@ export function referenceAdversePath(
  const marks=rows.filter((r):r is {t:number;usd:number;native:number|null}=>r.t!==null&&r.usd!==null).map(r=>({t:r.t,p:r.usd})).sort((a,b)=>a.t-b.t);
  if(!marks.length)return {...empty,status:rows.some(r=>r.native!==null)?"usd_representation_unavailable":"no_raw_marks",reason:rows.some(r=>r.native!==null)?"Reference path has native marks but no USD PnL; BTC is not labelled USD.":"Reference path has no USD-valued mark in the post-entry window."};
  const firstProfit=marks.findIndex(m=>m.p>0),before=firstProfit<0?[]:marks.slice(0,firstProfit+1);
- return {worstAdverseUsd:Math.min(...marks.map(m=>m.p)),maeBeforeProfitUsd:before.length?Math.min(...before.map(m=>m.p)):null,profitObserved:firstProfit>=0,rawMarksInWindow:marks.length,status:"available",reason:null};
+ return {worstAdverseUsd:Math.min(0,...marks.map(m=>m.p)),maeBeforeProfitUsd:before.length?Math.min(0,...before.map(m=>m.p)):null,profitObserved:firstProfit>=0,rawMarksInWindow:marks.length,status:"available",reason:null};
 }

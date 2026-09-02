@@ -107,7 +107,7 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
     <p className="eyebrow">Options structure analysis · short-strike placement</p>
     <h2>Short-Strike Analysis</h2>
     <p className="dd-sub">Does moving the short strike farther from the failed-breakout area reduce challenged-position and tail losses enough to justify the credit sacrificed?</p>
-    <p className="dd-note">Every primary comparison is a matched pair: same MR event, actual expiry and DTE, width and protective-long rule, structure type and exit policy — only the short strike differs. Execution scenario is not a primary match dimension. Scoped to {scenarioLabel}{compare&&takerReport?"; the compare column shows the same pairs priced under taker":""}.</p>
+    <p className="dd-note">Pair diagnostics hold event, expiry, width and structure fixed. Headline inference first aggregates within each MR event so events have equal weight. Thesis Exit is frozen to first post-entry VPOC or invalidation, then settlement. Scoped to {scenarioLabel}{compare&&takerReport?"; the compare column shows the same pairs priced under taker":""}.</p>
    </div>
    {onViewChange&&<div className="dd-tabs dd-scenario-tabs" role="tablist" aria-label="Execution view">
     {VIEWS.map(v=><button key={v.value} role="tab" aria-selected={v.value===view} className={v.value===view?"dd-tab-active":undefined} onClick={()=>onViewChange(v.value)}>{v.label}</button>)}
@@ -118,10 +118,11 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
   {/* 1 · Summary */}
   <div className="dd-cards">
    <Card label="Matched pairs" value={String(s.matchedPairs)} detail={`${s.matchedEvents} event(s)`}/>
+   <Card label="Buffer-eligible share" value={pct(s.bufferEligibleShare)} detail={`${s.bufferEligibleTechnicalStructures} of ${s.technicalStructures} technical structures`}/>
    <Card label="Technical structures" value={String(s.technicalStructures)} detail={s.unmatchedTechnical>0?`${s.unmatchedTechnical} unpaired`:undefined}/>
    <Card label="Buffered structures" value={String(s.bufferedStructures)} detail={s.unmatchedBuffered>0?`${s.unmatchedBuffered} unpaired`:undefined}/>
    <Card label="Median credit sacrificed" value={usd(s.medianGrossCreditSacrificedUsd)} detail={s.medianRelativeCreditSacrifice===null?undefined:`${pct(s.medianRelativeCreditSacrifice)} of technical credit`}/>
-   <Card label="Median adverse-loss reduction" value={signedUsd(s.medianWorstAdverseReductionUsd)} title="Buffered minus technical worst adverse mark. Positive means buffering reduced the loss."/>
+   <Card label="Event-weighted adverse reduction" value={signedUsd(s.eventWeighted.medianWorstAdverseReductionUsd)} detail={`${s.eventWeighted.independentEventN} independent event(s)`} title="Within-event median pair delta, then median across equally weighted MR events."/>
    <Card label="Breach-rate difference" value={s.breachRateDifference===null?NOT_ESTIMABLE:`${s.breachRateDifference>0?"+":""}${(s.breachRateDifference*100).toFixed(1)} pp`} detail="buffered − technical"/>
    <Card label="Median extra distance" value={usd(s.medianExtraDistanceUsd)} detail="farther out of the money"/>
   </div>
@@ -163,17 +164,18 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
   {/* 5 · Conditional PnL */}
   <section className="dd-block"><h3>4 · Conditional PnL</h3>
    <div className="table-scroll"><table className="dd-table dd-compact">
-    <thead><tr><th>Challenge condition</th><th>Technical condition / PnL / adverse n</th><th>Buffered condition / PnL / adverse n</th><th>Technical median PnL</th><th>Buffered median PnL</th><th>Technical worst adverse</th><th>Buffered worst adverse</th><th>Paired Δ PnL</th></tr></thead>
+    <thead><tr><th>Technical challenge condition</th><th>Pairs / events</th><th>Technical PnL / adverse n</th><th>Buffered PnL / adverse n</th><th>Technical median PnL</th><th>Buffered median PnL</th><th>Technical worst adverse</th><th>Buffered worst adverse</th><th>Paired Δ PnL / adverse</th><th>Buffered transition B / T / N</th></tr></thead>
     <tbody>{report.conditionalPnl.filter(r=>r.technicalN>0||r.bufferedN>0).map(r=><tr key={r.bucket}>
-     <td>{BUCKET_LABEL[r.bucket]}</td><td>{r.technicalN} / {r.technicalPnlN} / {r.technicalAdverseN}</td><td>{r.bufferedN} / {r.bufferedPnlN} / {r.bufferedAdverseN}</td>
+     <td>{BUCKET_LABEL[r.bucket]}</td><td>{r.pairedN} / {r.independentEventN}</td><td>{r.technicalPnlN} / {r.technicalAdverseN}</td><td>{r.bufferedPnlN} / {r.bufferedAdverseN}</td>
      <td className={r.technicalMedianPnlUsd===null?"dd-muted":r.technicalMedianPnlUsd>=0?"positive":"negative"}>{usd(r.technicalMedianPnlUsd)}</td>
      <td className={r.bufferedMedianPnlUsd===null?"dd-muted":r.bufferedMedianPnlUsd>=0?"positive":"negative"}>{usd(r.bufferedMedianPnlUsd)}</td>
      <td className={r.technicalMedianWorstAdverseUsd===null?"dd-muted":"negative"}>{usd(r.technicalMedianWorstAdverseUsd)}</td>
      <td className={r.bufferedMedianWorstAdverseUsd===null?"dd-muted":"negative"}>{usd(r.bufferedMedianWorstAdverseUsd)}</td>
-     <td title={`${r.pairedN} pair(s) where both sides fell in this condition`}>{r.pairedN?signedUsd(r.medianPairedPnlDeltaUsd):<span className="dd-muted">{NOT_ESTIMABLE}</span>}</td>
+     <td title={`${r.pairedN} pair(s), conditioned on the technical strike`}>{r.pairedN?`${signedUsd(r.medianPairedPnlDeltaUsd)} / ${signedUsd(r.medianPairedAdverseReductionUsd)}`:<span className="dd-muted">{NOT_ESTIMABLE}</span>}</td>
+     <td>{r.bufferedTransitions.breached} / {r.bufferedTransitions.touched_not_breached} / {r.bufferedTransitions.never_touched}</td>
     </tr>)}</tbody>
    </table></div>
-   <small className="dd-note">Conditions describe what each structure actually lived through. The paired Δ uses only pairs where BOTH placements fell in the same condition — a touched technical strike is never differenced against an untouched buffered one; where no such pair exists the Δ is Not estimable rather than a cross-population difference.</small>
+   <small className="dd-note">Each row conditions on the technical strike&rsquo;s observed state, then compares both placements in those exact pairs. Thus technical breach → buffered touch or no challenge remains evidence rather than disappearing. Counts disclose pairs, independent events, and available PnL/adverse denominators; transitions are breached / touched-not-breached / never-touched.</small>
   </section>
 
   {/* 6 · Matched pair audit */}

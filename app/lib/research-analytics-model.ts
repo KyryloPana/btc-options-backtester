@@ -408,6 +408,9 @@ function projectAnalyticsTrack(
       outcomes.push(projectOutcome(rec(value), name, observation.candidateId, scenario, track, observation.structure.expiryTime));
     for (const value of track.valuationPath) {
       const x = rec(value);
+      const nativePnl = n(x.net_pnl_native) ?? n(x.estimatedNetPnlBtc);
+      const targetIndex = n(x.targetIndex) ?? n(x.target_index);
+      const explicitUsd = n(x.net_pnl_usd) ?? n(x.estimatedNetPnlUsd);
       valuations.push({
         ...x,
         candidate_id: observation.candidateId,
@@ -415,8 +418,9 @@ function projectAnalyticsTrack(
         pricing_track: requested === "reference" ? "reference" : requested,
         valuation_status: "priced",
         timestamp_utc: s(x.timestamp_utc) ?? (n(x.timestamp) === null ? null : new Date(n(x.timestamp)!).toISOString()),
-        net_pnl_native: n(x.net_pnl_native) ?? n(x.estimatedNetPnlBtc),
-        net_pnl_usd: n(x.net_pnl_usd) ?? n(x.estimatedNetPnlUsd),
+        net_pnl_native: nativePnl,
+        net_pnl_usd: explicitUsd ?? (nativePnl !== null && targetIndex !== null && targetIndex > 0 ? nativePnl * targetIndex : null),
+        net_pnl_usd_provenance: explicitUsd !== null ? "persisted_usd_pnl" : nativePnl !== null && targetIndex !== null && targetIndex > 0 ? "derived_native_pnl_times_contemporaneous_target_index" : null,
       });
     }
   }
