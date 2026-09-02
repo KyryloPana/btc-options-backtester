@@ -26,7 +26,8 @@ test("Task 3 structural reports retain Reference as their counterfactual basis",
  assert.equal(projected.tables.candidates?.length,3);
  const strike=buildShortStrikeReport(d);
  assert.equal(strike.scenario,"reference");
- assert.equal(strike.pairs.length,0,"no empirical Q50 means no central economic pair");
+ assert.equal(strike.pairs.length,1,"valid Reference technical and buffered structures form the primary pair");
+ assert.equal(strike.pairs[0]?.economicsComparable,true);
  assert.equal(strike.robustness?.maker.pairs[0]?.economicsComparable,false);
  assert.equal(strike.robustness?.taker.pairs[0]?.economicsComparable,false);
  const width=buildSpreadWidthReport(d);

@@ -86,6 +86,7 @@ export interface ChallengeRow {
  readonly breachBeforeInvalidationN:number;
  readonly invalidatedWithoutBreachN:number;
  readonly ambiguousOrderingN:number;
+ readonly exitAmbiguousN:number;
  readonly touchShare:number|null;
  readonly breachShare:number|null;
 }
@@ -108,6 +109,8 @@ export interface ConditionalPnlRow {
  readonly medianPairedPnlDeltaUsd:number|null;
  readonly pairedN:number;
  readonly independentEventN:number;
+ readonly bothPnlAvailablePairN:number;
+ readonly bothAdverseAvailablePairN:number;
  readonly medianPairedAdverseReductionUsd:number|null;
  readonly bufferedTransitions:Readonly<Record<ConditionalBucket,number>>;
 }
@@ -115,8 +118,8 @@ export interface ConditionalPnlRow {
 export interface ShortStrikeSummary {
  readonly matchedPairs:number;
  readonly matchedEvents:number;
- readonly bufferEligibleTechnicalStructures:number;
- readonly bufferEligibleShare:number|null;
+ readonly matchedTechnicalStructures:number;
+ readonly bufferedPairCoverage:number|null;
  readonly technicalStructures:number;
  readonly bufferedStructures:number;
  readonly unmatchedTechnical:number;
@@ -130,14 +133,7 @@ export interface ShortStrikeSummary {
  readonly breachRateDifference:number|null;
  readonly medianExtraDistanceUsd:number|null;
  /** Equal-weight MR-event inference: pair deltas are first aggregated within event. */
- readonly eventWeighted:Readonly<{
-  independentEventN:number;
-  medianGrossCreditSacrificedUsd:number|null;
-  medianNetCreditSacrificedUsd:number|null;
-  medianWorstAdverseReductionUsd:number|null;
-  medianMaeReductionUsd:number|null;
-  medianRealizedPnlDeltaUsd:number|null;
- }>;
+ readonly eventWeighted:Readonly<Record<"grossCreditSacrifice"|"netCreditSacrifice"|"relativeCreditSacrifice"|"adverseReduction"|"maeReduction"|"realizedPnlDelta",Readonly<{value:number|null;eventN:number}>>>;
 }
 
 export interface ShortStrikeReport {
@@ -184,7 +180,7 @@ function geometryRow(method:StrikeMethod,pairs:readonly MatchedPair[]):GeometryR
 
 function challengeRow(method:StrikeMethod,pairs:readonly MatchedPair[]):ChallengeRow{
  const unique=new Map<string,ShortStrikeStructure>();
- for(const p of pairs.filter(p=>p.technical.challenge.reason===null&&p.buffered.challenge.reason===null)){
+ for(const p of pairs){
   const row=method==="technical"?p.technical:p.buffered;
   // Width changes only the protective long; it cannot create another
   // independent observation of the same short strike and underlying path.
@@ -201,6 +197,7 @@ function challengeRow(method:StrikeMethod,pairs:readonly MatchedPair[]):Challeng
   breachBeforeInvalidationN:observable.filter(s=>s.challenge.breachBeforeInvalidation===true).length,
   invalidatedWithoutBreachN:observable.filter(s=>s.challenge.invalidatedWithoutBreach===true).length,
   ambiguousOrderingN:observable.filter(s=>s.challenge.ambiguousOrdering).length,
+  exitAmbiguousN:rows.filter(s=>s.challenge.ambiguousWithExit).length,
   touchShare:share(touchedN,observable.length),
   breachShare:share(breachedN,observable.length),
  };
@@ -251,25 +248,23 @@ function conditionalRow(bucket:ConditionalBucket,pairs:readonly MatchedPair[]):C
   bucket,technicalN:technical.length,bufferedN:buffered.length,
   technicalPnlN:defined(technical.map(s=>s.realizedPnlUsd)).length,bufferedPnlN:defined(buffered.map(s=>s.realizedPnlUsd)).length,
   technicalAdverseN:defined(technical.map(s=>s.worstAdverseUsd)).length,bufferedAdverseN:defined(buffered.map(s=>s.worstAdverseUsd)).length,
-  technicalMedianPnlUsd:median(defined(technical.map(s=>s.realizedPnlUsd))),
-  bufferedMedianPnlUsd:median(defined(buffered.map(s=>s.realizedPnlUsd))),
-  technicalMedianWorstAdverseUsd:median(defined(technical.map(s=>s.worstAdverseUsd))),
-  bufferedMedianWorstAdverseUsd:median(defined(buffered.map(s=>s.worstAdverseUsd))),
+  technicalMedianPnlUsd:median(pnlPairs.map(p=>p.technical.realizedPnlUsd!)),
+  bufferedMedianPnlUsd:median(pnlPairs.map(p=>p.buffered.realizedPnlUsd!)),
+  technicalMedianWorstAdverseUsd:median(adversePairs.map(p=>p.technical.worstAdverseUsd!)),
+  bufferedMedianWorstAdverseUsd:median(adversePairs.map(p=>p.buffered.worstAdverseUsd!)),
   medianPairedPnlDeltaUsd:median(defined(pnlPairs.map(p=>diff(p.buffered.realizedPnlUsd,p.technical.realizedPnlUsd)))),
   medianPairedAdverseReductionUsd:median(defined(adversePairs.map(p=>diff(p.buffered.worstAdverseUsd,p.technical.worstAdverseUsd)))),
-  pairedN:conditioned.length,independentEventN:new Set(conditioned.map(p=>p.eventId)).size,bufferedTransitions:transitions,
+  pairedN:conditioned.length,independentEventN:new Set(conditioned.map(p=>p.eventId)).size,
+  bothPnlAvailablePairN:pnlPairs.length,bothAdverseAvailablePairN:adversePairs.length,bufferedTransitions:transitions,
  };
 }
 
-function eventWeighted(pairs:readonly MatchedPair[]){
+export function eventWeighted(pairs:readonly MatchedPair[]){
  const groups=new Map<string,MatchedPair[]>();for(const p of pairs){const g=groups.get(p.eventId);if(g)g.push(p);else groups.set(p.eventId,[p])}
- const perEvent=(read:(p:MatchedPair)=>number|null)=>[...groups.values()].map(g=>median(defined(g.map(read))));
- return {independentEventN:groups.size,
-  medianGrossCreditSacrificedUsd:median(defined(perEvent(p=>p.grossCreditSacrificedUsd))),
-  medianNetCreditSacrificedUsd:median(defined(perEvent(p=>p.netCreditSacrificedUsd))),
-  medianWorstAdverseReductionUsd:median(defined(perEvent(p=>p.worstAdverseReductionUsd))),
-  medianMaeReductionUsd:median(defined(perEvent(p=>p.maeReductionUsd))),
-  medianRealizedPnlDeltaUsd:median(defined(perEvent(p=>diff(p.buffered.realizedPnlUsd,p.technical.realizedPnlUsd))))};
+ const metric=(read:(p:MatchedPair)=>number|null)=>{const values=defined([...groups.values()].map(g=>median(defined(g.map(read)))));return {value:median(values),eventN:values.length}};
+ return {grossCreditSacrifice:metric(p=>p.grossCreditSacrificedUsd),netCreditSacrifice:metric(p=>p.netCreditSacrificedUsd),
+  relativeCreditSacrifice:metric(p=>p.relativeCreditSacrifice),adverseReduction:metric(p=>p.worstAdverseReductionUsd),
+  maeReduction:metric(p=>p.maeReductionUsd),realizedPnlDelta:metric(p=>diff(p.buffered.realizedPnlUsd,p.technical.realizedPnlUsd))};
 }
 
 const BUCKETS:readonly ConditionalBucket[]=["breached","touched_not_breached","never_touched"];
@@ -305,8 +300,8 @@ export function buildShortStrikeReport(dataset:AnalysisDataset,scenario?:Executi
   summary:{
    matchedPairs:pairs.length,
    matchedEvents:new Set(pairs.map(p=>p.eventId)).size,
-   bufferEligibleTechnicalStructures:pairs.length,
-   bufferEligibleShare:share(pairs.length,structures.filter(s=>s.strikeMethod==="technical").length),
+   matchedTechnicalStructures:pairs.length,
+   bufferedPairCoverage:share(pairs.length,structures.filter(s=>s.strikeMethod==="technical").length),
    technicalStructures:structures.filter(s=>s.strikeMethod==="technical").length,
    bufferedStructures:structures.filter(s=>s.strikeMethod==="buffered").length,
    unmatchedTechnical:unpaired.filter(u=>u.structure.strikeMethod==="technical").length,
@@ -329,12 +324,12 @@ export function buildShortStrikeReport(dataset:AnalysisDataset,scenario?:Executi
    `Comparison unit. Every figure is a MATCHED PAIR: the same MR event, the same actual expiry (hence the same actual DTE), the same width and protective-long rule, the same structure and option type, the same exit policy. Only the short strike differs. Execution scenario is absent from the primary key. This report is scoped to the ${primary?"reference":selectedScenario} track; explicit observed robustness layers are filtered before matching, so maker and taker are never mixed.`,
    "Thesis Exit (frozen for Short-Strike): the first candidate-relative post-entry endpoint of VPOC or invalidation, followed by settlement only when neither resolves before that structure's expiry. Exit-policy optimization is analysed separately so it cannot confound strike placement.",
    "Placement names are read from canonical strike_method, never inferred from the strike value. 'anchor' is the technical placement rounded from the failed-breakout extreme; 'buffered' is one strike step farther out. The generator only produces a buffered variant when the extreme sits within 100 of the rounded boundary, which is why many structures have no partner and are listed as unpaired rather than silently dropped.",
-   "Inference scope. Technical-versus-buffered inference applies only to the buffer-eligible subset. Coverage reports all technical structures, eligible/matched technical structures, their share, raw pair N, and independent MR-event N; no missing buffered alternative is invented.",
+   "Inference scope. Technical-versus-buffered inference applies only to the matched, buffer-rule-supported subset and must not automatically be generalized to every technical structure. Buffered-pair coverage is matched technical structures divided by all technical structures; it is not claimed to measure latent generator eligibility. No missing buffered alternative is invented.",
    "Weighting. Exact event × expiry × width pairs remain diagnostics. Headline event-weighted statistics first take the median pair delta inside each MR event and then the median across events, giving every independent event equal weight. Pure challenge summaries use matched observations and should be read with independent-event N because expiry variants within an event are not independent.",
    "Distance sign. Every distance is signed so that POSITIVE MEANS FARTHER OUT OF THE MONEY for both directions: a bullish MR sells a put below spot, a bearish MR sells a call above it. Distances are measured from the entry spot (the candidate's own entry index where present, otherwise the event's entry price), from the failed-breakout extreme, and from the invalidation level, plus normalised by spot and by the event's range width.",
    "Entry delta is Unavailable. The canonical bundle records per-leg implied volatility but carries no delta on any table; deriving one from an IV anchor would present a model output as a canonical observation, so the column stays empty with its reason attached rather than being filled.",
    "Touch and breach come from the canonical hourly underlying path and nothing else. A TOUCH is a candle whose extreme reached the strike (low <= K for a short put, high >= K for a short call). A BREACH is a candle that CLOSED beyond it -- a completed hourly close is the finest settled evidence the path provides.",
-   "Causality. Only candles that OPEN at or after structure entry and at or before expiry are counted: a candle straddling entry is partly pre-entry, and letting it challenge the strike would use price action from before the position existed. Post-expiry candles are excluded for the mirror-image reason.",
+   "Short-Strike Thesis Exit challenge window. Touch and breach are measured only while the structure is open: from candidate entry through the first post-entry VPOC or invalidation, with expiry as the fallback boundary. A challenge after Thesis Exit is irrelevant. A challenge and Thesis Exit in the same hourly candle are ambiguous and excluded rather than force-ranked. Exit-policy optimization happens later in the dedicated Exit Policy report.",
    "Ordering is asserted only at the precision the path has. The path is stamped at candle open, so a breach and an invalidation falling inside one hourly candle cannot be ordered; that case is reported as ambiguous and excluded from 'breach before invalidation' rather than resolved by assumption.",
    "Candidate-relative outcomes. Realized PnL follows Thesis Exit. Pre-entry and post-expiry endpoints are never used. Equal-time VPOC and invalidation are labelled ambiguous_resolution_order and excluded rather than arbitrarily ranked.",
    primary?"Reference adverse metrics use the Reference fair-value valuation path, bounded to the post-entry life and resolution boundary. USD metrics use USD marks only; native BTC is never labelled USD.":"Observed adverse metrics use this scenario's raw-VWAP track only. Modelled or Reference marks are never substituted, so absent tape remains Unavailable.",

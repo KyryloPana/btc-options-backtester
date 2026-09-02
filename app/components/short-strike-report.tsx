@@ -118,11 +118,15 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
   {/* 1 · Summary */}
   <div className="dd-cards">
    <Card label="Matched pairs" value={String(s.matchedPairs)} detail={`${s.matchedEvents} event(s)`}/>
-   <Card label="Buffer-eligible share" value={pct(s.bufferEligibleShare)} detail={`${s.bufferEligibleTechnicalStructures} of ${s.technicalStructures} technical structures`}/>
+   <Card label="Buffered-pair coverage" value={pct(s.bufferedPairCoverage)} detail={`${s.matchedTechnicalStructures} of ${s.technicalStructures} technical structures`}/>
    <Card label="Technical structures" value={String(s.technicalStructures)} detail={s.unmatchedTechnical>0?`${s.unmatchedTechnical} unpaired`:undefined}/>
    <Card label="Buffered structures" value={String(s.bufferedStructures)} detail={s.unmatchedBuffered>0?`${s.unmatchedBuffered} unpaired`:undefined}/>
-   <Card label="Median credit sacrificed" value={usd(s.medianGrossCreditSacrificedUsd)} detail={s.medianRelativeCreditSacrifice===null?undefined:`${pct(s.medianRelativeCreditSacrifice)} of technical credit`}/>
-   <Card label="Event-weighted adverse reduction" value={signedUsd(s.eventWeighted.medianWorstAdverseReductionUsd)} detail={`${s.eventWeighted.independentEventN} independent event(s)`} title="Within-event median pair delta, then median across equally weighted MR events."/>
+   <Card label="Event-weighted gross credit sacrificed" value={usd(s.eventWeighted.grossCreditSacrifice.value)} detail={`${s.eventWeighted.grossCreditSacrifice.eventN} event(s)`}/>
+   <Card label="Event-weighted net credit sacrificed" value={usd(s.eventWeighted.netCreditSacrifice.value)} detail={`${s.eventWeighted.netCreditSacrifice.eventN} event(s)`}/>
+   <Card label="Event-weighted relative sacrifice" value={pct(s.eventWeighted.relativeCreditSacrifice.value)} detail={`${s.eventWeighted.relativeCreditSacrifice.eventN} event(s)`}/>
+   <Card label="Event-weighted adverse reduction" value={signedUsd(s.eventWeighted.adverseReduction.value)} detail={`${s.eventWeighted.adverseReduction.eventN} event(s)`}/>
+   <Card label="Event-weighted MAE reduction" value={signedUsd(s.eventWeighted.maeReduction.value)} detail={`${s.eventWeighted.maeReduction.eventN} event(s)`}/>
+   <Card label="Event-weighted realized PnL Δ" value={signedUsd(s.eventWeighted.realizedPnlDelta.value)} detail={`${s.eventWeighted.realizedPnlDelta.eventN} event(s)`}/>
    <Card label="Breach-rate difference" value={s.breachRateDifference===null?NOT_ESTIMABLE:`${s.breachRateDifference>0?"+":""}${(s.breachRateDifference*100).toFixed(1)} pp`} detail="buffered − technical"/>
    <Card label="Median extra distance" value={usd(s.medianExtraDistanceUsd)} detail="farther out of the money"/>
   </div>
@@ -146,13 +150,14 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
   {/* 3 · Challenge frequency */}
   <section className="dd-block"><h3>2 · Challenge frequency</h3>
    <div className="table-scroll"><table className="dd-table dd-compact">
-    <thead><tr><th>Placement</th><th>Observable</th><th>Touched</th><th>Breached</th><th>Breach before invalidation</th><th>Invalidated without breach</th><th>Ambiguous order</th></tr></thead>
+    <thead><tr><th>Placement</th><th>Observable</th><th>Touched</th><th>Breached</th><th>Breach before invalidation</th><th>Invalidated without breach</th><th>Ambiguous order</th><th>Challenge/exit ambiguous</th></tr></thead>
     <tbody>{report.challenge.map(c=><tr key={c.method}>
      <td>{c.method==="technical"?"Technical":"Buffered"}</td><td>{c.observableN}</td>
      <td>{c.touchedN} · {pct(c.touchShare)}</td>
      <td className={c.breachedN>0?"negative":undefined}>{c.breachedN} · {pct(c.breachShare)}</td>
      <td>{c.breachBeforeInvalidationN}</td><td>{c.invalidatedWithoutBreachN}</td>
      <td className="dd-muted">{c.ambiguousOrderingN}</td>
+     <td className="dd-muted">{c.exitAmbiguousN}</td>
     </tr>)}</tbody>
    </table></div>
    <small className="dd-note">A touch is an intrabar extreme reaching the strike; a breach is a completed hourly close beyond it. Only candles opening inside the structure&rsquo;s own life count. Where a breach and an invalidation fall in the same hourly candle their order is unknown at the path&rsquo;s precision, so the pair is counted as ambiguous rather than assigned a sequence.</small>
@@ -164,9 +169,9 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
   {/* 5 · Conditional PnL */}
   <section className="dd-block"><h3>4 · Conditional PnL</h3>
    <div className="table-scroll"><table className="dd-table dd-compact">
-    <thead><tr><th>Technical challenge condition</th><th>Pairs / events</th><th>Technical PnL / adverse n</th><th>Buffered PnL / adverse n</th><th>Technical median PnL</th><th>Buffered median PnL</th><th>Technical worst adverse</th><th>Buffered worst adverse</th><th>Paired Δ PnL / adverse</th><th>Buffered transition B / T / N</th></tr></thead>
+    <thead><tr><th>Technical challenge condition</th><th>Pairs / events</th><th>Common PnL / adverse n</th><th>Common PnL / adverse n</th><th>Technical median PnL</th><th>Buffered median PnL</th><th>Technical worst adverse</th><th>Buffered worst adverse</th><th>Paired Δ PnL / adverse</th><th>Buffered transition B / T / N</th></tr></thead>
     <tbody>{report.conditionalPnl.filter(r=>r.technicalN>0||r.bufferedN>0).map(r=><tr key={r.bucket}>
-     <td>{BUCKET_LABEL[r.bucket]}</td><td>{r.pairedN} / {r.independentEventN}</td><td>{r.technicalPnlN} / {r.technicalAdverseN}</td><td>{r.bufferedPnlN} / {r.bufferedAdverseN}</td>
+     <td>{BUCKET_LABEL[r.bucket]}</td><td>{r.pairedN} / {r.independentEventN}</td><td>{r.bothPnlAvailablePairN} / {r.bothAdverseAvailablePairN}</td><td>{r.bothPnlAvailablePairN} / {r.bothAdverseAvailablePairN}</td>
      <td className={r.technicalMedianPnlUsd===null?"dd-muted":r.technicalMedianPnlUsd>=0?"positive":"negative"}>{usd(r.technicalMedianPnlUsd)}</td>
      <td className={r.bufferedMedianPnlUsd===null?"dd-muted":r.bufferedMedianPnlUsd>=0?"positive":"negative"}>{usd(r.bufferedMedianPnlUsd)}</td>
      <td className={r.technicalMedianWorstAdverseUsd===null?"dd-muted":"negative"}>{usd(r.technicalMedianWorstAdverseUsd)}</td>
