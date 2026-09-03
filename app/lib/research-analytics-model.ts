@@ -17,6 +17,8 @@ export const ANALYTICS_TRACKS = [
   "penalty_sensitivity",
 ] as const;
 export type AnalyticsTrack = (typeof ANALYTICS_TRACKS)[number];
+export type AnalyticsCohort = "selected" | "controlled-research" | "all";
+export interface AnalyticsProjectionOptions { readonly cohort?:AnalyticsCohort }
 const CANONICAL_TRACK_FOR_ANALYTICS:Readonly<Partial<Record<AnalyticsTrack,CanonicalTrack>>>={
  reference:"reference_fair_value",immediate_maker:"strict_maker",immediate_taker:"strict_taker",
  delayed_maker:"delayed_maker",delayed_taker:"delayed_taker",
@@ -245,8 +247,28 @@ export function createResearchAnalyticsContext(d: AnalysisDataset): ResearchAnal
   return context;
 }
 
-export function buildResearchAnalyticsModel(d: AnalysisDataset): ResearchAnalyticsModel {
-  return createResearchAnalyticsContext(d).model;
+const CONTROLLED_RESEARCH_ROLES=new Set(["short_strike_technical","short_strike_buffered"]);
+/**
+ * Cohort selection is centralized here because schema 4.1 candidates.jsonl is
+ * no longer synonymous with the manually selected portfolio. Missing
+ * is_selected is treated as selected only for in-memory legacy test/tooling
+ * fixtures; every validated 4.1 bundle carries the explicit boolean.
+ */
+export function datasetForAnalyticsCohort(d:AnalysisDataset,cohort:AnalyticsCohort="selected"):AnalysisDataset{
+  if(cohort==="all")return d;
+  const candidates=d.tables.candidates??[];
+  const keep=(r:Row)=>cohort==="selected"?r.is_selected!==false:CONTROLLED_RESEARCH_ROLES.has(s(r.research_role)??"");
+  let keptCandidates=candidates.filter(keep);
+  if(cohort==="controlled-research"&&!keptCandidates.length)keptCandidates=candidates.filter(r=>r.is_selected!==false);
+  const keys=new Set(keptCandidates.map(r=>`${s(r.event_id)??""}~${s(r.candidate_id)??""}`));
+  if(keptCandidates.length===candidates.length)return d;
+  const belongs=(r:Row)=>keys.has(`${s(r.event_id)??""}~${s(r.candidate_id)??""}`);
+  const candidateTables=new Set(["structure_economics","valuations","outcomes","availability","margin_scenarios","evidence_trades","entry_delay_sensitivity","structure_volatility_state"]);
+  return {...d,tables:{...d.tables,...Object.fromEntries([...candidateTables].map(name=>[name,(d.tables[name]??[]).filter(belongs)])),candidates:keptCandidates}};
+}
+
+export function buildResearchAnalyticsModel(d: AnalysisDataset,options:AnalyticsProjectionOptions={}): ResearchAnalyticsModel {
+  return createResearchAnalyticsContext(datasetForAnalyticsCohort(d,options.cohort??"selected")).model;
 }
 
 /** Statuses only a raw engine snapshot uses; never a tabular outcome status. */
@@ -429,8 +451,8 @@ function projectAnalyticsTrack(
   return {...d, tables: {...d.tables, candidates, outcomes, valuations}};
 }
 
-export function datasetForAnalyticsTrack(d: AnalysisDataset, requested: AnalyticsTrack): AnalysisDataset {
-  return createResearchAnalyticsContext(d).projection(requested);
+export function datasetForAnalyticsTrack(d: AnalysisDataset, requested: AnalyticsTrack,options:AnalyticsProjectionOptions={}): AnalysisDataset {
+  return createResearchAnalyticsContext(datasetForAnalyticsCohort(d,options.cohort??"selected")).projection(requested);
 }
 
 function economics(

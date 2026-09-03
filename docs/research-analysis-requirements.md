@@ -2,7 +2,7 @@
 
 ## Governing contracts
 
-This document is the durable requirements source for Research Analytics. The canonical eleven-file bundle supersedes earlier analysis drafts. **`candidates.jsonl` is the explicitly selected performance numerator; `availability.jsonl` is the complete generated denominator.** Unselected structures must never be copied into candidates.
+This document is the durable requirements source for Research Analytics. The versioned canonical bundle supersedes earlier analysis drafts. Since schema 4.1, **`candidates.jsonl` contains the explicitly selected performance numerator plus declared controlled-research structures; `availability.jsonl` is the complete generated denominator.** `is_selected` and `research_role` are orthogonal, and only declared controlled-research rows may be unselected in the candidate table. Shared analytics routing must select the intended cohort before a report is built.
 
 Schema 2.0.0 includes every persisted research event, including zero-selection events, and all generated availability and stored underlying candles. Version 1 bundles may be migrated only in visibly degraded mode; absent facts remain absent.
 
