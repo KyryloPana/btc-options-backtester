@@ -1,9 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {buildResearchBundle,validateResearchBundle,RESEARCH_BUNDLE_SCHEMA_VERSION} from "../app/lib/research-bundle.ts";
-import {migrateResearchSelectionStore} from "../app/lib/research-selections.ts";
+import {migrateResearchSelectionStore,unavailableResearchStructure} from "../app/lib/research-selections.ts";
 import {CANONICAL_TRACKS,describeCanonicalTracks} from "../app/lib/research-tracks.ts";
-import {store,now,referenceOnlyFixture,ts} from "./fixtures/research-selection-store.ts";
+import {store,now,referenceOnlyFixture,shortStrikeControlledFixture,ts} from "./fixtures/research-selection-store.ts";
+import {createResearchBundleZip} from "../scripts/research-bundle-service.ts";
+import {importResearchBundle} from "../app/lib/research-analysis.ts";
+import {buildResearchAnalyticsModel,datasetForAnalyticsTrack} from "../app/lib/research-analytics-model.ts";
+import {buildShortStrikeReport} from "../app/lib/short-strike/report.ts";
 
 /**
  * Economic valuation and outcomes must follow the STRUCTURE, with execution
@@ -13,6 +17,36 @@ import {store,now,referenceOnlyFixture,ts} from "./fixtures/research-selection-s
  */
 
 const parse=(text:string)=>text.trim()?text.trim().split("\n").map(line=>JSON.parse(line) as Record<string,unknown>):[];
+
+test("SCHEMA 4.1 E2E: selected technical and unselected buffered survive without contaminating selected analytics",()=>{
+ const fixture=shortStrikeControlledFixture(),bundle=buildResearchBundle(fixture,now);assert.equal(validateResearchBundle(bundle.files).ok,true);
+ const imported=importResearchBundle(new Uint8Array(createResearchBundleZip(bundle.files)),"short-strike.zip");if(imported.status==="invalid")assert.fail(imported.errors.join("\n"));
+ const candidates=parse(bundle.files["candidates.jsonl"]),technical=candidates.filter(r=>r.candidate_id==="deribit~short-technical"),buffered=candidates.filter(r=>r.candidate_id==="deribit~short-buffered");
+ assert.equal(fixture.events[0]!.selectedStructures.length,1);assert.equal(bundle.run.selected_structure_count,1);
+ assert.ok(technical.every(r=>r.is_selected===true&&r.research_role==="short_strike_technical"));assert.ok(buffered.every(r=>r.is_selected===false&&r.research_role==="short_strike_buffered"));
+ assert.ok(buffered.every(r=>r.execution_scenario_status==="not_evaluated"&&r.modeled_execution===null&&r.delayed_execution===null));assert.equal(parse(bundle.files["margin_scenarios.jsonl"]).length,1);
+ const selected=buildResearchAnalyticsModel(imported.dataset),controlled=datasetForAnalyticsTrack(imported.dataset,"reference",{cohort:"controlled-research"});assert.equal(selected.observations.length,1);assert.equal(new Set(controlled.tables.candidates.map(r=>r.candidate_id)).size,2);
+ for(const track of ["reference","immediate_maker","immediate_taker","delayed_maker","delayed_taker","modeled_expected","modeled_conservative"] as const){const projected=datasetForAnalyticsTrack(imported.dataset,track);assert.deepEqual(new Set(projected.tables.candidates.map(r=>r.candidate_id)),new Set(["deribit~short-technical"]),`${track} remains selected-only`)}
+ const report=buildShortStrikeReport(imported.dataset);assert.equal(report.summary.matchedPairs,1);assert.equal(report.summary.matchedEvents,1);assert.equal(report.summary.bufferedAlternativesRequested,1);assert.equal(report.summary.bufferedAlternativesResolved,1);const pair=report.pairs[0]!;assert.deepEqual([pair.technical.geometry.shortStrike,pair.technical.geometry.longStrike,pair.buffered.geometry.shortStrike,pair.buffered.geometry.longStrike,pair.widthUsd,pair.extraDistanceUsd],[96000,98000,97000,99000,2000,1000]);
+});
+
+test("MERGE: current research Reference wins while selected execution overlays survive",()=>{
+ const fixture=shortStrikeControlledFixture(),selected=fixture.events[0]!.selectedStructures[0]!,entry=structuredClone((selected.referenceValuation as Record<string,unknown>).entrySnapshot),path=structuredClone((selected.referenceValuation as Record<string,unknown>).valuationPathSnapshot),outcomes=structuredClone((selected.referenceValuation as Record<string,unknown>).outcomeSnapshots);selected.executionScenarios={maker:{status:"evaluated",reason:null,entrySnapshot:entry,valuationPathSnapshot:path as never[],outcomeSnapshots:outcomes as never[]},taker:{status:"evaluated",reason:null,entrySnapshot:entry,valuationPathSnapshot:path as never[],outcomeSnapshots:outcomes as never[]}};
+ const selectedReference=((selected.referenceValuation as Record<string,unknown>).entrySnapshot as Record<string,unknown>).netOpeningCashFlowBtc,researchReference=(((fixture.events[0]!.researchStructures![0]!.referenceValuation as Record<string,unknown>).entrySnapshot) as Record<string,unknown>).netOpeningCashFlowBtc;assert.notEqual(selectedReference,researchReference);
+ const bundle=buildResearchBundle(fixture,now),rows=parse(bundle.files["candidates.jsonl"]).filter(r=>r.candidate_id===selected.candidateId);assert.equal(new Set(rows.map(r=>r.candidate_id)).size,1);assert.ok(rows.every(r=>(r.reference_valuation as Record<string,any>).entrySnapshot.netOpeningCashFlowBtc===researchReference));assert.ok(rows.every(r=>r.execution_scenario_status==="evaluated"));
+});
+
+test("UNRESOLVED: requested buffered geometry and exact failure survive export/import without fabricated actuals",()=>{
+ const fixture=shortStrikeControlledFixture(),event=fixture.events[0]!,generated=event.generationSnapshot.candidates[1]!;generated.status="unavailable";generated.actualStrikes={short:null,long:null,width:null};generated.availabilityReasons=["Fixture retrieval failure: buffered contracts archive timed out."];
+ event.researchStructures![1]=unavailableResearchStructure(event.eventId,generated,1,now);
+ const bundle=buildResearchBundle(fixture,now),availability=parse(bundle.files["availability.jsonl"]).find(r=>r.candidate_id===generated.candidateId)!,economics=parse(bundle.files["structure_economics.jsonl"]).find(r=>r.candidate_id===generated.candidateId)!;
+ assert.deepEqual(availability.requested_strikes,{short:97000,long:99000,width:2000});assert.deepEqual(availability.actual_strikes,{short:null,long:null,width:null});assert.equal((availability.contract_resolution as Record<string,unknown>).status,"retrieval_failure");assert.match(String((availability.contract_resolution as Record<string,unknown>).reason),/archive timed out/);assert.equal(economics.actual_short_strike,null);assert.equal(economics.actual_long_strike,null);
+ const imported=importResearchBundle(new Uint8Array(createResearchBundleZip(bundle.files)),"unresolved.zip");if(imported.status==="invalid")assert.fail(imported.errors.join("\n"));const report=buildShortStrikeReport(imported.dataset);assert.equal(report.summary.bufferedAlternativesRequested,1);assert.equal(report.summary.bufferedAlternativesResolved,0);assert.equal(report.summary.matchedPairs,0);
+});
+
+test("PROVENANCE: every unresolved status keeps requested strikes and null actual strikes",()=>{
+ for(const [reason,status] of [["confirmed not listed by authoritative manifest","confirmed_not_listed"],["retrieval request failed","retrieval_failure"],["instrument metadata unavailable","metadata_unavailable"]] as const){const fixture=shortStrikeControlledFixture(),candidate=fixture.events[0]!.generationSnapshot.candidates[1]!;candidate.actualStrikes={short:null,long:null,width:null};candidate.availabilityReasons=[reason];const research=unavailableResearchStructure("e-short",candidate,1,now);assert.equal(research.contractResolution?.status,status);assert.deepEqual(research.candidateSnapshot&&[(research.candidateSnapshot as Record<string,unknown>).shortStrike,(research.candidateSnapshot as Record<string,unknown>).longStrike],[null,null]);assert.deepEqual(candidate.requestedStrikes,{short:97000,long:99000,width:2000})}
+});
 
 /** A reference-valued structure whose immediate execution is entirely absent. */
 

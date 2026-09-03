@@ -22,6 +22,7 @@ export function stableSelectionId(eventId: string, venue: Venue, candidateId: st
 
 export interface GenerationCandidateSnapshot {
   candidateId: string; venue: Venue; selected: boolean; status: "priced" | "unavailable";
+  contractResolutionStatus?:ContractResolutionStatus;
   availabilityReasons: string[]; targetHorizon: number; eligibleDteRange: { min: number | null; max: number | null };
   actualExpiryTimestamp: number | null; actualDte: number | null; requestedStrikes: { short: number; long: number; width: number };
   actualStrikes: { short: number | null; long: number | null; width: number | null }; structure: string; optionType: string;
@@ -197,6 +198,12 @@ export function validateResearchSelectionStore(value:unknown):{ok:true;store:Res
 }
 
 export function emptyResearchSelectionStore(datasetId:string,now=new Date().toISOString()):ResearchSelectionStore{return{schemaVersion:RESEARCH_SELECTION_SCHEMA_VERSION,datasetId,updatedAtUtc:now,events:[]};}
+export function unavailableResearchStructure(eventId:string,candidate:GenerationCandidateSnapshot,quantity:number,atUtc:string):ResearchOnlyStructure{
+ const reason=candidate.availabilityReasons.find(Boolean)??"Candidate did not produce a runnable canonical Reference observation.";
+ const resolutionStatus:ContractResolutionStatus=candidate.contractResolutionStatus??(candidate.availabilityReasons.some(x=>/not.?listed/i.test(x))?"confirmed_not_listed":candidate.availabilityReasons.some(x=>/retriev|request|network|archive/i.test(x))?"retrieval_failure":"metadata_unavailable");
+ const notEvaluated:ExecutionScenarioSnapshot={status:"not_evaluated",reason:"Controlled research candidates do not receive selected-strategy execution.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]};
+ return {selectionId:`research~short-strike~${candidate.candidateId}`,eventId,candidateId:candidate.candidateId,venue:candidate.venue,selectedAtUtc:atUtc,quantity,strategyVariantId:candidate.candidateId,researchRole:candidate.strikeMethod==="buffered"?"short_strike_buffered":"short_strike_technical",contractResolution:{status:resolutionStatus,reason,short:null,long:null},referenceValuation:{status:"unavailable",reason,source:"unavailable",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[],provenance:canonicalJson({executionIndependent:true,generationCandidateId:candidate.candidateId})},candidateSnapshot:compactCandidateMetadata({venue:candidate.venue,structure:candidate.structure,optionType:candidate.optionType,targetDte:candidate.targetHorizon,expiryTimestamp:candidate.actualExpiryTimestamp,actualDte:candidate.actualDte,shortStrike:candidate.actualStrikes.short,longStrike:candidate.actualStrikes.long,actualWidth:candidate.actualStrikes.width,instruments:{short:null,long:null},quality:candidate.entryQuality,qualityReasonCodes:candidate.availabilityReasons}),executionScenarios:{maker:{...notEvaluated},taker:{...notEvaluated}},derivedRefreshedAtUtc:atUtc,marginSnapshot:null,evidenceTradeSnapshots:[],evidenceUsages:[]};
+}
 export interface SelectionChangeSet { toAdd:Set<string>; toRemove:Set<string>; toKeep:Set<string> }
 /** The complete selection transition. Callers must never infer it from UI toggles. */
 export function selectionChangeSet(saved:Iterable<string>,draft:Iterable<string>):SelectionChangeSet{

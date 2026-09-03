@@ -1,6 +1,6 @@
 import type {AnalysisDataset} from "../research-analysis.ts";
 import {observedPercentiles} from "../underlying-resolution/statistics.ts";
-import {datasetForAnalyticsTrack} from "../research-analytics-model.ts";
+import {datasetForAnalyticsCohort,datasetForAnalyticsTrack} from "../research-analytics-model.ts";
 import {normalizeShortStrikeStructures,type ExecutionScenario,type ShortStrikeStructure,type StrikeMethod} from "./normalize.ts";
 
 /**
@@ -127,7 +127,9 @@ export interface ShortStrikeSummary {
  readonly bufferedAlternativesResolved:number;
  readonly referenceEconomicPairs:number;
  readonly commonChallengeObservablePairs:number;
+ readonly commonChallengeObservableEvents:number;
  readonly commonAdversePathPairs:number;
+ readonly commonAdversePathEvents:number;
  readonly bufferedStructures:number;
  readonly unmatchedTechnical:number;
  readonly unmatchedBuffered:number;
@@ -296,7 +298,8 @@ const BUCKETS:readonly ConditionalBucket[]=["breached","touched_not_breached","n
 
 export function buildShortStrikeReport(dataset:AnalysisDataset,scenario?:ExecutionScenario):ShortStrikeReport{
  const primary=scenario===undefined, selectedScenario=scenario??"maker";
- const all=normalizeShortStrikeStructures(primary?datasetForAnalyticsTrack(dataset,"reference"):dataset);
+ const scoped=primary?datasetForAnalyticsTrack(dataset,"reference",{cohort:"controlled-research"}):datasetForAnalyticsCohort(dataset,"selected");
+ const all=normalizeShortStrikeStructures(scoped);
  const structures=all.filter(s=>primary?s.analyticsTrack==="reference":s.executionScenario===selectedScenario);
 
  // Pair strictly within the structural match key: same event, expiry, DTE, width and structure. A key holding anything other than exactly one technical and one
@@ -326,6 +329,12 @@ export function buildShortStrikeReport(dataset:AnalysisDataset,scenario?:Executi
  pairs.sort((a,b)=>a.eventId.localeCompare(b.eventId)||(a.actualDteDays??0)-(b.actualDteDays??0)||(a.widthUsd??0)-(b.widthUsd??0));
 
  const comparable=pairs.filter(p=>p.economicsComparable);
+ const provenance=(scoped.tables.availability??[]).filter(r=>r.research_role==="short_strike_technical"||r.research_role==="short_strike_buffered");
+ const uniqueProvenance=new Map(provenance.map(r=>[`${String(r.event_id)}~${String(r.candidate_id)}~${JSON.stringify(r.requested_strikes)}`,r]));
+ const provenanceRows=[...uniqueProvenance.values()];
+ const bufferedRequested=provenanceRows.filter(r=>r.research_role==="short_strike_buffered");
+ const resolvedStatuses=new Set(["exact_resolved","nearest_listed_resolved"]);
+ const bufferedResolved=bufferedRequested.filter(r=>resolvedStatuses.has(String((r.contract_resolution as Record<string,unknown>|null)?.status)));
  const technicalStructures=structures.filter(s=>s.strikeMethod==="technical");
  const pairedTechnicalIds=new Set(pairs.map(p=>p.technical.candidateId));
  const eligible=technicalStructures.filter(s=>pairedTechnicalIds.has(s.candidateId)||(s.geometry.distanceFromExtremeUsd!==null&&s.geometry.distanceFromExtremeUsd>=0&&s.geometry.distanceFromExtremeUsd<500));
@@ -337,14 +346,16 @@ export function buildShortStrikeReport(dataset:AnalysisDataset,scenario?:Executi
    matchedPairs:pairs.length,
    matchedEvents:new Set(pairs.map(p=>p.eventId)).size,
    matchedTechnicalStructures:pairs.length,
-   bufferedPairCoverage:share(pairs.length,eligible.length),
-   technicalStructures:technicalStructures.length,
-   bufferEligibleTechnicalStructures:eligible.length,
-   bufferedAlternativesRequested:eligible.length,
-   bufferedAlternativesResolved:pairs.length,
+   bufferedPairCoverage:share(pairs.length,provenanceRows.length?bufferedRequested.length:eligible.length),
+   technicalStructures:provenanceRows.length?provenanceRows.filter(r=>r.research_role==="short_strike_technical").length:technicalStructures.length,
+   bufferEligibleTechnicalStructures:provenanceRows.length?bufferedRequested.length:eligible.length,
+   bufferedAlternativesRequested:provenanceRows.length?bufferedRequested.length:eligible.length,
+   bufferedAlternativesResolved:provenanceRows.length?bufferedResolved.length:pairs.length,
    referenceEconomicPairs:comparable.length,
    commonChallengeObservablePairs:challengeComparable.length,
+   commonChallengeObservableEvents:new Set(challengeComparable.map(p=>p.eventId)).size,
    commonAdversePathPairs:adverseComparable.length,
+   commonAdversePathEvents:new Set(adverseComparable.map(p=>p.eventId)).size,
    bufferedStructures:structures.filter(s=>s.strikeMethod==="buffered").length,
    unmatchedTechnical:unpaired.filter(u=>u.structure.strikeMethod==="technical").length,
    unmatchedBuffered:unpaired.filter(u=>u.structure.strikeMethod==="buffered").length,

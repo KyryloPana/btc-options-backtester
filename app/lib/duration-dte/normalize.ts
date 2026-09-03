@@ -10,7 +10,7 @@ export {type AdversePathObservation,type PathEvidenceStatus} from "../adverse-pa
 /**
  * Canonical research bundle 2.3.0 -> normalized Duration/DTE structures.
  *
- * This module joins `candidates.jsonl` (selected structures), `availability.jsonl`
+ * This selected-strategy module joins explicitly selected `candidates.jsonl` rows, `availability.jsonl`
  * (the full generated denominator, selected and unselected), `outcomes.jsonl`
  * (per-candidate outcome-at-trigger records) and `valuations.jsonl` (the 4h
  * valuation grid) against the SAME authoritative per-event resolution facts
@@ -373,7 +373,7 @@ function referenceAdverse(track:ScenarioTrack|undefined,entry:number|null,bounda
 }
 
 export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCandidate[]{
- const candidates=dataset.tables.candidates??[],outcomes=dataset.tables.outcomes??[],valuations=dataset.tables.valuations??[],margins=dataset.tables.margin_scenarios??[];
+ const candidates=(dataset.tables.candidates??[]).filter(row=>row.is_selected!==false),outcomes=dataset.tables.outcomes??[],valuations=dataset.tables.valuations??[],margins=dataset.tables.margin_scenarios??[];
  const eventsById=new Map(normalizeMrEvents(dataset).map(e=>[e.eventId,e]));
  const canonicalCandidates=[...candidates].sort((a,b)=>String(a.candidate_id).localeCompare(String(b.candidate_id))||String(a.execution_scenario).localeCompare(String(b.execution_scenario)));
  const analytical=buildResearchAnalyticsModel({...dataset,tables:{...dataset.tables,candidates:canonicalCandidates}});
