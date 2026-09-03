@@ -122,6 +122,12 @@ export interface ShortStrikeSummary {
  readonly matchedTechnicalStructures:number;
  readonly bufferedPairCoverage:number|null;
  readonly technicalStructures:number;
+ readonly bufferEligibleTechnicalStructures:number;
+ readonly bufferedAlternativesRequested:number;
+ readonly bufferedAlternativesResolved:number;
+ readonly referenceEconomicPairs:number;
+ readonly commonChallengeObservablePairs:number;
+ readonly commonAdversePathPairs:number;
  readonly bufferedStructures:number;
  readonly unmatchedTechnical:number;
  readonly unmatchedBuffered:number;
@@ -300,23 +306,45 @@ export function buildShortStrikeReport(dataset:AnalysisDataset,scenario?:Executi
  const pairs:MatchedPair[]=[],unpaired:{structure:ShortStrikeStructure;reason:string}[]=[];
  for(const group of byKey.values()){
   const technical=group.filter(s=>s.strikeMethod==="technical"),buffered=group.filter(s=>s.strikeMethod==="buffered");
-  if(technical.length===1&&buffered.length===1){pairs.push(pairOf(technical[0]!,buffered[0]!));continue}
+  if(technical.length===1&&buffered.length===1){
+   const t=technical[0]!,b=buffered[0]!,sign=t.direction==="long"?-1:t.direction==="short"?1:null;
+   const shortStep=sign===null||t.geometry.shortStrike===null||b.geometry.shortStrike===null?null:sign*(b.geometry.shortStrike-t.geometry.shortStrike);
+   const longStep=sign===null||t.geometry.longStrike===null||b.geometry.longStrike===null?null:sign*(b.geometry.longStrike-t.geometry.longStrike);
+   // Legacy analytical fixtures may omit the extreme. They can still audit an
+   // already-materialized exact one-step pair, but never contribute a claimed
+   // rule-eligibility measurement on geometry alone.
+   const eligible=t.geometry.distanceFromExtremeUsd===null||(t.geometry.distanceFromExtremeUsd>=0&&t.geometry.distanceFromExtremeUsd<500);
+   if(eligible&&shortStep===1000&&longStep===1000){pairs.push(pairOf(t,b));continue}
+   const reason=!eligible?"The technical strike is not buffer-rule eligible: its positive OTM distance from the failed-breakout extreme is not less than $500.":"The proposed counterpart does not shift both short and protective-long strikes exactly $1,000 farther OTM while preserving width.";
+   unpaired.push({structure:t,reason},{structure:b,reason});continue;
+  }
   for(const s of group)unpaired.push({structure:s,reason:
    technical.length===0?"No technical-strike structure shares this event, expiry, DTE, width and exit policy."
-   :buffered.length===0?"No buffered-strike structure was generated here: the canonical generator only produces one when the failed-breakout extreme sits within 100 of the rounded strike boundary."
+   :buffered.length===0?"No buffered-strike structure was resolved here. A counterfactual is requested only when the technical strike lies less than $500 beyond the failed-breakout extreme."
    :"More than one structure of a placement shares this match key, so the pairing would be ambiguous."});
  }
  pairs.sort((a,b)=>a.eventId.localeCompare(b.eventId)||(a.actualDteDays??0)-(b.actualDteDays??0)||(a.widthUsd??0)-(b.widthUsd??0));
 
  const comparable=pairs.filter(p=>p.economicsComparable);
+ const technicalStructures=structures.filter(s=>s.strikeMethod==="technical");
+ const pairedTechnicalIds=new Set(pairs.map(p=>p.technical.candidateId));
+ const eligible=technicalStructures.filter(s=>pairedTechnicalIds.has(s.candidateId)||(s.geometry.distanceFromExtremeUsd!==null&&s.geometry.distanceFromExtremeUsd>=0&&s.geometry.distanceFromExtremeUsd<500));
+ const challengeComparable=pairs.filter(p=>p.technical.challenge.reason===null&&p.buffered.challenge.reason===null);
+ const adverseComparable=pairs.filter(p=>p.technical.worstAdverseUsd!==null&&p.buffered.worstAdverseUsd!==null);
  const report:ShortStrikeReport={
   scenario:primary?"reference":selectedScenario,structures,pairs,
   summary:{
    matchedPairs:pairs.length,
    matchedEvents:new Set(pairs.map(p=>p.eventId)).size,
    matchedTechnicalStructures:pairs.length,
-   bufferedPairCoverage:share(pairs.length,structures.filter(s=>s.strikeMethod==="technical").length),
-   technicalStructures:structures.filter(s=>s.strikeMethod==="technical").length,
+   bufferedPairCoverage:share(pairs.length,eligible.length),
+   technicalStructures:technicalStructures.length,
+   bufferEligibleTechnicalStructures:eligible.length,
+   bufferedAlternativesRequested:eligible.length,
+   bufferedAlternativesResolved:pairs.length,
+   referenceEconomicPairs:comparable.length,
+   commonChallengeObservablePairs:challengeComparable.length,
+   commonAdversePathPairs:adverseComparable.length,
    bufferedStructures:structures.filter(s=>s.strikeMethod==="buffered").length,
    unmatchedTechnical:unpaired.filter(u=>u.structure.strikeMethod==="technical").length,
    unmatchedBuffered:unpaired.filter(u=>u.structure.strikeMethod==="buffered").length,
@@ -337,8 +365,8 @@ export function buildShortStrikeReport(dataset:AnalysisDataset,scenario?:Executi
    "Scope. This report analyses short-strike PLACEMENT only. Spread width is held constant inside every comparison rather than studied here: placement decides where risk begins, width decides how much tail risk is retained. Width is analysed separately, and no result here is attributed to it.",
    `Comparison unit. Every figure is a MATCHED PAIR: the same MR event, the same actual expiry (hence the same actual DTE), the same width and protective-long rule, the same structure and option type, the same exit policy. Only the short strike differs. Execution scenario is absent from the primary key. This report is scoped to the ${primary?"reference":selectedScenario} track; explicit observed robustness layers are filtered before matching, so maker and taker are never mixed.`,
    "Thesis Exit (frozen for Short-Strike): the first candidate-relative post-entry endpoint of VPOC or invalidation, followed by settlement only when neither resolves before that structure's expiry. Exit-policy optimization is analysed separately so it cannot confound strike placement.",
-   "Placement names are read from canonical strike_method, never inferred from the strike value. 'anchor' is the technical placement rounded from the failed-breakout extreme; 'buffered' is one strike step farther out. The generator only produces a buffered variant when the extreme sits within 100 of the rounded boundary, which is why many structures have no partner and are listed as unpaired rather than silently dropped.",
-   "Inference scope. Technical-versus-buffered inference applies only to the matched, buffer-rule-supported subset and must not automatically be generalized to every technical structure. Buffered-pair coverage is matched technical structures divided by all technical structures; it is not claimed to measure latent generator eligibility. No missing buffered alternative is invented.",
+   "Placement names are read from canonical strike_method, never inferred from the strike value. 'anchor' is the technical placement rounded outward from the failed-breakout extreme. A buffered counterfactual is requested exactly when that technical strike lies less than $500 beyond the extreme; exactly $500 is not eligible. The alternative shifts both legs one $1,000 strike step farther OTM, preserving width.",
+   "Inference scope. Technical-versus-buffered inference applies only to the matched, buffer-rule-supported subset and must not automatically be generalized to every technical structure. Pair coverage is matched Reference pairs divided by buffer-eligible technical structures, while eligibility frequency is separately disclosed against all technical structures. Unrelated unmatched populations are never compared.",
    "Weighting. Exact event × expiry × width pairs remain diagnostics. Headline event-weighted statistics first take the median pair delta inside each MR event and then the median across events, giving every independent event equal weight. Pure challenge summaries use matched observations and should be read with independent-event N because expiry variants within an event are not independent.",
    "Distance sign. Every distance is signed so that POSITIVE MEANS FARTHER OUT OF THE MONEY for both directions: a bullish MR sells a put below spot, a bearish MR sells a call above it. Distances are measured from the entry spot (the candidate's own entry index where present, otherwise the event's entry price), from the failed-breakout extreme, and from the invalidation level, plus normalised by spot and by the event's range width.",
    "Entry delta is Unavailable. The canonical bundle records per-leg implied volatility but carries no delta on any table; deriving one from an IV anchor would present a model output as a canonical observation, so the column stays empty with its reason attached rather than being filled.",

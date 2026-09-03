@@ -118,9 +118,11 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
   {/* 1 · Summary */}
   <div className="dd-cards">
    <Card label="Matched pairs" value={String(s.matchedPairs)} detail={`${s.matchedEvents} event(s)`}/>
-   <Card label="Buffered-pair coverage" value={pct(s.bufferedPairCoverage)} detail={`${s.matchedTechnicalStructures} of ${s.technicalStructures} technical structures`}/>
-   <Card label="Technical structures" value={String(s.technicalStructures)} detail={s.unmatchedTechnical>0?`${s.unmatchedTechnical} unpaired`:undefined}/>
-   <Card label="Buffered structures" value={String(s.bufferedStructures)} detail={s.unmatchedBuffered>0?`${s.unmatchedBuffered} unpaired`:undefined}/>
+   <Card label="Pair coverage among eligible" value={pct(s.bufferedPairCoverage)} detail={`${s.matchedTechnicalStructures} of ${s.bufferEligibleTechnicalStructures} eligible technical structures`}/>
+   <Card label="Technical structures" value={String(s.technicalStructures)} detail="research technical cohort"/>
+   <Card label="Buffer-rule eligible" value={String(s.bufferEligibleTechnicalStructures)} detail={`${pct(s.technicalStructures?s.bufferEligibleTechnicalStructures/s.technicalStructures:null)} of technical cohort · distance < $500`}/>
+   <Card label="Buffered alternatives resolved" value={String(s.bufferedAlternativesResolved)} detail={`${s.bufferedAlternativesRequested} requested`}/>
+   <Card label="Reference-economic pairs" value={String(s.referenceEconomicPairs)} detail={`${s.commonChallengeObservablePairs} challenge · ${s.commonAdversePathPairs} adverse`}/>
    <Card label="Event-weighted gross credit sacrificed" value={usd(s.eventWeighted.grossCreditSacrifice.value)} detail={`${s.eventWeighted.grossCreditSacrifice.eventN} event(s)`}/>
    <Card label="Event-weighted net credit sacrificed" value={usd(s.eventWeighted.netCreditSacrifice.value)} detail={`${s.eventWeighted.netCreditSacrifice.eventN} event(s)`}/>
    <Card label="Event-weighted relative sacrifice" value={pct(s.eventWeighted.relativeCreditSacrifice.value)} detail={`${s.eventWeighted.relativeCreditSacrifice.eventN} event(s)`}/>
@@ -207,7 +209,7 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
     <small>Showing {report.pairs.length?current*pageSize+1:0}–{Math.min((current+1)*pageSize,report.pairs.length)} of {report.pairs.length}. Paging never changes the statistics above.</small>
     <div><button disabled={current<=0} onClick={()=>setPage(current-1)}>Previous</button><span>{current+1} / {pages}</span><button disabled={current>=pages-1} onClick={()=>setPage(current+1)}>Next</button></div>
    </div>
-   {report.unpaired.length>0&&<p className="dd-notice">{report.unpaired.length} structure(s) could not be paired and are excluded from every pairwise figure — most often because the canonical generator produces a buffered variant only when the failed-breakout extreme sits within 100 of the rounded strike boundary. They are never compared against an unmatched partner.</p>}
+   {report.unpaired.length>0&&<p className="dd-notice">{report.unpaired.length} structure(s) could not be paired and are excluded from every pairwise figure. A counterfactual is requested only when technical distance is less than $500; a valid pair must shift both legs exactly $1,000 farther OTM and preserve width. Unmatched candidates are never compared with unrelated alternatives.</p>}
   </section>
 
   <details className="ur-methodology"><summary>Methodology, availability and missing data</summary>

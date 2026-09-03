@@ -766,7 +766,11 @@ export function generateDesiredSpreads(event: BacktestEvent, dtes: number[], wid
     ? Math.floor(event.extremePrice / 1000) * 1000
     : Math.ceil(event.extremePrice / 1000) * 1000;
   const anchors = [{ strike: rounded, buffered: false }];
-  if (Math.abs(event.extremePrice - rounded) < 100) {
+  // Short-strike research asks whether an additional strike step is worth its
+  // surrendered credit.  It is triggered only when the technical strike is
+  // less than $500 beyond the extreme.  Exactly $500 is already sufficiently
+  // buffered.  Both legs are shifted below, so target width is unchanged.
+  if (technicalDistanceFromExtreme(event.direction, event.extremePrice, rounded) < 500) {
     anchors.push({ strike: rounded + (bullish ? -1000 : 1000), buffered: true });
   }
   const optionType: OptionType = kind === "credit"
@@ -798,6 +802,11 @@ export function generateDesiredSpreads(event: BacktestEvent, dtes: number[], wid
       buffered: anchor.buffered,
     };
   })));
+}
+
+/** Positive OTM distance for both puts (bullish MR) and calls (bearish MR). */
+export function technicalDistanceFromExtreme(direction:BacktestEvent["direction"],extreme:number,technicalStrike:number):number{
+  return direction==="long"?extreme-technicalStrike:technicalStrike-extreme;
 }
 
 function nearestStrike(series: ContractSeries[], desired: number) {

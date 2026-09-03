@@ -110,7 +110,8 @@ export interface SelectedStructure {
   derivedRefreshedAtUtc?: string;
   marginSnapshot: JsonValue; evidenceTradeSnapshots?: JsonValue[]; evidenceUsages?: EvidenceUsageDto[];
 }
-export interface ResearchSelectionEvent { eventId: string; sourceRun: JsonValue; generationSnapshot: GenerationSnapshot; selectedStructures: SelectedStructure[]; evidenceCatalog?: EvidenceTradeDto[] }
+export interface ResearchOnlyStructure extends SelectedStructure { researchRole:"short_strike_technical"|"short_strike_buffered" }
+export interface ResearchSelectionEvent { eventId: string; sourceRun: JsonValue; generationSnapshot: GenerationSnapshot; selectedStructures: SelectedStructure[]; researchStructures?:ResearchOnlyStructure[]; evidenceCatalog?: EvidenceTradeDto[] }
 export interface ResearchSelectionStore { schemaVersion: typeof RESEARCH_SELECTION_SCHEMA_VERSION; datasetId: string; updatedAtUtc: string; events: ResearchSelectionEvent[] }
 export interface SelectionValidationError { path: string; message: string }
 
@@ -139,6 +140,7 @@ export function validateResearchSelectionStore(value:unknown):{ok:true;store:Res
     if(typeof event.eventId!=="string"||!event.eventId)errors.push({path:`${p}.eventId`,message:"Event ID is required."});else if(eventIds.has(event.eventId))errors.push({path:`${p}.eventId`,message:"Event IDs must be unique."});else eventIds.add(event.eventId);
     if(!event.generationSnapshot||!Array.isArray(event.generationSnapshot.candidates))errors.push({path:`${p}.generationSnapshot.candidates`,message:"Complete generated candidate universe is required."});
     if(!Array.isArray(event.selectedStructures))errors.push({path:`${p}.selectedStructures`,message:"Selected structures must be an array."});
+    if(event.researchStructures!==undefined&&!Array.isArray(event.researchStructures))errors.push({path:`${p}.researchStructures`,message:"Research-only structures must be an array when present."});
     const keys=new Set<string>();
     const generationAttempts=new Set<string>();
     for(const [j,c] of (Array.isArray(event.generationSnapshot?.candidates)?event.generationSnapshot.candidates:[]).entries()){
