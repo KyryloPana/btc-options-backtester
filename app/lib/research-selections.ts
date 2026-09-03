@@ -171,6 +171,26 @@ export function validateResearchSelectionStore(value:unknown):{ok:true;store:Res
         if(!audit.admissible)errors.push({path:q,message:`Selected candidate has no valid analytical track.${audit.referenceErrors.length?` Reference valuation: ${audit.referenceErrors.join("; ")}.`:""}`});
       }
     }
+    const researchKeys=new Set<string>();
+    for(const [j,s] of (Array.isArray(event.researchStructures)?event.researchStructures:[]).entries()){
+      const q=`${p}.researchStructures[${j}]`;
+      if(!s||typeof s!=="object"){errors.push({path:q,message:"Research structure must be an object."});continue;}
+      if(s.eventId!==event.eventId)errors.push({path:`${q}.eventId`,message:"Research structure event ID must match its event."});
+      if(typeof s.candidateId!=="string"||!s.candidateId)errors.push({path:`${q}.candidateId`,message:"Stable candidate ID is required."});
+      if(!venue(s.venue))errors.push({path:`${q}.venue`,message:"Venue must be deribit, bybit, or binance."});
+      if(!iso(s.selectedAtUtc))errors.push({path:`${q}.selectedAtUtc`,message:"A UTC ISO-8601 materialization timestamp is required."});
+      if(typeof s.quantity!=="number"||!Number.isFinite(s.quantity)||s.quantity<=0)errors.push({path:`${q}.quantity`,message:"Quantity must be finite and positive."});
+      if(!["short_strike_technical","short_strike_buffered"].includes(String(s.researchRole)))errors.push({path:`${q}.researchRole`,message:"Unknown controlled-research role."});
+      const key=`${s.venue}:${s.candidateId}`;if(researchKeys.has(key))errors.push({path:q,message:"Duplicate research candidate identity."});researchKeys.add(key);
+      const generated=Array.isArray(event.generationSnapshot?.candidates)?event.generationSnapshot.candidates:[];
+      if(!generated.some(c=>c&&typeof c==="object"&&(c as GenerationCandidateSnapshot).candidateId===s.candidateId))errors.push({path:`${q}.candidateId`,message:"Research candidate is absent from generation provenance."});
+      const resolution=s.contractResolution;
+      if(!resolution||!["exact_resolved","nearest_listed_resolved","confirmed_not_listed","retrieval_failure","metadata_unavailable"].includes(String(resolution.status)))errors.push({path:`${q}.contractResolution.status`,message:"Research contract-resolution status is invalid."});
+      const reference=s.referenceValuation;
+      if(!reference||!["valued","unavailable"].includes(String(reference.status)))errors.push({path:`${q}.referenceValuation.status`,message:"Research Reference state must be valued or explicitly unavailable."});
+      if(reference?.status==="unavailable"&&!reference.reason)errors.push({path:`${q}.referenceValuation.reason`,message:"Unavailable Reference state requires the real reason."});
+      for(const mode of ["maker","taker"] as const)if(s.executionScenarios?.[mode]?.status==="evaluated")errors.push({path:`${q}.executionScenarios.${mode}`,message:"Controlled research records cannot fabricate selected execution."});
+    }
   }
   inspectJson(value,"$",errors);
   return errors.length?{ok:false,errors}:{ok:true,store:store as ResearchSelectionStore};

@@ -207,11 +207,11 @@ test("VOLATILITY: per-leg IV and provenance survive export without changing exec
 });
 
 test("VERSIONING: the schema is bumped and old execution-gated bundles are not reinterpreted",()=>{
- assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION,"4.0.0");
+ assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION,"4.1.0");
  const bundle=buildResearchBundle(referenceOnlyFixture(),now);
  // A bundle claiming the previous version is rejected rather than silently
  // read as if its execution-gated rows were the new canonical economics.
- const stale={...bundle.files,"run.json":bundle.files["run.json"].replace('"4.0.0"','"3.6.0"')};
+ const stale={...bundle.files,"run.json":bundle.files["run.json"].replace('"4.1.0"','"3.6.0"')};
  assert.equal(validateResearchBundle(stale).ok,false);
  // Dropping the new table is a hard failure, not a silent downgrade.
  const withoutTable={...bundle.files,"structure_economics.jsonl":""};
