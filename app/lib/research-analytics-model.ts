@@ -248,6 +248,8 @@ export function createResearchAnalyticsContext(d: AnalysisDataset): ResearchAnal
 }
 
 const CONTROLLED_RESEARCH_ROLES=new Set(["short_strike_technical","short_strike_buffered"]);
+const isNativeControlledResearchDataset=(d:AnalysisDataset)=>d.schemaVersion==="4.1.0"&&d.migratedFrom===null;
+const usesLegacyControlledResearchCompatibility=(d:AnalysisDataset)=>!isNativeControlledResearchDataset(d);
 /**
  * Cohort selection is centralized here because schema 4.1 candidates.jsonl is
  * no longer synonymous with the manually selected portfolio. Missing
@@ -259,11 +261,17 @@ export function datasetForAnalyticsCohort(d:AnalysisDataset,cohort:AnalyticsCoho
   const candidates=d.tables.candidates??[];
   const keep=(r:Row)=>cohort==="selected"?r.is_selected!==false:CONTROLLED_RESEARCH_ROLES.has(s(r.research_role)??"");
   let keptCandidates=candidates.filter(keep);
-  if(cohort==="controlled-research"&&!keptCandidates.length)keptCandidates=candidates.filter(r=>r.is_selected!==false);
+  if(cohort==="controlled-research"&&!keptCandidates.length&&usesLegacyControlledResearchCompatibility(d))keptCandidates=candidates.filter(r=>r.is_selected!==false);
   const keys=new Set(keptCandidates.map(r=>`${s(r.event_id)??""}~${s(r.candidate_id)??""}`));
-  if(keptCandidates.length===candidates.length)return d;
-  const belongs=(r:Row)=>keys.has(`${s(r.event_id)??""}~${s(r.candidate_id)??""}`);
+  const candidateIds=new Set(keptCandidates.map(r=>s(r.candidate_id)??""));
+  const variantKeys=new Set(keptCandidates.map(r=>`${s(r.event_id)??""}~${s(r.strategy_variant_id)??""}`));
+  const belongs=(r:Row)=>{
+    const eventId=s(r.event_id),candidateId=s(r.candidate_id),variantId=s(r.strategy_variant_id);
+    if(candidateId!==null)return eventId===null?candidateIds.has(candidateId):keys.has(`${eventId}~${candidateId}`);
+    return eventId!==null&&variantId!==null&&variantKeys.has(`${eventId}~${variantId}`);
+  };
   const candidateTables=new Set(["structure_economics","valuations","outcomes","availability","margin_scenarios","evidence_trades","entry_delay_sensitivity","structure_volatility_state"]);
+  if(keptCandidates.length===candidates.length&&[...candidateTables].every(name=>(d.tables[name]??[]).every(belongs)))return d;
   return {...d,tables:{...d.tables,...Object.fromEntries([...candidateTables].map(name=>[name,(d.tables[name]??[]).filter(belongs)])),candidates:keptCandidates}};
 }
 
