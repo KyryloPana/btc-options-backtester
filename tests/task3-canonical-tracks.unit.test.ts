@@ -6,18 +6,18 @@ import {buildSpreadWidthReport} from "../app/lib/spread-width/report.ts";
 import {buildResearchAnalyticsModel,createResearchAnalyticsContext,datasetForAnalyticsTrack,resetResearchAnalyticsPerformanceCounters,researchAnalyticsPerformanceCounters} from "../app/lib/research-analytics-model.ts";
 
 const day=(n:number)=>new Date(Date.UTC(2024,0,n)).toISOString();
-const entry=(gross:number)=>({status:"priced",targetTimestamp:Date.parse(day(2)),valuationTimestamp:Date.parse(day(2)),entryTargetIndex:100,
+const entry=(gross:number)=>({status:"priced",targetTimestamp:Date.parse(day(2)),valuationTimestamp:Date.parse(day(2)),entryTargetIndex:100_000,
  sold:{priceBtcPerContract:gross+.02},bought:{priceBtcPerContract:.02},grossSpreadBtc:gross,openingFeesBtc:.001,netOpeningCashFlowBtc:gross-.001,estimateQuality:"yellow"});
 const ref=(gross:number)=>({status:"valued",source:"local_iv_interpolation",entrySnapshot:entry(gross),valuationPathSnapshot:[{timestamp:Date.parse(day(3)),estimatedNetPnlBtc:-.01,estimatedNetPnlUsd:-1}],outcomeSnapshots:[{label:"settlement",outcome_type:"settlement",valuationTimestamp:Date.parse(day(8)),estimatedNetPnlBtc:.02,estimatedNetPnlUsd:2}]});
 function data():AnalysisDataset {
  const base={event_id:"e",expiry_timestamp_utc:day(10),actual_dte:8,structure_type:"credit_spread",option_type:"P",quantity:1,direction:"long",execution_scenario_status:"unavailable",execution_scenario_reason:"sparse tape"};
  const variants=[
-  {candidate_id:"tech",strategy_variant_id:"tech",strike_method:"anchor",actual_strikes:{short:90,long:80,width:10},requested_strikes:{width:10},reference_valuation:ref(.08)},
-  {candidate_id:"buff",strategy_variant_id:"buff",strike_method:"buffered",actual_strikes:{short:85,long:75,width:10},requested_strikes:{width:10},reference_valuation:ref(.06)},
-  {candidate_id:"wide",strategy_variant_id:"wide",strike_method:"anchor",actual_strikes:{short:90,long:70,width:20},requested_strikes:{width:25},reference_valuation:ref(.09)},
+  {candidate_id:"tech",strategy_variant_id:"tech",strike_method:"anchor",actual_strikes:{short:90_000,long:80_000,width:10_000},requested_strikes:{width:10_000},reference_valuation:ref(.08)},
+  {candidate_id:"buff",strategy_variant_id:"buff",strike_method:"buffered",actual_strikes:{short:89_000,long:79_000,width:10_000},requested_strikes:{width:10_000},reference_valuation:ref(.06)},
+  {candidate_id:"wide",strategy_variant_id:"wide",strike_method:"anchor",actual_strikes:{short:90_000,long:70_000,width:20_000},requested_strikes:{width:25_000},reference_valuation:ref(.09)},
  ];
  const candidates=variants.flatMap(v=>["maker","taker"].map(execution_scenario=>({...base,...v,structure_execution_id:`${v.candidate_id}~${execution_scenario}`,execution_scenario})));
- return {filename:"task3.zip",schemaVersion:"3.2.0",migratedFrom:null,run:{},tables:{candidates,availability:variants.map(v=>({event_id:"e",strategy_variant_id:v.strategy_variant_id})),events:[{event_id:"e",entry_timestamp_utc:day(1),signal_timestamp_utc:day(1),entry_price:100,extreme_price:92,invalidation_price:88,range_low:80,range_high:100}],underlying_path:[],outcomes:[],valuations:[],margin_scenarios:[]},counts:{},venues:[],sourceRuns:[],eventUniverseComplete:true,capabilities:[]};
+ return {filename:"task3.zip",schemaVersion:"3.2.0",migratedFrom:null,run:{},tables:{candidates,availability:variants.map(v=>({event_id:"e",strategy_variant_id:v.strategy_variant_id})),events:[{event_id:"e",entry_timestamp_utc:day(1),signal_timestamp_utc:day(1),entry_price:100_000,extreme_price:90_400,invalidation_price:88_000,range_low:80_000,range_high:100_000}],underlying_path:[],outcomes:[],valuations:[],margin_scenarios:[]},counts:{},venues:[],sourceRuns:[],eventUniverseComplete:true,capabilities:[]};
 }
 
 test("Task 3 structural reports retain Reference as their counterfactual basis",()=>{
@@ -26,7 +26,8 @@ test("Task 3 structural reports retain Reference as their counterfactual basis",
  assert.equal(projected.tables.candidates?.length,3);
  const strike=buildShortStrikeReport(d);
  assert.equal(strike.scenario,"reference");
- assert.equal(strike.pairs.length,0,"no empirical Q50 means no central economic pair");
+ assert.equal(strike.pairs.length,1,"valid Reference technical and buffered structures form the primary pair");
+ assert.equal(strike.pairs[0]?.economicsComparable,true);
  assert.equal(strike.robustness?.maker.pairs[0]?.economicsComparable,false);
  assert.equal(strike.robustness?.taker.pairs[0]?.economicsComparable,false);
  const width=buildSpreadWidthReport(d);

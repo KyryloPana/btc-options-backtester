@@ -22,6 +22,7 @@ export function stableSelectionId(eventId: string, venue: Venue, candidateId: st
 
 export interface GenerationCandidateSnapshot {
   candidateId: string; venue: Venue; selected: boolean; status: "priced" | "unavailable";
+  contractResolutionStatus?:ContractResolutionStatus;
   availabilityReasons: string[]; targetHorizon: number; eligibleDteRange: { min: number | null; max: number | null };
   actualExpiryTimestamp: number | null; actualDte: number | null; requestedStrikes: { short: number; long: number; width: number };
   actualStrikes: { short: number | null; long: number | null; width: number | null }; structure: string; optionType: string;
@@ -110,7 +111,8 @@ export interface SelectedStructure {
   derivedRefreshedAtUtc?: string;
   marginSnapshot: JsonValue; evidenceTradeSnapshots?: JsonValue[]; evidenceUsages?: EvidenceUsageDto[];
 }
-export interface ResearchSelectionEvent { eventId: string; sourceRun: JsonValue; generationSnapshot: GenerationSnapshot; selectedStructures: SelectedStructure[]; evidenceCatalog?: EvidenceTradeDto[] }
+export interface ResearchOnlyStructure extends SelectedStructure { researchRole:"short_strike_technical"|"short_strike_buffered" }
+export interface ResearchSelectionEvent { eventId: string; sourceRun: JsonValue; generationSnapshot: GenerationSnapshot; selectedStructures: SelectedStructure[]; researchStructures?:ResearchOnlyStructure[]; evidenceCatalog?: EvidenceTradeDto[] }
 export interface ResearchSelectionStore { schemaVersion: typeof RESEARCH_SELECTION_SCHEMA_VERSION; datasetId: string; updatedAtUtc: string; events: ResearchSelectionEvent[] }
 export interface SelectionValidationError { path: string; message: string }
 
@@ -139,6 +141,7 @@ export function validateResearchSelectionStore(value:unknown):{ok:true;store:Res
     if(typeof event.eventId!=="string"||!event.eventId)errors.push({path:`${p}.eventId`,message:"Event ID is required."});else if(eventIds.has(event.eventId))errors.push({path:`${p}.eventId`,message:"Event IDs must be unique."});else eventIds.add(event.eventId);
     if(!event.generationSnapshot||!Array.isArray(event.generationSnapshot.candidates))errors.push({path:`${p}.generationSnapshot.candidates`,message:"Complete generated candidate universe is required."});
     if(!Array.isArray(event.selectedStructures))errors.push({path:`${p}.selectedStructures`,message:"Selected structures must be an array."});
+    if(event.researchStructures!==undefined&&!Array.isArray(event.researchStructures))errors.push({path:`${p}.researchStructures`,message:"Research-only structures must be an array when present."});
     const keys=new Set<string>();
     const generationAttempts=new Set<string>();
     for(const [j,c] of (Array.isArray(event.generationSnapshot?.candidates)?event.generationSnapshot.candidates:[]).entries()){
@@ -169,12 +172,38 @@ export function validateResearchSelectionStore(value:unknown):{ok:true;store:Res
         if(!audit.admissible)errors.push({path:q,message:`Selected candidate has no valid analytical track.${audit.referenceErrors.length?` Reference valuation: ${audit.referenceErrors.join("; ")}.`:""}`});
       }
     }
+    const researchKeys=new Set<string>();
+    for(const [j,s] of (Array.isArray(event.researchStructures)?event.researchStructures:[]).entries()){
+      const q=`${p}.researchStructures[${j}]`;
+      if(!s||typeof s!=="object"){errors.push({path:q,message:"Research structure must be an object."});continue;}
+      if(s.eventId!==event.eventId)errors.push({path:`${q}.eventId`,message:"Research structure event ID must match its event."});
+      if(typeof s.candidateId!=="string"||!s.candidateId)errors.push({path:`${q}.candidateId`,message:"Stable candidate ID is required."});
+      if(!venue(s.venue))errors.push({path:`${q}.venue`,message:"Venue must be deribit, bybit, or binance."});
+      if(!iso(s.selectedAtUtc))errors.push({path:`${q}.selectedAtUtc`,message:"A UTC ISO-8601 materialization timestamp is required."});
+      if(typeof s.quantity!=="number"||!Number.isFinite(s.quantity)||s.quantity<=0)errors.push({path:`${q}.quantity`,message:"Quantity must be finite and positive."});
+      if(!["short_strike_technical","short_strike_buffered"].includes(String(s.researchRole)))errors.push({path:`${q}.researchRole`,message:"Unknown controlled-research role."});
+      const key=`${s.venue}:${s.candidateId}`;if(researchKeys.has(key))errors.push({path:q,message:"Duplicate research candidate identity."});researchKeys.add(key);
+      const generated=Array.isArray(event.generationSnapshot?.candidates)?event.generationSnapshot.candidates:[];
+      if(!generated.some(c=>c&&typeof c==="object"&&(c as GenerationCandidateSnapshot).candidateId===s.candidateId))errors.push({path:`${q}.candidateId`,message:"Research candidate is absent from generation provenance."});
+      const resolution=s.contractResolution;
+      if(!resolution||!["exact_resolved","nearest_listed_resolved","confirmed_not_listed","retrieval_failure","metadata_unavailable"].includes(String(resolution.status)))errors.push({path:`${q}.contractResolution.status`,message:"Research contract-resolution status is invalid."});
+      const reference=s.referenceValuation;
+      if(!reference||!["valued","unavailable"].includes(String(reference.status)))errors.push({path:`${q}.referenceValuation.status`,message:"Research Reference state must be valued or explicitly unavailable."});
+      if(reference?.status==="unavailable"&&!reference.reason)errors.push({path:`${q}.referenceValuation.reason`,message:"Unavailable Reference state requires the real reason."});
+      for(const mode of ["maker","taker"] as const)if(s.executionScenarios?.[mode]?.status==="evaluated")errors.push({path:`${q}.executionScenarios.${mode}`,message:"Controlled research records cannot fabricate selected execution."});
+    }
   }
   inspectJson(value,"$",errors);
   return errors.length?{ok:false,errors}:{ok:true,store:store as ResearchSelectionStore};
 }
 
 export function emptyResearchSelectionStore(datasetId:string,now=new Date().toISOString()):ResearchSelectionStore{return{schemaVersion:RESEARCH_SELECTION_SCHEMA_VERSION,datasetId,updatedAtUtc:now,events:[]};}
+export function unavailableResearchStructure(eventId:string,candidate:GenerationCandidateSnapshot,quantity:number,atUtc:string):ResearchOnlyStructure{
+ const reason=candidate.availabilityReasons.find(Boolean)??"Candidate did not produce a runnable canonical Reference observation.";
+ const resolutionStatus:ContractResolutionStatus=candidate.contractResolutionStatus??(candidate.availabilityReasons.some(x=>/not.?listed/i.test(x))?"confirmed_not_listed":candidate.availabilityReasons.some(x=>/retriev|request|network|archive/i.test(x))?"retrieval_failure":"metadata_unavailable");
+ const notEvaluated:ExecutionScenarioSnapshot={status:"not_evaluated",reason:"Controlled research candidates do not receive selected-strategy execution.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]};
+ return {selectionId:`research~short-strike~${candidate.candidateId}`,eventId,candidateId:candidate.candidateId,venue:candidate.venue,selectedAtUtc:atUtc,quantity,strategyVariantId:candidate.candidateId,researchRole:candidate.strikeMethod==="buffered"?"short_strike_buffered":"short_strike_technical",contractResolution:{status:resolutionStatus,reason,short:null,long:null},referenceValuation:{status:"unavailable",reason,source:"unavailable",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[],provenance:canonicalJson({executionIndependent:true,generationCandidateId:candidate.candidateId})},candidateSnapshot:compactCandidateMetadata({venue:candidate.venue,structure:candidate.structure,optionType:candidate.optionType,targetDte:candidate.targetHorizon,expiryTimestamp:candidate.actualExpiryTimestamp,actualDte:candidate.actualDte,shortStrike:candidate.actualStrikes.short,longStrike:candidate.actualStrikes.long,actualWidth:candidate.actualStrikes.width,instruments:{short:null,long:null},quality:candidate.entryQuality,qualityReasonCodes:candidate.availabilityReasons}),executionScenarios:{maker:{...notEvaluated},taker:{...notEvaluated}},derivedRefreshedAtUtc:atUtc,marginSnapshot:null,evidenceTradeSnapshots:[],evidenceUsages:[]};
+}
 export interface SelectionChangeSet { toAdd:Set<string>; toRemove:Set<string>; toKeep:Set<string> }
 /** The complete selection transition. Callers must never infer it from UI toggles. */
 export function selectionChangeSet(saved:Iterable<string>,draft:Iterable<string>):SelectionChangeSet{

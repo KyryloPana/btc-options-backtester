@@ -1,8 +1,12 @@
 # Research Bundle Schema
 
-Schema **3.6.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and `events.jsonl`, `underlying_path.jsonl`, `candidates.jsonl`, `valuations.jsonl`, `outcomes.jsonl`, `availability.jsonl`, `margin_scenarios.jsonl`, `evidence_trades.jsonl`, `structure_economics.jsonl`, `futures_comparisons.jsonl`, and `futures_path.jsonl`. Empty tables remain empty files and availability is stated in `run.json`.
+Schema **4.1.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and the JSONL tables declared by the exporter. Empty tables remain empty files and availability is stated in `run.json`.
 
-**`candidates.jsonl` = selected performance numerator; `availability.jsonl` = complete generated denominator.** Reports calculate coverage from availability and recompute extrema from valuations, never UI summaries.
+**`candidates.jsonl` = selected candidates plus declared controlled-research candidates; `availability.jsonl` = complete generated denominator.** `is_selected` records manual portfolio selection while `research_role` records a controlled analytical role; these fields are orthogonal. Selected-strategy reports filter `is_selected`, while Short-Strike Reference explicitly requests the controlled-research cohort. Reports calculate coverage from generation/availability provenance and recompute extrema from valuations, never UI summaries.
+
+### Analytics cohort routing
+
+The shared analytics boundary exposes `selected`, `controlled-research`, and `all` cohorts. Economics (including Q50/Q90), Duration/DTE, Spread Width, Exit Policy, futures comparison, execution summaries, portfolio/capital reconstruction, and margin use `selected`. Short-Strike uses `controlled-research` for its primary Reference comparison and `selected` for Maker/Taker robustness. `all` is reserved for diagnostics and low-level tooling; it is not a report default.
 
 ## Keys and join semantics
 
@@ -11,7 +15,7 @@ Schema **3.6.0** is a versioned, venue-aware interchange format. Every ZIP conta
 | `run.json` | `run_id` | Metadata, source runs, methodology, venue configuration, counts and availability. |
 | `events.jsonl` | `event_id` | Persisted MR events, including zero-selection events. |
 | `underlying_path.jsonl` | event/time row | Stored event candles. |
-| `candidates.jsonl` | `structure_execution_id` | Selected numerator row per structural candidate and execution scenario. `candidate_id` is stable structural identity and is intentionally shared by maker/taker rows. |
+| `candidates.jsonl` | `structure_execution_id` | Selected or declared controlled-research row per structural candidate and execution scenario. `candidate_id` is stable structural identity and is intentionally shared by maker/taker rows. Research-only execution scenarios remain `not_evaluated`. |
 | `valuations.jsonl` | `valuation_id` | Joins `candidate_id + execution_scenario`; evaluated scenarios only. |
 | `outcomes.jsonl` | `outcome_id` | Joins `candidate_id + execution_scenario`; evaluated scenarios only. |
 | `availability.jsonl` | `availability_id` | Complete generated denominator row. Multiple requested widths/policies may resolve to the same structural `candidate_id`; each row retains `requested_strikes` and `actual_strikes`. |

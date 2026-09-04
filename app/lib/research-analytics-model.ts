@@ -17,6 +17,8 @@ export const ANALYTICS_TRACKS = [
   "penalty_sensitivity",
 ] as const;
 export type AnalyticsTrack = (typeof ANALYTICS_TRACKS)[number];
+export type AnalyticsCohort = "selected" | "controlled-research" | "all";
+export interface AnalyticsProjectionOptions { readonly cohort?:AnalyticsCohort }
 const CANONICAL_TRACK_FOR_ANALYTICS:Readonly<Partial<Record<AnalyticsTrack,CanonicalTrack>>>={
  reference:"reference_fair_value",immediate_maker:"strict_maker",immediate_taker:"strict_taker",
  delayed_maker:"delayed_maker",delayed_taker:"delayed_taker",
@@ -245,8 +247,36 @@ export function createResearchAnalyticsContext(d: AnalysisDataset): ResearchAnal
   return context;
 }
 
-export function buildResearchAnalyticsModel(d: AnalysisDataset): ResearchAnalyticsModel {
-  return createResearchAnalyticsContext(d).model;
+const CONTROLLED_RESEARCH_ROLES=new Set(["short_strike_technical","short_strike_buffered"]);
+const isNativeControlledResearchDataset=(d:AnalysisDataset)=>d.schemaVersion==="4.1.0"&&d.migratedFrom===null;
+const usesLegacyControlledResearchCompatibility=(d:AnalysisDataset)=>!isNativeControlledResearchDataset(d);
+/**
+ * Cohort selection is centralized here because schema 4.1 candidates.jsonl is
+ * no longer synonymous with the manually selected portfolio. Missing
+ * is_selected is treated as selected only for in-memory legacy test/tooling
+ * fixtures; every validated 4.1 bundle carries the explicit boolean.
+ */
+export function datasetForAnalyticsCohort(d:AnalysisDataset,cohort:AnalyticsCohort="selected"):AnalysisDataset{
+  if(cohort==="all")return d;
+  const candidates=d.tables.candidates??[];
+  const keep=(r:Row)=>cohort==="selected"?r.is_selected!==false:CONTROLLED_RESEARCH_ROLES.has(s(r.research_role)??"");
+  let keptCandidates=candidates.filter(keep);
+  if(cohort==="controlled-research"&&!keptCandidates.length&&usesLegacyControlledResearchCompatibility(d))keptCandidates=candidates.filter(r=>r.is_selected!==false);
+  const keys=new Set(keptCandidates.map(r=>`${s(r.event_id)??""}~${s(r.candidate_id)??""}`));
+  const candidateIds=new Set(keptCandidates.map(r=>s(r.candidate_id)??""));
+  const variantKeys=new Set(keptCandidates.map(r=>`${s(r.event_id)??""}~${s(r.strategy_variant_id)??""}`));
+  const belongs=(r:Row)=>{
+    const eventId=s(r.event_id),candidateId=s(r.candidate_id),variantId=s(r.strategy_variant_id);
+    if(candidateId!==null)return eventId===null?candidateIds.has(candidateId):keys.has(`${eventId}~${candidateId}`);
+    return eventId!==null&&variantId!==null&&variantKeys.has(`${eventId}~${variantId}`);
+  };
+  const candidateTables=new Set(["structure_economics","valuations","outcomes","availability","margin_scenarios","evidence_trades","entry_delay_sensitivity","structure_volatility_state"]);
+  if(keptCandidates.length===candidates.length&&[...candidateTables].every(name=>(d.tables[name]??[]).every(belongs)))return d;
+  return {...d,tables:{...d.tables,...Object.fromEntries([...candidateTables].map(name=>[name,(d.tables[name]??[]).filter(belongs)])),candidates:keptCandidates}};
+}
+
+export function buildResearchAnalyticsModel(d: AnalysisDataset,options:AnalyticsProjectionOptions={}): ResearchAnalyticsModel {
+  return createResearchAnalyticsContext(datasetForAnalyticsCohort(d,options.cohort??"selected")).model;
 }
 
 /** Statuses only a raw engine snapshot uses; never a tabular outcome status. */
@@ -408,23 +438,29 @@ function projectAnalyticsTrack(
       outcomes.push(projectOutcome(rec(value), name, observation.candidateId, scenario, track, observation.structure.expiryTime));
     for (const value of track.valuationPath) {
       const x = rec(value);
+      const nativePnl = n(x.net_pnl_native) ?? n(x.estimatedNetPnlBtc);
+      const targetIndex = n(x.targetIndex) ?? n(x.target_index);
+      const explicitUsd = n(x.net_pnl_usd) ?? n(x.estimatedNetPnlUsd);
+      const persistedStatus=s(x.valuation_status)??s(x.status);
+      const valuationStatus=persistedStatus==="priced"||persistedStatus==="evaluated"?"priced":persistedStatus??(nativePnl!==null||explicitUsd!==null?"priced":"unavailable");
       valuations.push({
         ...x,
         candidate_id: observation.candidateId,
         execution_scenario: scenario,
         pricing_track: requested === "reference" ? "reference" : requested,
-        valuation_status: "priced",
+        valuation_status: valuationStatus,
         timestamp_utc: s(x.timestamp_utc) ?? (n(x.timestamp) === null ? null : new Date(n(x.timestamp)!).toISOString()),
-        net_pnl_native: n(x.net_pnl_native) ?? n(x.estimatedNetPnlBtc),
-        net_pnl_usd: n(x.net_pnl_usd) ?? n(x.estimatedNetPnlUsd),
+        net_pnl_native: nativePnl,
+        net_pnl_usd: explicitUsd ?? (nativePnl !== null && targetIndex !== null && targetIndex > 0 ? nativePnl * targetIndex : null),
+        net_pnl_usd_provenance: explicitUsd !== null ? "persisted_usd_pnl" : nativePnl !== null && targetIndex !== null && targetIndex > 0 ? "derived_native_pnl_times_contemporaneous_target_index" : null,
       });
     }
   }
   return {...d, tables: {...d.tables, candidates, outcomes, valuations}};
 }
 
-export function datasetForAnalyticsTrack(d: AnalysisDataset, requested: AnalyticsTrack): AnalysisDataset {
-  return createResearchAnalyticsContext(d).projection(requested);
+export function datasetForAnalyticsTrack(d: AnalysisDataset, requested: AnalyticsTrack,options:AnalyticsProjectionOptions={}): AnalysisDataset {
+  return createResearchAnalyticsContext(datasetForAnalyticsCohort(d,options.cohort??"selected")).projection(requested);
 }
 
 function economics(

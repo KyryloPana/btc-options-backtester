@@ -1,6 +1,6 @@
 import type {AnalysisDataset} from "../research-analysis.ts";
 import {normalizeExecutionScenarioStatus,type ExecutionScenarioStatus} from "../execution-scenario.ts";
-import {adversePath,type AdversePathObservation} from "../adverse-path.ts";
+import {adversePath,referenceAdversePath,type AdversePathObservation} from "../adverse-path.ts";
 // Touch/breach is a shared canonical primitive: Spread-Width asks the same
 // question of the same short strike, so both import one implementation.
 import {challengeOf,type ChallengeObservation} from "../strike-challenge.ts";
@@ -69,6 +69,7 @@ export interface ShortStrikeStructure {
  readonly executionScenarioStatus:ExecutionScenarioStatus|null;
  readonly executionScenarioReason:string|null;
  readonly executionScenarioLegacyUndifferentiated:boolean;
+ readonly analyticsTrack:"reference"|ExecutionScenario|null;
  readonly strikeMethod:StrikeMethod|null;
  readonly rawStrikeMethod:string|null;
  readonly direction:"long"|"short"|null;
@@ -97,6 +98,8 @@ export interface ShortStrikeStructure {
  readonly pnlAtSettlementUsd:number|null;
  /** The outcome that actually occurred while the structure existed. */
  readonly realizedPnlUsd:number|null;
+ readonly resolution:"vpoc"|"invalidation"|"settlement"|"ambiguous_resolution_order"|"unresolved";
+ readonly resolutionReason:string|null;
  readonly adverse:AdversePathObservation;
  readonly worstAdverseUsd:number|null;
  readonly maeUsd:number|null;
@@ -104,7 +107,7 @@ export interface ShortStrikeStructure {
 
 const str=(v:unknown):string|null=>typeof v==="string"&&v.trim()?v:null;
 const num=(v:unknown):number|null=>typeof v==="number"&&Number.isFinite(v)?v:null;
-const ms=(v:unknown):number|null=>{const s=str(v);if(!s)return null;const t=Date.parse(s);return Number.isFinite(t)?t:null};
+const ms=(v:unknown):number|null=>{if(typeof v==="number"&&Number.isFinite(v))return v;const s=str(v);if(!s)return null;const t=Date.parse(s);return Number.isFinite(t)?t:null};
 const nested=(v:unknown,key:string):unknown=>v&&typeof v==="object"&&!Array.isArray(v)?(v as Record<string,unknown>)[key]:undefined;
 const scenarioOf=(v:unknown):ExecutionScenario|null=>{const s=str(v);return s==="maker"||s==="taker"?s:null};
 const scenarioStatusOf=normalizeExecutionScenarioStatus;
@@ -146,11 +149,18 @@ function geometryOf(row:Readonly<Record<string,unknown>>,event:Readonly<Record<s
 }
 
 
-function pnlAt(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:string,scenario:ExecutionScenario|null,kind:"invalidation"|"settlement"):number|null{
- if(scenario===null)return null;
+function pnlAtUsd(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:string,scenario:ExecutionScenario|null,kind:"vpoc"|"invalidation"|"settlement"):number|null{
  const row=outcomes.find(o=>o.candidate_id===candidateId&&o.execution_scenario===scenario&&o.outcome_type===kind);
  if(!row||row.status!=="priced")return null;
- return num(row.net_pnl_usd)??num(row.net_pnl_native);
+ const usd=num(row.net_pnl_usd);
+ if(usd!==null)return usd;
+ const native=num(row.net_pnl_native),index=num(row.conversion_index)??num(row.conversionIndex)??num(row.target_index)??num(row.targetIndex);
+ return native!==null&&index!==null&&index>0?native*index:null;
+}
+
+/** One causal timestamp adapter for projected rows and legacy persisted snapshots. */
+function outcomeTimestamp(row:Readonly<Record<string,unknown>>|undefined):number|null{
+ return ms(row?.trigger_timestamp_utc)??ms(row?.decision_available_timestamp_utc)??ms(row?.decision_timestamp_utc)??ms(row?.decisionTimestamp);
 }
 
 export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly ShortStrikeStructure[]{
@@ -163,6 +173,7 @@ export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly
  return candidates.map(row=>{
   const eventId=str(row.event_id)??"unknown-event",candidateId=str(row.candidate_id)??"unknown-candidate";
   const scenario=scenarioOf(row.execution_scenario),scenarioStatus=scenarioStatusOf(row.execution_scenario_status);
+  const reference=row.analytics_track==="reference";
   const evaluated=scenarioStatus==="evaluated";
   const event=eventById.get(eventId);
   const directionRaw=str(row.direction)??str(event?.direction);
@@ -174,26 +185,46 @@ export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly
   const actualDteDays=num(row.actual_dte)??num(row.actual_dte_days);
   const optionType=str(row.option_type),structureType=str(row.structure_type);
   const invalidationMs=ms(event?.invalidation_decision_timestamp_utc);
+  const endpoint=(kind:"vpoc"|"invalidation")=>{
+   const o=outcomes.find(x=>x.candidate_id===candidateId&&x.execution_scenario===scenario&&x.outcome_type===kind);
+   const trigger=str(o?.trigger_status);
+   if(o&&trigger!==null&&trigger!=="reached")return {time:trigger==="ambiguous"?outcomeTimestamp(o):null,ambiguous:trigger==="ambiguous"};
+   const eventFallback=kind==="vpoc"?ms(event?.vpoc_decision_timestamp_utc):invalidationMs;
+   return {time:outcomeTimestamp(o)??eventFallback,ambiguous:false};
+  };
+  const vpoc=endpoint("vpoc"),invalidation=endpoint("invalidation");
+  const vpocMs=vpoc.time,resolvedInvalidationMs=invalidation.time;
 
   const geometry=geometryOf(row,event,direction);
-  const challenge=challengeOf(pathByEvent.get(eventId)??[],geometry.shortStrike,direction,structureEntryMs,expiryTimestampMs,invalidationMs);
 
   const entryIndex=geometry.entrySpot;
   const grossCreditNative=evaluated?num(row.gross_credit_debit_native):null;
   const netCreditNative=evaluated?num(row.net_opening_cash_flow_native):null;
   const toUsd=(v:number|null)=>v!==null&&entryIndex!==null?v*entryIndex:null;
 
-  const pnlAtInvalidationRaw=pnlAt(outcomes,candidateId,scenario,"invalidation");
+  const pnlAtVpocRaw=pnlAtUsd(outcomes,candidateId,scenario,"vpoc");
+  const pnlAtInvalidationRaw=pnlAtUsd(outcomes,candidateId,scenario,"invalidation");
   // An invalidation outside the structure's life is not an outcome it lived
   // through, so it is never treated as one.
-  const pnlAtInvalidationUsd=challenge.invalidatedInWindow===true?pnlAtInvalidationRaw:null;
-  const pnlAtSettlementUsd=pnlAt(outcomes,candidateId,scenario,"settlement");
-  const realizedPnlUsd=challenge.invalidatedInWindow===true?pnlAtInvalidationUsd:pnlAtSettlementUsd;
+  const vpocInWindow=vpocMs!==null&&structureEntryMs!==null&&vpocMs>=structureEntryMs&&(expiryTimestampMs===null||vpocMs<=expiryTimestampMs);
+  const invalidationInWindow=resolvedInvalidationMs!==null&&structureEntryMs!==null&&resolvedInvalidationMs>=structureEntryMs&&(expiryTimestampMs===null||resolvedInvalidationMs<=expiryTimestampMs);
+  const pnlAtInvalidationUsd=invalidationInWindow?pnlAtInvalidationRaw:null;
+  const settlementOutcome=outcomes.find(x=>x.candidate_id===candidateId&&x.execution_scenario===scenario&&x.outcome_type==="settlement");
+  const settlementMs=outcomeTimestamp(settlementOutcome);
+  const settlementInWindow=settlementMs===null||(structureEntryMs!==null&&settlementMs>=structureEntryMs&&(expiryTimestampMs===null||settlementMs<=expiryTimestampMs));
+  const pnlAtSettlementUsd=settlementInWindow?pnlAtUsd(outcomes,candidateId,scenario,"settlement"):null;
+  const ambiguousResolution=vpoc.ambiguous||invalidation.ambiguous||(vpocInWindow&&invalidationInWindow&&vpocMs===resolvedInvalidationMs);
+  const firstVpoc=vpocInWindow&&( !invalidationInWindow||vpocMs!<resolvedInvalidationMs!);
+  const firstInvalidation=invalidationInWindow&&(!vpocInWindow||resolvedInvalidationMs!<vpocMs!);
+  const realizedPnlUsd=ambiguousResolution?null:firstVpoc?pnlAtVpocRaw:firstInvalidation?pnlAtInvalidationUsd:(!vpocInWindow&&!invalidationInWindow?pnlAtSettlementUsd:null);
+  const resolution=ambiguousResolution?"ambiguous_resolution_order" as const:firstVpoc?"vpoc" as const:firstInvalidation?"invalidation" as const:!vpocInWindow&&!invalidationInWindow?"settlement" as const:"unresolved" as const;
+  const resolutionReason=ambiguousResolution?"VPOC and invalidation share the same available timestamp precision; ordering is not identifiable, so Thesis Exit PnL is intentionally excluded.":realizedPnlUsd===null?"The selected Thesis Exit has no causally USD-valued PnL.":null;
 
-  const boundaryMs=challenge.invalidatedInWindow===true&&invalidationMs!==null
-   ?Math.min(invalidationMs,expiryTimestampMs??invalidationMs)
-   :expiryTimestampMs;
-  const adverse=adversePath(valuations,candidateId,scenario,evaluated,structureEntryMs,boundaryMs);
+  const resolutionMs=firstVpoc?vpocMs:firstInvalidation?resolvedInvalidationMs:null;
+  const ambiguousBoundaryMs=ambiguousResolution?([vpocMs,resolvedInvalidationMs].filter((x):x is number=>x!==null).sort((a,b)=>a-b)[0]??null):null;
+  const boundaryMs=resolutionMs??ambiguousBoundaryMs??expiryTimestampMs;
+  const challenge=challengeOf(pathByEvent.get(eventId)??[],geometry.shortStrike,direction,structureEntryMs,boundaryMs,invalidationMs,resolutionMs??ambiguousBoundaryMs);
+  const adverse=reference?referenceAdversePath(valuations,candidateId,structureEntryMs,boundaryMs):adversePath(valuations,candidateId,scenario,evaluated,structureEntryMs,boundaryMs);
 
   // Exit policy is uniform across a canonical bundle -- one outcome set is
   // exported for every structure -- so it is a constant in the key rather than
@@ -203,14 +234,14 @@ export function normalizeShortStrikeStructures(dataset:AnalysisDataset):readonly
 
   return {
    eventId,candidateId,structureExecutionId:str(row.structure_execution_id)??`${candidateId}~${scenario??"unknown"}`,
-   executionScenario:scenario,executionScenarioStatus:scenarioStatus,executionScenarioReason:str(row.execution_scenario_reason),
+   executionScenario:scenario,analyticsTrack:reference?"reference":scenario,executionScenarioStatus:scenarioStatus,executionScenarioReason:str(row.execution_scenario_reason),
    executionScenarioLegacyUndifferentiated:row.execution_scenario_legacy_undifferentiated===true,
    strikeMethod,rawStrikeMethod,direction,optionType,structureType,widthUsd,
    expiryTimestampMs,actualDteDays,structureEntryMs,matchKey,
    geometry,challenge,
    grossCreditNative,netCreditNative,
    grossCreditUsd:toUsd(grossCreditNative),netCreditUsd:toUsd(netCreditNative),
-   pnlAtInvalidationUsd,pnlAtSettlementUsd,realizedPnlUsd,
+   pnlAtInvalidationUsd,pnlAtSettlementUsd,realizedPnlUsd,resolution,resolutionReason,
    adverse,worstAdverseUsd:adverse.worstAdverseUsd,maeUsd:adverse.maeBeforeProfitUsd,
   } satisfies ShortStrikeStructure;
  });
