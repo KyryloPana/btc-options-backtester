@@ -28,9 +28,14 @@ test("selection change set reports add, remove, and retained ids",()=>{const cha
 test("removing every saved id is dirty immediately",()=>{const draft=new Set<string>();assert.equal(draft.size,0);assert.equal(sameSelectionIds(["one","two"],draft),false);assert.deepEqual([...selectionChangeSet(["one","two"],draft).toRemove],["one","two"]);});
 test("failed retrieval preserves full saved selection identities while a valid deselection removes",()=>{
  const saved=Array.from({length:9},(_,i)=>`candidate-${i}`),draft: string[]=[];
- const failed=safeSelectionChangeSet(saved,draft,{attempted:true,complete:false,contractsLoaded:0,failedContracts:86});
+ const failed=safeSelectionChangeSet(saved,draft,{attempted:true,complete:false,contractsLoaded:0,failedContracts:86,generationKey:"current",materiallyRegenerated:false},"current");
  assert.deepEqual([...failed.toKeep],saved);assert.deepEqual([...failed.toRemove],[]);assert.deepEqual([...failed.toAdd],[]);
- const valid=safeSelectionChangeSet(saved,draft,{attempted:true,complete:true,contractsLoaded:9,failedContracts:0});
+ const persistedBefore=event("saved",saved).selectedStructures,persistedAfter=persistedBefore.filter(structure=>failed.toKeep.has(structure.candidateId));assert.deepEqual(persistedAfter,persistedBefore,"all quantities, strikes, expiries, variants, and provenance remain byte-semantically unchanged");
+ const emptyTape=safeSelectionChangeSet(saved,draft,{attempted:true,complete:true,contractsLoaded:9,failedContracts:0,generationKey:"current",materiallyRegenerated:false},"current");
+ assert.deepEqual([...emptyTape.toKeep],saved,"successful empty evidence is non-authoritative");assert.deepEqual([...emptyTape.toRemove],[]);
+ const stale=safeSelectionChangeSet(saved,draft,{attempted:true,complete:true,contractsLoaded:9,failedContracts:0,generationKey:"event-a",materiallyRegenerated:true},"event-b");
+ assert.deepEqual([...stale.toKeep],saved,"another generation's health cannot authorize removal");assert.deepEqual([...stale.toRemove],[]);
+ const valid=safeSelectionChangeSet(saved,draft,{attempted:true,complete:true,contractsLoaded:9,failedContracts:0,generationKey:"current",materiallyRegenerated:true},"current");
  assert.deepEqual([...valid.toRemove],saved);assert.deepEqual([...valid.toKeep],[]);
 });
 test("regeneration exposes stale identity without remapping it",()=>{const result=reconcileGeneratedSelection(["stale-id","same-id"],["same-id","new-id"]);assert.deepEqual([...result.visible],["same-id"]);assert.deepEqual([...result.stale],["stale-id"]);assert.equal(result.visible.has("new-id"),false);});

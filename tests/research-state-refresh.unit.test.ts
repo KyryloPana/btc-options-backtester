@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {mkdtemp,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
-import {researchStateDirtiness} from "../app/lib/research-state.ts";
+import {contractGenerationKey,researchStateDirtiness} from "../app/lib/research-state.ts";
 import {diagnoseMethodologyStaleness} from "../app/lib/configuration-identity.ts";
 import {buildResearchBundle,validateResearchBundle} from "../app/lib/research-bundle.ts";
 import {ResearchSelectionService} from "../scripts/research-selection-service.ts";
@@ -13,6 +13,15 @@ import {EXECUTION_TIMING_METADATA} from "../app/lib/execution-policy.ts";
 import type {GenerationSnapshot,ResearchSelectionEvent} from "../app/lib/research-selections.ts";
 
 const newer="2026-08-23T12:00:00.000Z";
+test("contract generation health identity changes with event, request geometry, or runtime configuration",()=>{
+ const ts=Date.parse(newer);
+ const request={requestId:"credit-7-1000-96000",targetDte:7,minDte:5,maxDte:9,soldStrike:96000,boughtStrike:97000,optionType:"C" as const};
+ const a=contractGenerationKey("event-a",ts,[request],{executionMode:"maker"});
+ assert.notEqual(a,contractGenerationKey("event-b",ts,[request],{executionMode:"maker"}));
+ assert.notEqual(a,contractGenerationKey("event-a",ts,[{...request,boughtStrike:98000}],{executionMode:"maker"}));
+ assert.notEqual(a,contractGenerationKey("event-a",ts,[request],{executionMode:"taker"}));
+ assert.equal(a,contractGenerationKey("event-a",ts,[request],{executionMode:"maker"}));
+});
 function staleAndCurrent(empty:boolean){
  const current=structuredClone(baseStore.events[0]!.generationSnapshot);
  current.generatedAtUtc=newer;current.configuration={...current.configuration,generatedAtUtc:newer,historicalEvidenceWindows:modelHistoricalEvidenceWindows(),synchronizationThresholds:structuredClone(EXECUTION_TIMING_METADATA)};

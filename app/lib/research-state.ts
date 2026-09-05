@@ -1,8 +1,14 @@
 import { sameSelectionIds, type GenerationSnapshot } from "./research-selections.ts";
+import type { HistoryRequest } from "./short-strike/materialize.ts";
 
 export interface CompletedGeneration {
   eventId: string;
   snapshot: GenerationSnapshot;
+}
+
+/** Identity of the exact event and production request universe certified by a load. */
+export function contractGenerationKey(eventId:string,entryTimestamp:number,requests:HistoryRequest[],configuration?:unknown):string{
+  return JSON.stringify({eventId,entryTimestamp,requests:requests.map(request=>({...request})).sort((a,b)=>a.requestId.localeCompare(b.requestId)),configuration});
 }
 
 /**
