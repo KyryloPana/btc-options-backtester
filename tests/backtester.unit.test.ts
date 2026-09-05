@@ -6,6 +6,7 @@ import {
   buildInventory,
   buildValuation,
   generateDesiredSpreads,
+  generateShortStrikeResearchSpreads,
   intrinsicPriceBtc,
   latestCompletedCandleAtOrBefore,
   normalizeLeg,
@@ -16,6 +17,8 @@ import {
 } from "../app/lib/backtester.ts";
 import { CHART_GEOMETRY, CHART_SERIES, hitExitGroups, nearestPoint, timestampAtX, timeX, uniqueCanonicalSpreads, visibleMatrixSpreads } from "../app/lib/valuation-chart.ts";
 import { estimateResearchSpread } from "../app/lib/research-valuation.ts";
+import { historyRequests } from "../app/lib/history-requests.ts";
+import { controlledResearchRole, materializeShortStrikeReference } from "../app/lib/short-strike/materialize.ts";
 
 function close(actual: number | undefined, expected: number) {
   assert.ok(actual !== undefined && Math.abs(actual - expected) < 1e-10, `${actual} should be close to ${expected}`);
@@ -58,7 +61,7 @@ function valuationFixture(kind: "credit" | "debit", comboExecution = false) {
   return buildValuation(spread, event, candles, "maker", 2, comboExecution);
 }
 
-test("adds an independent $1k buffer branch when technical distance is below $500", () => {
+test("production adds an independent $1k buffer branch only inside the historical $100 boundary", () => {
   const spreads = generateDesiredSpreads({
     id: "event", label: "MR", direction: "long", entryDate: "2024-01-01", entryPrice: 60_000, extremePrice: 57_050,
   }, [7, 14, 30], [1000, 2000, 3000], "credit");
@@ -66,17 +69,45 @@ test("adds an independent $1k buffer branch when technical distance is below $50
   assert.deepEqual([...new Set(spreads.map(spread => spread.anchorStrike))], [57_000, 56_000]);
 });
 
-test("short-strike buffer rule has an exclusive $500 boundary for calls and puts",()=>{
-  const generated=(direction:"long"|"short",extremePrice:number)=>generateDesiredSpreads({id:"e",label:"MR",direction,entryDate:"2024-01-01",entryPrice:96_000,extremePrice},[7],[2_000],"credit");
-  assert.deepEqual(generated("short",95_700).map(x=>x.anchorStrike),[96_000,97_000]);
-  assert.deepEqual(generated("short",95_501).map(x=>x.anchorStrike),[96_000,97_000]);
-  assert.deepEqual(generated("short",95_500).map(x=>x.anchorStrike),[96_000]);
-  assert.deepEqual(generated("short",95_400).map(x=>x.anchorStrike),[96_000]);
-  assert.deepEqual(generated("long",95_300).map(x=>x.anchorStrike),[95_000,94_000]);
-  assert.deepEqual(generated("long",95_499).map(x=>x.anchorStrike),[95_000,94_000]);
-  assert.deepEqual(generated("long",95_500).map(x=>x.anchorStrike),[95_000]);
-  assert.deepEqual(generated("long",95_700).map(x=>x.anchorStrike),[95_000]);
-  for(const rows of [generated("short",95_700),generated("long",95_300)])assert.ok(rows.every(x=>Math.abs(x.soldStrike-x.boughtStrike)===2_000));
+test("production $100 rule and research-only $500 rule are isolated for calls and puts",()=>{
+  const event=(direction:"long"|"short",extremePrice:number)=>({id:"e",label:"MR",direction,entryDate:"2024-01-01",entryPrice:96_000,extremePrice});
+  const production=(direction:"long"|"short",extremePrice:number)=>generateDesiredSpreads(event(direction,extremePrice),[7],[2_000],"credit");
+  const research=(direction:"long"|"short",extremePrice:number)=>generateShortStrikeResearchSpreads(event(direction,extremePrice),[7],[2_000],"credit");
+  assert.deepEqual(production("short",95_700).map(x=>x.anchorStrike),[96_000]);
+  assert.deepEqual(production("long",95_300).map(x=>x.anchorStrike),[95_000]);
+  assert.deepEqual(production("short",95_950).map(x=>x.anchorStrike),[96_000,97_000]);
+  assert.deepEqual(production("long",95_050).map(x=>x.anchorStrike),[95_000,94_000]);
+  assert.deepEqual(research("short",95_501).map(x=>x.anchorStrike),[96_000,97_000]);
+  assert.deepEqual(research("short",95_500).map(x=>x.anchorStrike),[96_000]);
+  assert.deepEqual(research("long",95_499).map(x=>x.anchorStrike),[95_000,94_000]);
+  assert.deepEqual(research("long",95_500).map(x=>x.anchorStrike),[95_000]);
+  for(const rows of [research("short",95_700),research("long",95_300)])assert.ok(rows.every(x=>Math.abs(x.soldStrike-x.boughtStrike)===2_000));
+});
+
+test("controlled materialization resolves the $100-$499 cohort without entering production requests",()=>{
+ const entry=Date.parse("2026-08-16T00:00:00Z"),expiry=entry+7*86_400_000,windows={7:{min:6,max:8}};
+ for(const [direction,extreme,entryPrice,type] of [["short",95_700,95_000,"C"],["long",95_300,96_000,"P"]] as const){
+  const event={id:`${direction}-event`,label:"MR",direction,entryDate:"2026-08-16",entryTimestamp:entry,entryPrice,extremePrice:extreme};
+  const production=generateDesiredSpreads(event,[7],[2_000],"credit"),research=generateShortStrikeResearchSpreads(event,[7],[2_000],"credit");
+  const productionRequests=historyRequests(production,windows),researchRequests=historyRequests(research,windows),buffered=research.find(x=>x.buffered)!;
+  assert.equal(production.some(x=>x.buffered),false);assert.equal(productionRequests.some(x=>x.requestId===buffered.id),false);assert.equal(researchRequests.some(x=>x.requestId===buffered.id),true);
+  const manifests=research.map(desired=>({requestId:desired.id,targetDte:7,minDte:6,maxDte:8,desiredSoldStrike:desired.soldStrike,desiredBoughtStrike:desired.boughtStrike,expiryTimestamp:expiry,expiryLabel:"23AUG26",actualDte:7,soldInstrumentName:`BTC-23AUG26-${desired.soldStrike}-${type}`,boughtInstrumentName:`BTC-23AUG26-${desired.boughtStrike}-${type}`,soldStrike:desired.soldStrike,boughtStrike:desired.boughtStrike,soldCreationTimestamp:entry-86_400_000,boughtCreationTimestamp:entry-86_400_000,strikeResolutionSensible:true,strikeResolutionNote:"exact"}));
+  const strikes=[...new Set(research.flatMap(desired=>[desired.soldStrike,desired.boughtStrike]))],inventory=buildInventory(strikes.flatMap((strike,i)=>(["C","P"] as const).map((optionType,j)=>({name:`${direction}-${i}-${j}`,trades:parseContractText(JSON.stringify({timestamp:entry-60_000-j,price:.02+(optionType==="C"?Math.max(entryPrice-strike,0):Math.max(strike-entryPrice,0))/entryPrice,iv:60,instrument_name:`BTC-23AUG26-${strike}-${optionType}`,index_price:entryPrice,direction:j?"sell":"buy",amount:2,trade_id:`${direction}-${i}-${j}`}))})))).map(series=>({...series,creationTimestamp:entry-86_400_000}));
+  const candles=[{openTime:entry-3_600_000,closeTime:entry-1,open:entryPrice,high:entryPrice,low:entryPrice,close:entryPrice,volume:1},{openTime:expiry,closeTime:expiry+3_599_999,open:entryPrice,high:entryPrice,low:entryPrice,close:entryPrice,volume:1}];
+  const controlled=materializeShortStrikeReference({event,dtes:[7],widths:[2_000],spreadKind:"credit",manifests,inventory,entryTimestamp:entry,candles,amount:1,executionMode:"maker",expirySelectionMode:"all-eligible",pricingAssumption:"research-estimate"});
+  assert.equal(controlled.length,2);assert.deepEqual(controlled.map(x=>controlledResearchRole(x.spread)).sort(),["short_strike_buffered","short_strike_technical"]);assert.ok(controlled.some(x=>x.spread.buffered&&x.spread.anchorStrike===buffered.anchorStrike));assert.ok(controlled.every(x=>x.spread.actualWidth===2_000));assert.ok(controlled.every(x=>x.spread.soldContract&&x.spread.boughtContract&&x.spread.retrievalStatus==="ready"));assert.ok(controlled.every(x=>x.researchEntry.status==="priced"||x.researchEntry.reason.length>0),"Reference is calculated or explicitly unavailable; it is never fabricated");
+ }
+});
+
+test("runtime keeps production observation and controlled Reference seams separate",()=>{
+ const source=readFileSync(new URL("../app/options-backtester.tsx",import.meta.url),"utf8");
+ assert.match(source,/requests: productionHistoryRequests/);
+ assert.match(source,/requests:researchHistoryRequests/);
+ assert.match(source,/materializeShortStrikeReference\(/);
+ assert.match(source,/buildAndRunObservationRequests\(\s*selectedEvent,\s*canonicalRetrievedSpreads,/);
+ assert.doesNotMatch(source,/canonicalRetrievedSpreads\.flatMap\(candidate=>buildAndRunObservationRequests/);
+ assert.match(source,/setResearchMaterializations\(controlledAttempt\.controlled\)/);
+ assert.match(source,/executionScenarios:\{maker:notEvaluated,taker:notEvaluated\}/);
 });
 
 test("liquidity-aware ranking prefers Green evidence and retains one viable alternative", () => {

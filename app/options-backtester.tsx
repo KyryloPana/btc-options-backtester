@@ -22,6 +22,7 @@ import {
   firstTouch,
   formatUtc,
   generateDesiredSpreads,
+  generateShortStrikeResearchSpreads,
   parseUtcDate,
   valuationTimestamps,
   windowComparison,
@@ -37,7 +38,7 @@ import { payoffInspectorSummary } from "./lib/payoff-inspector";
 import { EXECUTION_TIMING_METADATA } from "./lib/execution-policy";
 import { compactSettlementProvenance, SETTLEMENT_ACCOUNTING_VERSION } from "./lib/settlement-provenance";
 import {buildPersistedExecutionInspection} from "./lib/persisted-execution-inspection";
-import { candidateIdentity, canonicalJson, renameResearchSelectionEvent, compactCandidateMetadata, compactEntryEconomics, compactResearchSelectionEvent, compactMarginResult, compactOutcomeSnapshot, compactValuationPoint, eventReference, reconcileGeneratedSelection, selectionChangeSet, stableCandidateId, stableSelectionId, unavailableResearchStructure, validateResearchSelectionStore, type EvidenceTradeDto, type EvidenceUsageDto, type ExecutionScenarioSnapshot, type GenerationCandidateSnapshot, type GenerationSnapshot, type ResearchOnlyStructure, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure } from "./lib/research-selections";
+import { candidateIdentity, canonicalJson, renameResearchSelectionEvent, compactCandidateMetadata, compactEntryEconomics, compactResearchSelectionEvent, compactMarginResult, compactOutcomeSnapshot, compactValuationPoint, eventReference, generationAuthorizesReplacement, reconcileGeneratedSelection, safeSelectionChangeSet, stableCandidateId, stableSelectionId, unavailableResearchStructure, validateResearchSelectionStore, type EvidenceTradeDto, type EvidenceUsageDto, type ExecutionScenarioSnapshot, type GenerationCandidateSnapshot, type GenerationSnapshot, type ResearchOnlyStructure, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure } from "./lib/research-selections";
 import type { FuturesMarketSnapshot } from "./lib/research-selections";
 import { CANONICAL_BTC_PERPETUAL } from "./lib/futures-baseline";
 import { resolveApplicationBuild } from "./lib/build-provenance";
@@ -47,7 +48,10 @@ import { diagnoseMethodologyStaleness } from "./lib/configuration-identity";
 import { buildResearchMarginSnapshot } from "./lib/research-margin";
 import { analyzeDelayedExecution, delayedExecutionSnapshot, type DelayedExecutionAnalysis } from "./lib/delayed-execution";
 import { buildModeledExecution } from "./lib/modeled-execution";
-import { researchStateDirtiness, type CompletedGeneration } from "./lib/research-state";
+import { contractGenerationKey, researchStateDirtiness, type CompletedGeneration } from "./lib/research-state";
+import { historyRequests } from "./lib/history-requests";
+import { controlledResearchRole, materializeShortStrikeReference, type ShortStrikeReferenceMaterialization } from "./lib/short-strike/materialize";
+import { attemptControlled, controlledPersistence } from "./lib/controlled-research";
 
 type Section = "events" | "construction" | "contracts" | "analysis";
 /** One execution scenario's independently-evaluated entry, path and outcomes. */
@@ -359,6 +363,11 @@ export function OptionsBacktester() {
   const [parseStatus, setParseStatus] = useState("Checking Deribit instrument manifest…");
   const [sourceBusy, setSourceBusy] = useState(false);
   const [sourceReady, setSourceReady] = useState(false);
+  const [contractLoad,setContractLoad]=useState<{attempted:boolean;complete:boolean;contractsLoaded:number;failedContracts:number;failures:Array<{instrumentName:string;cause:string;retryable:boolean}>;generationKey?:string;materiallyRegenerated?:boolean}>({attempted:false,complete:false,contractsLoaded:0,failedContracts:0,failures:[]});
+  const [controlledResearchLoad,setControlledResearchLoad]=useState<{attempted:boolean;authoritative:boolean;failures:Array<{instrumentName:string;cause:string;retryable:boolean}>;error?:string}>({attempted:false,authoritative:false,failures:[]});
+  const [researchInventory,setResearchInventory]=useState<ContractSeries[]>([]);
+  const [researchCandidateManifests,setResearchCandidateManifests]=useState<ContractCandidateManifest[]>([]);
+  const [researchMaterializations,setResearchMaterializations]=useState<ShortStrikeReferenceMaterialization[]>([]);
   const [selectedSpreadId, setSelectedSpreadId] = useState<string>();
   const [hideRed, setHideRed] = useState(false);
   const [hideDataUnavailable, setHideDataUnavailable] = useState(false);
@@ -383,6 +392,10 @@ export function OptionsBacktester() {
     () => generateDesiredSpreads(selectedEvent, dtes, widths, spreadKind),
     [selectedEvent, dtes, widths, spreadKind],
   );
+  const researchDesiredSpreads=useMemo(()=>generateShortStrikeResearchSpreads(selectedEvent,dtes,widths,spreadKind),[selectedEvent,dtes,widths,spreadKind]);
+  const productionHistoryRequests=useMemo(()=>historyRequests(desiredSpreads,dteTolerances),[desiredSpreads,dteTolerances]);
+  const researchHistoryRequests=useMemo(()=>historyRequests(researchDesiredSpreads,dteTolerances),[researchDesiredSpreads,dteTolerances]);
+  const currentContractGenerationKey=useMemo(()=>contractGenerationKey(selectedEvent.id,effectiveEntryTimestamp,productionHistoryRequests,{expirySelectionMode,executionMode,pricingAssumption,amount,comboExecution,pricingModes}),[selectedEvent.id,effectiveEntryTimestamp,productionHistoryRequests,expirySelectionMode,executionMode,pricingAssumption,amount,comboExecution,pricingModes]);
   const retrievedSpreads = useMemo(
     () => buildExpiryCandidates(desiredSpreads, candidateManifests, effectiveEntryTimestamp, selectedEvent.entryPrice, inventory, executionMode, expirySelectionMode, pricingAssumption).map(spread=>{const venue="deribit" as const;const identified={...spread,venue};return{...identified,id:stableCandidateId(candidateIdentity(dataset?.datasetId??"unloaded",selectedEvent.id,identified))}}),
     [desiredSpreads, candidateManifests, effectiveEntryTimestamp, selectedEvent.entryPrice, inventory, executionMode, expirySelectionMode, pricingAssumption, dataset?.datasetId, selectedEvent.id],
@@ -445,7 +458,7 @@ export function OptionsBacktester() {
     sectionRefs.current[next]?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  function clearEventAnalysis() { setAnalysisResults([]); setCompletedGeneration(undefined); setCandidateManifests([]); setInventory([]); setSelectedSpreadId(undefined); setSelectedResultId(undefined); setExpandedResultIds([]); setScenario(undefined); }
+  function clearEventAnalysis() { setAnalysisResults([]); setResearchMaterializations([]); setCompletedGeneration(undefined); setCandidateManifests([]); setInventory([]); setResearchCandidateManifests([]);setResearchInventory([]);setContractLoad({attempted:false,complete:false,contractsLoaded:0,failedContracts:0,failures:[]});setControlledResearchLoad({attempted:false,authoritative:false,failures:[]});setSelectedSpreadId(undefined); setSelectedResultId(undefined); setExpandedResultIds([]); setScenario(undefined); }
 
   async function loadResearchSelections(datasetId:string){try{const response=await fetch(`/__local/research-selections/${encodeURIComponent(datasetId)}`);const raw=await response.json();if(!response.ok)throw new Error(raw.error??`Research selections could not be loaded (HTTP ${response.status}).`);const checked=validateResearchSelectionStore(raw);if(!checked.ok)throw new Error(checked.errors.map(e=>`${e.path}: ${e.message}`).join(" | "));setSelectionStore(checked.store);setSelectionPersistenceAvailable(true);setSelectionStatus("");}catch(error){setSelectionStore(undefined);const failure=researchSelectionFailure(error,await probeLocalPersistence());setSelectionPersistenceAvailable(!failure.unavailable);setSelectionStatus(failure.message);}setDraftSelection({eventId:"",ids:new Set()});}
 
@@ -469,9 +482,10 @@ export function OptionsBacktester() {
       valuationPathSnapshot:scenario.path.map(point=>compactValuationPoint("deribit",candidateId,point,usages,catalog,mode)),
       outcomeSnapshots:scenario.outcomes.map(outcome=>compactOutcomeSnapshot("deribit",candidateId,outcome,usages,catalog,mode))};
   }
-  function buildCompletedGeneration(results:AnalysisResult[],candles:Candle[],futuresMarket:FuturesMarketSnapshot|undefined,generatedAtUtc:string):CompletedGeneration{
-    const byId=new Map(results.map(result=>[result.spread.id,result]));
-    const candidates:GenerationCandidateSnapshot[]=canonicalRetrievedSpreads.map(spread=>{const result=byId.get(spread.id),priced=result?.researchEntry.status==="priced",resolved=Boolean(spread.soldContract&&spread.boughtContract&&spread.retrievalStatus==="ready"),contractResolutionStatus=resolved?(spread.resolvedSoldStrike===spread.soldStrike&&spread.resolvedBoughtStrike===spread.boughtStrike?"exact_resolved" as const:"nearest_listed_resolved" as const):spread.soldListingStatus==="not-listed"||spread.boughtListingStatus==="not-listed"?"confirmed_not_listed" as const:spread.retrievalStatus==="partial"?"retrieval_failure" as const:"metadata_unavailable" as const;return{candidateId:spread.id,venue:"deribit",selected:false,status:priced?"priced":"unavailable",contractResolutionStatus,availabilityReasons:priced?[]:[result?.researchEntry.status==="unavailable"?result.researchEntry.reason:spread.retrievalNote||"Candidate could not be economically valued in this generation."],targetHorizon:spread.targetDte,eligibleDteRange:{min:spread.dteMin??null,max:spread.dteMax??null},actualExpiryTimestamp:spread.expiryTimestamp??null,actualDte:spread.actualDte??null,requestedStrikes:{short:spread.soldStrike,long:spread.boughtStrike,width:spread.targetWidth},actualStrikes:{short:spread.resolvedSoldStrike??null,long:spread.resolvedBoughtStrike??null,width:resolved?spread.actualWidth??null:null},structure:spread.structure,optionType:spread.optionType,strikeMethod:spread.buffered?"buffered":"anchor",entryQuality:result?.eventQuality??spread.entryLiquidityQuality??null};});
+  function buildCompletedGeneration(results:AnalysisResult[],candles:Candle[],futuresMarket:FuturesMarketSnapshot|undefined,generatedAtUtc:string,researchResults:ShortStrikeReferenceMaterialization[]=[]):CompletedGeneration{
+    const allResults=[...results,...researchResults],byId=new Map(allResults.map(result=>[result.spread.id,result]));
+    const researchSpreads=researchResults.map(result=>result.spread).filter(spread=>!canonicalRetrievedSpreads.some(production=>production.id===spread.id));
+    const candidates:GenerationCandidateSnapshot[]=[...canonicalRetrievedSpreads,...researchSpreads].map(spread=>{const result=byId.get(spread.id),priced=result?.researchEntry.status==="priced",resolved=Boolean(spread.soldContract&&spread.boughtContract&&spread.retrievalStatus==="ready"),contractResolutionStatus=resolved?(spread.resolvedSoldStrike===spread.soldStrike&&spread.resolvedBoughtStrike===spread.boughtStrike?"exact_resolved" as const:"nearest_listed_resolved" as const):spread.soldListingStatus==="not-listed"||spread.boughtListingStatus==="not-listed"?"confirmed_not_listed" as const:spread.retrievalStatus==="partial"?"retrieval_failure" as const:"metadata_unavailable" as const;return{candidateId:spread.id,venue:"deribit",selected:false,status:priced?"priced":"unavailable",contractResolutionStatus,availabilityReasons:priced?[]:[result?.researchEntry.status==="unavailable"?result.researchEntry.reason:spread.retrievalNote||"Candidate could not be economically valued in this generation."],targetHorizon:spread.targetDte,eligibleDteRange:{min:spread.dteMin??null,max:spread.dteMax??null},actualExpiryTimestamp:spread.expiryTimestamp??null,actualDte:spread.actualDte??null,requestedStrikes:{short:spread.soldStrike,long:spread.boughtStrike,width:spread.targetWidth},actualStrikes:{short:spread.resolvedSoldStrike??null,long:spread.resolvedBoughtStrike??null,width:resolved?spread.actualWidth??null:null},structure:spread.structure,optionType:spread.optionType,strikeMethod:spread.buffered?"buffered":"anchor",entryQuality:result?.eventQuality??spread.entryLiquidityQuality??null};});
     const configuration={applicationBuild:resolveApplicationBuild((import.meta as ImportMeta & {env?:Record<string,string>}).env),pricingEngineVersion:"research-estimate-v1",qualityRulesVersion:"entry-liquidity-v1",feeScheduleVersion:"deribit-standard-inverse-v1",dteWindows:canonicalJson(dteTolerances),expirySelectionMode,executionMode,pricingAssumption,pricingTracks:[...pricingModes],historicalEvidenceWindows:canonicalJson(modelHistoricalEvidenceWindows()),synchronizationThresholds:canonicalJson(EXECUTION_TIMING_METADATA),qualityThresholds:canonicalJson({source:"entry-liquidity-v1"}),feeAssumptions:canonicalJson({tier:"standard",route:comboExecution?"combo":"legs"}),settlementRules:canonicalJson({source:"deribit-delivery-price",fallback:"unavailable"}),valuationInterval:"4h",modelAssumptions:canonicalJson({model:"Black-Scholes reconstructed IV",rate:0}),generatedAtUtc};
     const snapshot:GenerationSnapshot={generatedAtUtc,configuration,candidates,underlyingHourlyPath:candles,...(futuresMarket?{futuresMarket}:{})};
     return{eventId:selectedEvent.id,snapshot};
@@ -479,7 +493,12 @@ export function OptionsBacktester() {
   async function saveResearchSelections(requestedDraft:ReadonlySet<string>=draftSelectionIds){
     if(!dataset||!selectionStore||!selectionPersistenceAvailable)return;
     const savedAtStart=new Set(savedSelectionIds),draftAtStart=new Set(requestedDraft);
-    const {toAdd,toRemove,toKeep}=selectionChangeSet(savedAtStart,draftAtStart);
+    const {toAdd,toRemove,toKeep}=safeSelectionChangeSet(savedAtStart,draftAtStart,contractLoad,currentContractGenerationKey);
+    if((savedAtStart.size||requestedDraft.size)&&!generationAuthorizesReplacement(contractLoad,currentContractGenerationKey)){
+      setDraftSelection({eventId:selectedEvent.id,ids:new Set(savedAtStart)});
+      setSelectionStatus("Research state was not replaced because the current contract/data generation is incomplete or failed. Existing saved selections are preserved.");
+      return;
+    }
     if(!toAdd.size&&!toRemove.size&&!generationDirty)return;
     try{
       const now=new Date().toISOString(),byId=new Map(analysisResults.map(result=>[result.spread.id,result]));
@@ -496,8 +515,9 @@ export function OptionsBacktester() {
       const additions=materialized.filter(s=>toAdd.has(s.candidateId));
       const selectedStructures=[...retained.values(),...additions].sort((a,b)=>a.candidateId.localeCompare(b.candidateId));
       const materializedById=new Map(materialized.map(s=>[s.candidateId,s]));
-      const generatedResearch=completedGeneration?.eventId===selectedEvent.id?completedGeneration.snapshot.candidates:null;
-      const researchStructures:ResearchOnlyStructure[]=generatedResearch?generatedResearch.map((candidate):ResearchOnlyStructure=>{const s=materializedById.get(candidate.candidateId),researchRole:ResearchOnlyStructure["researchRole"]=candidate.strikeMethod==="buffered"?"short_strike_buffered":"short_strike_technical";return s?({...s,selectionId:`research~short-strike~${s.candidateId}`,selectedAtUtc:now,modeledExecution:undefined,delayedExecution:undefined,marginSnapshot:null,executionScenarios:{maker:{status:"not_evaluated",reason:"Research-only Reference counterfactual; strict maker execution is a separate robustness layer.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]},taker:{status:"not_evaluated",reason:"Research-only Reference counterfactual; strict taker execution is a separate robustness layer.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]}},researchRole}):unavailableResearchStructure(selectedEvent.id,candidate,amount,now)}).sort((a,b)=>a.candidateId.localeCompare(b.candidateId)):structuredClone(savedEventSelection?.researchStructures??[]);
+      const generatedResearch=controlledResearchLoad.authoritative&&completedGeneration?.eventId===selectedEvent.id?completedGeneration.snapshot.candidates.filter(candidate=>researchMaterializations.some(result=>result.spread.id===candidate.candidateId)):null;
+      const researchById=new Map(researchMaterializations.map(result=>[result.spread.id,result]));
+      const researchStructures:ResearchOnlyStructure[]=generatedResearch?generatedResearch.map((candidate):ResearchOnlyStructure=>{const selected=materializedById.get(candidate.candidateId),result=researchById.get(candidate.candidateId),researchRole:ResearchOnlyStructure["researchRole"]=controlledResearchRole({buffered:candidate.strikeMethod==="buffered"}),notEvaluated={status:"not_evaluated" as const,reason:"Research-only Reference counterfactual; strict execution is a separate robustness layer.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]};if(!result)return selected?{...selected,selectionId:`research~short-strike~${selected.candidateId}`,selectedAtUtc:now,modeledExecution:undefined,delayedExecution:undefined,marginSnapshot:null,executionScenarios:{maker:notEvaluated,taker:notEvaluated},researchRole}:unavailableResearchStructure(selectedEvent.id,candidate,amount,now);const spread=result.spread,contractsResolved=Boolean(spread.soldContract&&spread.boughtContract&&spread.retrievalStatus==="ready"),metadata=(contract:typeof spread.soldContract)=>contract?{instrumentName:contract.instrumentName,creationTimestamp:contract.creationTimestamp??null,expirationTimestamp:contract.expiryTimestamp,strike:contract.strike,optionType:contract.optionType,contractSize:1,source:contract.creationTimestamp!==undefined?"deribit-instrument-metadata" as const:"stored-contract-series" as const,retrievedAtUtc:now,authoritative:contract.creationTimestamp!==undefined}:null,base=unavailableResearchStructure(selectedEvent.id,candidate,amount,now),usages:EvidenceUsageDto[]=[];return{...base,researchRole,contractResolution:{status:candidate.contractResolutionStatus??"metadata_unavailable",reason:contractsResolved?null:spread.retrievalNote,short:metadata(spread.soldContract),long:metadata(spread.boughtContract)},referenceValuation:result.researchEntry.status==="priced"?{status:"valued",reason:null,source:referenceValuationSourceOf(result.researchEntry),entrySnapshot:compactEntryEconomics("deribit",candidate.candidateId,result.researchEntry,usages,eventEvidenceCatalog,null),valuationPathSnapshot:result.researchPath.map(point=>compactValuationPoint("deribit",candidate.candidateId,point,usages,eventEvidenceCatalog,null)),outcomeSnapshots:result.researchOutcomes.map(outcome=>compactOutcomeSnapshot("deribit",candidate.candidateId,outcome,usages,eventEvidenceCatalog,null)),provenance:canonicalJson({executionIndependent:true,controlledResearch:true})}:base.referenceValuation,candidateSnapshot:compactCandidateMetadata({venue:"deribit",contractStyle:"inverse BTC option",structure:spread.structure,spreadKind:spread.spreadKind,optionType:spread.optionType,targetDte:spread.targetDte,expiryTimestamp:spread.expiryTimestamp??null,actualDte:spread.actualDte??null,shortStrike:spread.resolvedSoldStrike??null,longStrike:spread.resolvedBoughtStrike??null,actualWidth:contractsResolved?spread.actualWidth??null:null,instruments:{short:spread.soldContract?.instrumentName??null,long:spread.boughtContract?.instrumentName??null},quality:result.eventQuality,qualityReasonCodes:[]}),executionScenarios:{maker:notEvaluated,taker:notEvaluated},evidenceUsages:usages};}).sort((a,b)=>a.candidateId.localeCompare(b.candidateId)):controlledPersistence(savedEventSelection?.researchStructures??[],[],false);
       const currentGeneration=(completedGeneration?.eventId===selectedEvent.id?completedGeneration.snapshot.candidates:[]).map(candidate=>({...candidate,selected:draftAtStart.has(candidate.candidateId)}));
       // Retained stale snapshots remain exportable only while explicitly present in the draft.
       // Preserve their exact prior denominator row; identity is never remapped to a new candidate.
@@ -723,6 +743,9 @@ export function OptionsBacktester() {
       return;
     }
     setSourceBusy(true);
+    setSourceReady(false);setInventory([]);setCandidateManifests([]);setResearchInventory([]);setResearchCandidateManifests([]);setResearchMaterializations([]);
+    setContractLoad({attempted:true,complete:false,contractsLoaded:0,failedContracts:0,failures:[]});
+    setControlledResearchLoad({attempted:false,authoritative:false,failures:[]});
     setAnalysisResults([]);
     try {
       const indexResponse = await fetch("/__deribit/history/index", {
@@ -739,15 +762,7 @@ export function OptionsBacktester() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           entryTimestamp: effectiveEntryTimestamp,
-          requests: desiredSpreads.map(spread => ({
-            requestId: spread.id,
-            targetDte: spread.targetDte,
-            minDte: Math.min(dteTolerances[spread.targetDte].min, dteTolerances[spread.targetDte].max),
-            maxDte: Math.max(dteTolerances[spread.targetDte].min, dteTolerances[spread.targetDte].max),
-            soldStrike: spread.soldStrike,
-            boughtStrike: spread.boughtStrike,
-            optionType: spread.optionType,
-          })),
+          requests: productionHistoryRequests,
         }),
       });
       const payload = await response.json();
@@ -756,9 +771,25 @@ export function OptionsBacktester() {
       setInventory(nextInventory);
       setCandidateManifests(payload.candidates as ContractCandidateManifest[]);
       setSourceReady(true);
+      setContractLoad({attempted:true,complete:Boolean(payload.complete),contractsLoaded:Number(payload.diagnostics.contractsLoaded),failedContracts:payload.failures?.length??payload.diagnostics.failedContracts.length,failures:payload.failures??[],generationKey:currentContractGenerationKey,materiallyRegenerated:false});
       setSelectedSpreadId(undefined);
-      setParseStatus(`${payload.complete ? "Complete candidate set" : "INCOMPLETE candidate set — affected candidates are data-unavailable"} · ${payload.diagnostics.apiRequestCount.toLocaleString()} API requests · ${payload.diagnostics.candidateExpiries.toLocaleString()} expiry candidates · ${payload.diagnostics.contractsLoaded.toLocaleString()} contracts loaded · ${payload.diagnostics.validTrades.toLocaleString()} valid trades · ${payload.diagnostics.cacheHits.toLocaleString()} cache hits · ${payload.diagnostics.failedContracts.length.toLocaleString()} failures`);
+      const productionStatus=`${payload.complete ? "Complete production candidate set" : "INCOMPLETE production candidate set — affected candidates are data-unavailable"} · ${payload.diagnostics.apiRequestCount.toLocaleString()} production API requests · ${payload.diagnostics.candidateExpiries.toLocaleString()} expiry candidates · ${payload.diagnostics.contractsLoaded.toLocaleString()} contracts loaded · ${payload.diagnostics.validTrades.toLocaleString()} valid trades · ${payload.diagnostics.cacheHits.toLocaleString()} cache hits · ${(payload.failures?.length??payload.diagnostics.failedContracts.length).toLocaleString()} production failures`;
+      setParseStatus(productionStatus);
+      // Controlled research has its own request. It never changes the production
+      // response above, matrix inventory, expiry ranking, or observation inputs.
+      const controlledRetrieval=await attemptControlled(nextInventory,async()=>{
+        const researchResponse=await fetch("/__deribit/history/resolve",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({entryTimestamp:effectiveEntryTimestamp,requests:researchHistoryRequests})});
+        const researchPayload=await researchResponse.json();
+        if(!researchResponse.ok)throw new Error(researchPayload.error??"Short-Strike controlled-research contracts could not be loaded.");
+        return researchPayload;
+      });
+      if(controlledRetrieval.authoritative){const researchPayload=controlledRetrieval.controlled;setResearchInventory(researchPayload.inventory as ContractSeries[]);setResearchCandidateManifests(researchPayload.candidates as ContractCandidateManifest[]);setControlledResearchLoad({attempted:true,authoritative:true,failures:researchPayload.failures??[]});setParseStatus(`${productionStatus} · Short-Strike controlled research ${researchPayload.complete?"loaded":"loaded with explicit unavailable candidates"}`);}
+      else{
+        setResearchInventory([]);setResearchCandidateManifests([]);setControlledResearchLoad({attempted:true,authoritative:false,failures:[],error:controlledRetrieval.error});
+        setParseStatus(`${productionStatus} · Production contracts loaded successfully. Short-Strike controlled research is unavailable for this run.`);
+      }
     } catch (error) {
+      setContractLoad(current=>({...current,attempted:true,complete:false}));
       setParseStatus(error instanceof Error ? error.message : "Contract loading failed.");
     } finally {
       setSourceBusy(false);
@@ -782,7 +813,7 @@ export function OptionsBacktester() {
       jump("analysis");
       return;
     }
-    setAnalysisStatus("Loading BTC index path and valuing every generated spread…");
+    setAnalysisStatus("Loading BTC index path and valuing the production-ranked candidate set…");
     try {
       const entryTimestamp = selectedEvent.entryTimestamp ?? effectiveEntryTimestamp;
       const expiries=runnable.map(spread=>spread.expiryTimestamp).filter((value):value is number=>value!==undefined&&Number.isFinite(value));
@@ -793,15 +824,14 @@ export function OptionsBacktester() {
       // The perpetual benchmark covers the same causal window plus the longest
       // fixed observation endpoint, so every exported endpoint can be observed.
       const futuresSnapshot = await loadPerpetualBaseline(entryTimestamp, Math.max(candleEnd, entryTimestamp + 7 * 86_400_000 + 3_600_000, (selectedEvent.vpocTimestamp ?? 0) + 2 * 3_600_000, (selectedEvent.exitTimestamp ?? 0) + 2 * 3_600_000));
-      // Materialize every canonical candidate independently. Passing the whole
-      // universe through one rank-1 observation request silently discarded the
-      // unselected buffered counterfactual before Reference valuation.
-      const observations = canonicalRetrievedSpreads.flatMap(candidate=>buildAndRunObservationRequests(
+      // Preserve the production rank-1 observation boundary. Controlled
+      // Short-Strike projection is intentionally not an input to this run.
+      const observations = buildAndRunObservationRequests(
         selectedEvent,
-        [candidate],
+        canonicalRetrievedSpreads,
         candles,
-        () => ({ targetExpiryHorizonDays: candidate.targetDte, widthUsd: candidate.targetWidth, spreadKind, expirySelectionPolicy: expirySelectionMode, candidateRankPolicy: "rank-1-only", amount, primaryExecutionScenario: "taker-tape-proxy", latencyMs: 1_000, fillWaitMs: 30 * 60_000, synchronizationThresholdMs: 60_000, slippageBps: 0, exitPolicy: { rule: "vpoc-target", fallback: "settlement" }, requestedPackaging: comboExecution ? "combo" : "legs", executionRoute: "synchronized-leg-proxy", officialComboEvidence: false, feeTier: "standard", marginModel: "segregated_sm" }),
-      ));
+        candidate => ({ targetExpiryHorizonDays: candidate.targetDte, widthUsd: candidate.targetWidth, spreadKind, expirySelectionPolicy: expirySelectionMode, candidateRankPolicy: "rank-1-only", amount, primaryExecutionScenario: "taker-tape-proxy", latencyMs: 1_000, fillWaitMs: 30 * 60_000, synchronizationThresholdMs: 60_000, slippageBps: 0, exitPolicy: { rule: "vpoc-target", fallback: "settlement" }, requestedPackaging: comboExecution ? "combo" : "legs", executionRoute: "synchronized-leg-proxy", officialComboEvidence: false, feeTier: "standard", marginModel: "segregated_sm" }),
+      );
       const next: AnalysisResult[] = observations.map(observation => {
         const spread = observation.spread ?? canonicalRetrievedSpreads.find(candidate => candidate.id === observation.candidateSelection.selectedCandidateId)!;
         const path = observation.valuationPath ?? [];
@@ -825,7 +855,11 @@ export function OptionsBacktester() {
         return { eventPrice:selectedEvent.entryPrice, observation, spread, path, exits, selectedExit, eventQuality, researchByMode, researchLayers, researchEntry:modelEntry, researchPath:modelPath, researchOutcomes:modelOutcomes, delayedExecution, scenarioInput: { event: selectedEvent, candidates: canonicalRetrievedSpreads, candles, config } };
       });
       setAnalysisResults(next);
-      setCompletedGeneration(buildCompletedGeneration(next,candles,futuresSnapshot,new Date().toISOString()));
+      const generatedAtUtc=new Date().toISOString(),materiallyRegenerated=next.some(result=>result.researchLayers.structural.status==="resolved"&&(result.researchLayers.model.status==="priced"||result.researchLayers.maker.status==="available"||result.researchLayers.taker.status==="available"));
+      setCompletedGeneration(buildCompletedGeneration(next,candles,futuresSnapshot,generatedAtUtc));
+      setContractLoad(current=>({...current,materiallyRegenerated}));
+      let controlledFailure=controlledResearchLoad.error;
+      if(controlledResearchLoad.authoritative){const controlledAttempt=await attemptControlled(next,()=>materializeShortStrikeReference({event:selectedEvent,dtes,widths,spreadKind,manifests:researchCandidateManifests,inventory:researchInventory,entryTimestamp,candles,amount,executionMode,expirySelectionMode,pricingAssumption}).map(result=>{const identified={...result.spread,venue:"deribit" as const};return{...result,spread:{...identified,id:stableCandidateId(candidateIdentity(dataset?.datasetId??"unloaded",selectedEvent.id,identified))}}}));if(controlledAttempt.authoritative){setResearchMaterializations(controlledAttempt.controlled);setCompletedGeneration(buildCompletedGeneration(next,candles,futuresSnapshot,generatedAtUtc,controlledAttempt.controlled));}else{controlledFailure=controlledAttempt.error;setResearchMaterializations([]);setControlledResearchLoad(current=>({...current,authoritative:false,error:controlledAttempt.error}));}}
       const firstPriced=next.find(result=>result.researchEntry.status==="priced");
       setSelectedResultId(firstPriced?.spread.id);
       setExpandedResultIds([]);
@@ -833,7 +867,7 @@ export function OptionsBacktester() {
       setScenario(undefined);
       setScenarioCalculating(Boolean(next[0]));
       const priced=next.reduce((sum,result)=>sum+result.researchPath.filter(point=>point.status==="priced").length,0),total=next.reduce((sum,result)=>sum+result.researchPath.length,0);
-      setAnalysisStatus(`${next.length} observations · amount ${amount} · BTC candles ${candles.length} (${candles[0].openTime}…${candles.at(-1)!.closeTime}) · priced points ${priced}/${total} · ${futuresSnapshot?`${CANONICAL_BTC_PERPETUAL} ${futuresSnapshot.reference.length} bars, funding ${futuresSnapshot.fundingCoverage?.status??"unavailable"}`:`${CANONICAL_BTC_PERPETUAL} baseline unavailable`}.`);
+      setAnalysisStatus(`${next.length} observations · amount ${amount} · BTC candles ${candles.length} (${candles[0].openTime}…${candles.at(-1)!.closeTime}) · priced points ${priced}/${total} · ${futuresSnapshot?`${CANONICAL_BTC_PERPETUAL} ${futuresSnapshot.reference.length} bars, funding ${futuresSnapshot.fundingCoverage?.status??"unavailable"}`:`${CANONICAL_BTC_PERPETUAL} baseline unavailable`}.${controlledFailure?` Production analysis is valid; Short-Strike controlled research is unavailable: ${controlledFailure}`:""}`);
       jump("analysis");
     } catch (error) {
       setAnalysisStatus(error instanceof Error ? error.message : "The valuation run failed.");
@@ -959,7 +993,7 @@ export function OptionsBacktester() {
             <div className="logic-card card">
               <p className="eyebrow">Strike rule applied</p>
               <div className="logic-flow"><span><small>Extreme</small><strong>{money(selectedEvent.extremePrice)}</strong></span><i>→</i><span><small>{selectedEvent.direction === "long" ? "Round down" : "Round up"}</small><strong>{desiredSpreads[0] ? money(desiredSpreads[0].anchorStrike) : "Needs extreme"}</strong></span><i>→</i><span><small>Structure</small><strong>{desiredSpreads[0]?.structure ?? "—"}</strong></span></div>
-              <p className="fine-print">A buffered counterfactual is tested when the technical strike lies less than $500 beyond the failed-breakout extreme. The buffered alternative moves the short strike and protective long one $1,000 strike step farther OTM while holding spread width constant. Both legs always use the same expiry. Liquidity-aware mode ranks Green above Yellow, then uses proximity to the target horizon; it retains the winner and one viable alternative.</p>
+              <p className="fine-print">When the extreme is less than $100 from the rounded strike, the interactive engine adds a separate $1k outward-buffer test. The Short-Strike report&apos;s $500 controlled counterfactual is materialized separately and never expands this matrix. Both legs always use the same expiry. Liquidity-aware mode ranks Green above Yellow, then uses proximity to the target horizon; it retains the winner and one viable alternative.</p>
             </div>
           </div>
           <div className="table-card card">
@@ -987,7 +1021,7 @@ export function OptionsBacktester() {
 
         <section className="workspace-section" ref={node => { sectionRefs.current.contracts = node; }}>
           <div className="section-heading"><div><span className="step-number">03</span><p className="eyebrow">Historical tape</p><h2>Contracts & normalization</h2></div><div className="inventory-summary"><span><strong>{inventory.length}</strong> contracts</span><span><strong>{inventoryTrades.toLocaleString()}</strong> prints</span><span><strong>{inventoryExpiries}</strong> expiries</span></div></div>
-          <div className="import-card card"><div><p className="eyebrow">Deribit History API</p><h3>Load historical option contracts</h3><p>The server resolves eligible instruments from Deribit listing metadata and retrieves only the exact contract histories required by the current matrix.</p></div><div className="import-actions"><button className="primary-button" disabled={sourceBusy} onClick={() => loadRequiredContracts(false)}>{sourceBusy ? "Loading contracts…" : "Load contracts"}</button><button className="secondary-button" disabled={sourceBusy} onClick={() => loadRequiredContracts(true)}>Refresh API manifest</button></div><div className="parse-status"><span className={inventory.length || sourceReady ? "live-dot" : "idle-dot"} />{parseStatus}</div></div>
+          <div className="import-card card"><div><p className="eyebrow">Deribit History API</p><h3>Load historical option contracts</h3><p>The server resolves eligible instruments from Deribit listing metadata and retrieves only the exact contract histories required by the current matrix.</p></div><div className="import-actions"><button className="primary-button" disabled={sourceBusy} onClick={() => loadRequiredContracts(false)}>{sourceBusy ? "Loading contracts…" : "Load contracts"}</button><button className="secondary-button" disabled={sourceBusy} onClick={() => loadRequiredContracts(true)}>Refresh API manifest</button></div><div className="parse-status"><span className={inventory.length || sourceReady ? "live-dot" : "idle-dot"} />{parseStatus}</div>{(contractLoad.failures.length>0||controlledResearchLoad.failures.length>0||controlledResearchLoad.error)&&<details className="evidence-details"><summary>{contractLoad.failures.length+controlledResearchLoad.failures.length+(controlledResearchLoad.error?1:0)} retrieval diagnostics</summary><div className="table-scroll compact"><table><thead><tr><th>Scope</th><th>Instrument</th><th>Cause</th><th>Retryable</th></tr></thead><tbody>{contractLoad.failures.slice(0,100).map((failure,index)=><tr key={`production-${failure.instrumentName}-${index}`}><td>production</td><td className="mono">{failure.instrumentName}</td><td>{failure.cause}</td><td>{failure.retryable?"yes":"no"}</td></tr>)}{controlledResearchLoad.failures.slice(0,100-contractLoad.failures.length).map((failure,index)=><tr key={`controlled-${failure.instrumentName}-${index}`}><td>short-strike-controlled</td><td className="mono">{failure.instrumentName}</td><td>{failure.cause}</td><td>{failure.retryable?"yes":"no"}</td></tr>)}{controlledResearchLoad.error&&<tr><td>short-strike-controlled</td><td className="mono">—</td><td>{controlledResearchLoad.error}</td><td>{/network|408|429|HTTP 5\d\d|after retries/i.test(controlledResearchLoad.error)?"yes":"no"}</td></tr>}</tbody></table></div></details>}</div>
 
           <div className="normalization-grid">
             <div className="table-card card">
