@@ -6,6 +6,7 @@ import {
   buildInventory,
   buildValuation,
   generateDesiredSpreads,
+  generateShortStrikeResearchSpreads,
   intrinsicPriceBtc,
   latestCompletedCandleAtOrBefore,
   normalizeLeg,
@@ -58,7 +59,7 @@ function valuationFixture(kind: "credit" | "debit", comboExecution = false) {
   return buildValuation(spread, event, candles, "maker", 2, comboExecution);
 }
 
-test("adds an independent $1k buffer branch when technical distance is below $500", () => {
+test("production adds an independent $1k buffer branch only inside the historical $100 boundary", () => {
   const spreads = generateDesiredSpreads({
     id: "event", label: "MR", direction: "long", entryDate: "2024-01-01", entryPrice: 60_000, extremePrice: 57_050,
   }, [7, 14, 30], [1000, 2000, 3000], "credit");
@@ -66,17 +67,19 @@ test("adds an independent $1k buffer branch when technical distance is below $50
   assert.deepEqual([...new Set(spreads.map(spread => spread.anchorStrike))], [57_000, 56_000]);
 });
 
-test("short-strike buffer rule has an exclusive $500 boundary for calls and puts",()=>{
-  const generated=(direction:"long"|"short",extremePrice:number)=>generateDesiredSpreads({id:"e",label:"MR",direction,entryDate:"2024-01-01",entryPrice:96_000,extremePrice},[7],[2_000],"credit");
-  assert.deepEqual(generated("short",95_700).map(x=>x.anchorStrike),[96_000,97_000]);
-  assert.deepEqual(generated("short",95_501).map(x=>x.anchorStrike),[96_000,97_000]);
-  assert.deepEqual(generated("short",95_500).map(x=>x.anchorStrike),[96_000]);
-  assert.deepEqual(generated("short",95_400).map(x=>x.anchorStrike),[96_000]);
-  assert.deepEqual(generated("long",95_300).map(x=>x.anchorStrike),[95_000,94_000]);
-  assert.deepEqual(generated("long",95_499).map(x=>x.anchorStrike),[95_000,94_000]);
-  assert.deepEqual(generated("long",95_500).map(x=>x.anchorStrike),[95_000]);
-  assert.deepEqual(generated("long",95_700).map(x=>x.anchorStrike),[95_000]);
-  for(const rows of [generated("short",95_700),generated("long",95_300)])assert.ok(rows.every(x=>Math.abs(x.soldStrike-x.boughtStrike)===2_000));
+test("production $100 rule and research-only $500 rule are isolated for calls and puts",()=>{
+  const event=(direction:"long"|"short",extremePrice:number)=>({id:"e",label:"MR",direction,entryDate:"2024-01-01",entryPrice:96_000,extremePrice});
+  const production=(direction:"long"|"short",extremePrice:number)=>generateDesiredSpreads(event(direction,extremePrice),[7],[2_000],"credit");
+  const research=(direction:"long"|"short",extremePrice:number)=>generateShortStrikeResearchSpreads(event(direction,extremePrice),[7],[2_000],"credit");
+  assert.deepEqual(production("short",95_700).map(x=>x.anchorStrike),[96_000]);
+  assert.deepEqual(production("long",95_300).map(x=>x.anchorStrike),[95_000]);
+  assert.deepEqual(production("short",95_950).map(x=>x.anchorStrike),[96_000,97_000]);
+  assert.deepEqual(production("long",95_050).map(x=>x.anchorStrike),[95_000,94_000]);
+  assert.deepEqual(research("short",95_501).map(x=>x.anchorStrike),[96_000,97_000]);
+  assert.deepEqual(research("short",95_500).map(x=>x.anchorStrike),[96_000]);
+  assert.deepEqual(research("long",95_499).map(x=>x.anchorStrike),[95_000,94_000]);
+  assert.deepEqual(research("long",95_500).map(x=>x.anchorStrike),[95_000]);
+  for(const rows of [research("short",95_700),research("long",95_300)])assert.ok(rows.every(x=>Math.abs(x.soldStrike-x.boughtStrike)===2_000));
 });
 
 test("liquidity-aware ranking prefers Green evidence and retains one viable alternative", () => {

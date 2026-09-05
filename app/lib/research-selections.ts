@@ -214,6 +214,15 @@ export function selectionChangeSet(saved:Iterable<string>,draft:Iterable<string>
   toKeep:new Set([...draftSet].filter(id=>savedSet.has(id))),
  };
 }
+export interface GenerationUsability { attempted:boolean; complete:boolean; contractsLoaded:number; failedContracts:number }
+/** Missing candidates are user intent only after a complete, usable refresh. */
+export function safeSelectionChangeSet(saved:Iterable<string>,draft:Iterable<string>,generation:GenerationUsability):SelectionChangeSet{
+ const change=selectionChangeSet(saved,draft);
+ if(!generation.attempted||!generation.complete||generation.contractsLoaded===0||generation.failedContracts>0){
+  return{toAdd:new Set(),toRemove:new Set(),toKeep:new Set(saved)};
+ }
+ return change;
+}
 export function sameSelectionIds(left:Iterable<string>,right:Iterable<string>){const a=new Set(left),b=new Set(right);return a.size===b.size&&[...a].every(id=>b.has(id));}
 /** Reconciles persisted ids against a regenerated universe without remapping identities. */
 export function reconcileGeneratedSelection(saved:Iterable<string>,currentCandidates:Iterable<string>){

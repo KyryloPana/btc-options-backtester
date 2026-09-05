@@ -37,7 +37,7 @@ import { payoffInspectorSummary } from "./lib/payoff-inspector";
 import { EXECUTION_TIMING_METADATA } from "./lib/execution-policy";
 import { compactSettlementProvenance, SETTLEMENT_ACCOUNTING_VERSION } from "./lib/settlement-provenance";
 import {buildPersistedExecutionInspection} from "./lib/persisted-execution-inspection";
-import { candidateIdentity, canonicalJson, renameResearchSelectionEvent, compactCandidateMetadata, compactEntryEconomics, compactResearchSelectionEvent, compactMarginResult, compactOutcomeSnapshot, compactValuationPoint, eventReference, reconcileGeneratedSelection, selectionChangeSet, stableCandidateId, stableSelectionId, unavailableResearchStructure, validateResearchSelectionStore, type EvidenceTradeDto, type EvidenceUsageDto, type ExecutionScenarioSnapshot, type GenerationCandidateSnapshot, type GenerationSnapshot, type ResearchOnlyStructure, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure } from "./lib/research-selections";
+import { candidateIdentity, canonicalJson, renameResearchSelectionEvent, compactCandidateMetadata, compactEntryEconomics, compactResearchSelectionEvent, compactMarginResult, compactOutcomeSnapshot, compactValuationPoint, eventReference, reconcileGeneratedSelection, safeSelectionChangeSet, stableCandidateId, stableSelectionId, unavailableResearchStructure, validateResearchSelectionStore, type EvidenceTradeDto, type EvidenceUsageDto, type ExecutionScenarioSnapshot, type GenerationCandidateSnapshot, type GenerationSnapshot, type ResearchOnlyStructure, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure } from "./lib/research-selections";
 import type { FuturesMarketSnapshot } from "./lib/research-selections";
 import { CANONICAL_BTC_PERPETUAL } from "./lib/futures-baseline";
 import { resolveApplicationBuild } from "./lib/build-provenance";
@@ -359,6 +359,7 @@ export function OptionsBacktester() {
   const [parseStatus, setParseStatus] = useState("Checking Deribit instrument manifest…");
   const [sourceBusy, setSourceBusy] = useState(false);
   const [sourceReady, setSourceReady] = useState(false);
+  const [contractLoad,setContractLoad]=useState<{attempted:boolean;complete:boolean;contractsLoaded:number;failedContracts:number;failures:Array<{instrumentName:string;cause:string;retryable:boolean}>}>({attempted:false,complete:false,contractsLoaded:0,failedContracts:0,failures:[]});
   const [selectedSpreadId, setSelectedSpreadId] = useState<string>();
   const [hideRed, setHideRed] = useState(false);
   const [hideDataUnavailable, setHideDataUnavailable] = useState(false);
@@ -479,7 +480,12 @@ export function OptionsBacktester() {
   async function saveResearchSelections(requestedDraft:ReadonlySet<string>=draftSelectionIds){
     if(!dataset||!selectionStore||!selectionPersistenceAvailable)return;
     const savedAtStart=new Set(savedSelectionIds),draftAtStart=new Set(requestedDraft);
-    const {toAdd,toRemove,toKeep}=selectionChangeSet(savedAtStart,draftAtStart);
+    const {toAdd,toRemove,toKeep}=safeSelectionChangeSet(savedAtStart,draftAtStart,contractLoad);
+    if((savedAtStart.size||requestedDraft.size)&&(!contractLoad.attempted||!contractLoad.complete||contractLoad.contractsLoaded===0||contractLoad.failedContracts>0)){
+      setDraftSelection({eventId:selectedEvent.id,ids:new Set(savedAtStart)});
+      setSelectionStatus("Research state was not replaced because the current contract/data generation is incomplete or failed. Existing saved selections are preserved.");
+      return;
+    }
     if(!toAdd.size&&!toRemove.size&&!generationDirty)return;
     try{
       const now=new Date().toISOString(),byId=new Map(analysisResults.map(result=>[result.spread.id,result]));
@@ -723,6 +729,7 @@ export function OptionsBacktester() {
       return;
     }
     setSourceBusy(true);
+    setContractLoad({attempted:true,complete:false,contractsLoaded:0,failedContracts:0,failures:[]});
     setAnalysisResults([]);
     try {
       const indexResponse = await fetch("/__deribit/history/index", {
@@ -756,9 +763,11 @@ export function OptionsBacktester() {
       setInventory(nextInventory);
       setCandidateManifests(payload.candidates as ContractCandidateManifest[]);
       setSourceReady(true);
+      setContractLoad({attempted:true,complete:Boolean(payload.complete),contractsLoaded:Number(payload.diagnostics.contractsLoaded),failedContracts:payload.failures?.length??payload.diagnostics.failedContracts.length,failures:payload.failures??[]});
       setSelectedSpreadId(undefined);
       setParseStatus(`${payload.complete ? "Complete candidate set" : "INCOMPLETE candidate set — affected candidates are data-unavailable"} · ${payload.diagnostics.apiRequestCount.toLocaleString()} API requests · ${payload.diagnostics.candidateExpiries.toLocaleString()} expiry candidates · ${payload.diagnostics.contractsLoaded.toLocaleString()} contracts loaded · ${payload.diagnostics.validTrades.toLocaleString()} valid trades · ${payload.diagnostics.cacheHits.toLocaleString()} cache hits · ${payload.diagnostics.failedContracts.length.toLocaleString()} failures`);
     } catch (error) {
+      setContractLoad(current=>({...current,attempted:true,complete:false}));
       setParseStatus(error instanceof Error ? error.message : "Contract loading failed.");
     } finally {
       setSourceBusy(false);
@@ -782,7 +791,7 @@ export function OptionsBacktester() {
       jump("analysis");
       return;
     }
-    setAnalysisStatus("Loading BTC index path and valuing every generated spread…");
+    setAnalysisStatus("Loading BTC index path and valuing the production-ranked candidate set…");
     try {
       const entryTimestamp = selectedEvent.entryTimestamp ?? effectiveEntryTimestamp;
       const expiries=runnable.map(spread=>spread.expiryTimestamp).filter((value):value is number=>value!==undefined&&Number.isFinite(value));
@@ -793,15 +802,14 @@ export function OptionsBacktester() {
       // The perpetual benchmark covers the same causal window plus the longest
       // fixed observation endpoint, so every exported endpoint can be observed.
       const futuresSnapshot = await loadPerpetualBaseline(entryTimestamp, Math.max(candleEnd, entryTimestamp + 7 * 86_400_000 + 3_600_000, (selectedEvent.vpocTimestamp ?? 0) + 2 * 3_600_000, (selectedEvent.exitTimestamp ?? 0) + 2 * 3_600_000));
-      // Materialize every canonical candidate independently. Passing the whole
-      // universe through one rank-1 observation request silently discarded the
-      // unselected buffered counterfactual before Reference valuation.
-      const observations = canonicalRetrievedSpreads.flatMap(candidate=>buildAndRunObservationRequests(
+      // Preserve the production rank-1 observation boundary. Controlled
+      // Short-Strike projection is intentionally not an input to this run.
+      const observations = buildAndRunObservationRequests(
         selectedEvent,
-        [candidate],
+        canonicalRetrievedSpreads,
         candles,
-        () => ({ targetExpiryHorizonDays: candidate.targetDte, widthUsd: candidate.targetWidth, spreadKind, expirySelectionPolicy: expirySelectionMode, candidateRankPolicy: "rank-1-only", amount, primaryExecutionScenario: "taker-tape-proxy", latencyMs: 1_000, fillWaitMs: 30 * 60_000, synchronizationThresholdMs: 60_000, slippageBps: 0, exitPolicy: { rule: "vpoc-target", fallback: "settlement" }, requestedPackaging: comboExecution ? "combo" : "legs", executionRoute: "synchronized-leg-proxy", officialComboEvidence: false, feeTier: "standard", marginModel: "segregated_sm" }),
-      ));
+        candidate => ({ targetExpiryHorizonDays: candidate.targetDte, widthUsd: candidate.targetWidth, spreadKind, expirySelectionPolicy: expirySelectionMode, candidateRankPolicy: "rank-1-only", amount, primaryExecutionScenario: "taker-tape-proxy", latencyMs: 1_000, fillWaitMs: 30 * 60_000, synchronizationThresholdMs: 60_000, slippageBps: 0, exitPolicy: { rule: "vpoc-target", fallback: "settlement" }, requestedPackaging: comboExecution ? "combo" : "legs", executionRoute: "synchronized-leg-proxy", officialComboEvidence: false, feeTier: "standard", marginModel: "segregated_sm" }),
+      );
       const next: AnalysisResult[] = observations.map(observation => {
         const spread = observation.spread ?? canonicalRetrievedSpreads.find(candidate => candidate.id === observation.candidateSelection.selectedCandidateId)!;
         const path = observation.valuationPath ?? [];
@@ -959,7 +967,7 @@ export function OptionsBacktester() {
             <div className="logic-card card">
               <p className="eyebrow">Strike rule applied</p>
               <div className="logic-flow"><span><small>Extreme</small><strong>{money(selectedEvent.extremePrice)}</strong></span><i>→</i><span><small>{selectedEvent.direction === "long" ? "Round down" : "Round up"}</small><strong>{desiredSpreads[0] ? money(desiredSpreads[0].anchorStrike) : "Needs extreme"}</strong></span><i>→</i><span><small>Structure</small><strong>{desiredSpreads[0]?.structure ?? "—"}</strong></span></div>
-              <p className="fine-print">A buffered counterfactual is tested when the technical strike lies less than $500 beyond the failed-breakout extreme. The buffered alternative moves the short strike and protective long one $1,000 strike step farther OTM while holding spread width constant. Both legs always use the same expiry. Liquidity-aware mode ranks Green above Yellow, then uses proximity to the target horizon; it retains the winner and one viable alternative.</p>
+              <p className="fine-print">When the extreme is less than $100 from the rounded strike, the interactive engine adds a separate $1k outward-buffer test. The Short-Strike report&apos;s $500 controlled counterfactual is materialized separately and never expands this matrix. Both legs always use the same expiry. Liquidity-aware mode ranks Green above Yellow, then uses proximity to the target horizon; it retains the winner and one viable alternative.</p>
             </div>
           </div>
           <div className="table-card card">
@@ -987,7 +995,7 @@ export function OptionsBacktester() {
 
         <section className="workspace-section" ref={node => { sectionRefs.current.contracts = node; }}>
           <div className="section-heading"><div><span className="step-number">03</span><p className="eyebrow">Historical tape</p><h2>Contracts & normalization</h2></div><div className="inventory-summary"><span><strong>{inventory.length}</strong> contracts</span><span><strong>{inventoryTrades.toLocaleString()}</strong> prints</span><span><strong>{inventoryExpiries}</strong> expiries</span></div></div>
-          <div className="import-card card"><div><p className="eyebrow">Deribit History API</p><h3>Load historical option contracts</h3><p>The server resolves eligible instruments from Deribit listing metadata and retrieves only the exact contract histories required by the current matrix.</p></div><div className="import-actions"><button className="primary-button" disabled={sourceBusy} onClick={() => loadRequiredContracts(false)}>{sourceBusy ? "Loading contracts…" : "Load contracts"}</button><button className="secondary-button" disabled={sourceBusy} onClick={() => loadRequiredContracts(true)}>Refresh API manifest</button></div><div className="parse-status"><span className={inventory.length || sourceReady ? "live-dot" : "idle-dot"} />{parseStatus}</div></div>
+          <div className="import-card card"><div><p className="eyebrow">Deribit History API</p><h3>Load historical option contracts</h3><p>The server resolves eligible instruments from Deribit listing metadata and retrieves only the exact contract histories required by the current matrix.</p></div><div className="import-actions"><button className="primary-button" disabled={sourceBusy} onClick={() => loadRequiredContracts(false)}>{sourceBusy ? "Loading contracts…" : "Load contracts"}</button><button className="secondary-button" disabled={sourceBusy} onClick={() => loadRequiredContracts(true)}>Refresh API manifest</button></div><div className="parse-status"><span className={inventory.length || sourceReady ? "live-dot" : "idle-dot"} />{parseStatus}</div>{contractLoad.failures.length>0&&<details className="evidence-details"><summary>{contractLoad.failures.length} failed instruments · retrieval diagnostics</summary><div className="table-scroll compact"><table><thead><tr><th>Instrument</th><th>Cause</th><th>Retryable</th></tr></thead><tbody>{contractLoad.failures.slice(0,100).map((failure,index)=><tr key={`${failure.instrumentName}-${index}`}><td className="mono">{failure.instrumentName}</td><td>{failure.cause}</td><td>{failure.retryable?"yes":"no"}</td></tr>)}</tbody></table></div>{contractLoad.failures.length>100&&<p className="fine-print">Showing the first 100 failures; {contractLoad.failures.length-100} additional records remain in the API response.</p>}</details>}</div>
 
           <div className="normalization-grid">
             <div className="table-card card">

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { ResearchSelectionService, researchSelectionApiPlugin } from "../scripts/research-selection-service.ts";
 import { canLeaveDirty } from "../app/lib/trade-datasets.ts";
 import { LOCAL_PERSISTENCE_REQUIRED_MESSAGE, RESEARCH_SELECTION_ENDPOINT_FAILED_MESSAGE, probeLocalPersistence, researchSelectionFailure } from "../app/lib/local-persistence.ts";
-import { LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS, RESEARCH_SELECTION_SCHEMA_VERSION, canSelectResearchCandidate, canonicalJson, compactDelayedExecution, compactEntryEconomics, compactModeledExecution, compactValuationPoint, emptyResearchSelectionStore, migrateResearchSelectionStore, reconcileGeneratedSelection, sameSelectionIds, selectionChangeSet, researchEventPayloadDiagnostics, stableCandidateId, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure, type Venue } from "../app/lib/research-selections.ts";
+import { LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS, RESEARCH_SELECTION_SCHEMA_VERSION, canSelectResearchCandidate, canonicalJson, compactDelayedExecution, compactEntryEconomics, compactModeledExecution, compactValuationPoint, emptyResearchSelectionStore, migrateResearchSelectionStore, reconcileGeneratedSelection, safeSelectionChangeSet, sameSelectionIds, selectionChangeSet, researchEventPayloadDiagnostics, stableCandidateId, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure, type Venue } from "../app/lib/research-selections.ts";
 
 const now="2026-08-16T20:00:00.000Z";
 const identity=(venue:Venue="deribit",eventId="event-a")=>({venue,datasetId:"default-sample-trades",eventId,structure:"credit",optionType:"P",expiryTimestamp:1_800_000_000_000,shortStrike:100_000,longStrike:99_000,strikeMethod:"anchor",targetHorizon:7});
@@ -26,6 +26,13 @@ test("two structures can be assigned to one event",()=>assert.equal(event("a",["
 test("different events isolate selections",()=>assert.deepEqual(store([event("a",["one"]),event("b",["two"])]).events.map(e=>e.selectedStructures[0].candidateId),["one","two"]));
 test("selection change set reports add, remove, and retained ids",()=>{const change=selectionChangeSet(["keep","remove"],["keep","add"]);assert.deepEqual([...change.toAdd],["add"]);assert.deepEqual([...change.toRemove],["remove"]);assert.deepEqual([...change.toKeep],["keep"]);});
 test("removing every saved id is dirty immediately",()=>{const draft=new Set<string>();assert.equal(draft.size,0);assert.equal(sameSelectionIds(["one","two"],draft),false);assert.deepEqual([...selectionChangeSet(["one","two"],draft).toRemove],["one","two"]);});
+test("failed retrieval preserves full saved selection identities while a valid deselection removes",()=>{
+ const saved=Array.from({length:9},(_,i)=>`candidate-${i}`),draft: string[]=[];
+ const failed=safeSelectionChangeSet(saved,draft,{attempted:true,complete:false,contractsLoaded:0,failedContracts:86});
+ assert.deepEqual([...failed.toKeep],saved);assert.deepEqual([...failed.toRemove],[]);assert.deepEqual([...failed.toAdd],[]);
+ const valid=safeSelectionChangeSet(saved,draft,{attempted:true,complete:true,contractsLoaded:9,failedContracts:0});
+ assert.deepEqual([...valid.toRemove],saved);assert.deepEqual([...valid.toKeep],[]);
+});
 test("regeneration exposes stale identity without remapping it",()=>{const result=reconcileGeneratedSelection(["stale-id","same-id"],["same-id","new-id"]);assert.deepEqual([...result.visible],["same-id"]);assert.deepEqual([...result.stale],["stale-id"]);assert.equal(result.visible.has("new-id"),false);});
 test("dataset switching isolates stores",()=>assert.notEqual(emptyResearchSelectionStore("one").datasetId,emptyResearchSelectionStore("two").datasetId));
 test("unsaved changes trigger guard",()=>{let called=false;assert.equal(canLeaveDirty(true,()=>{called=true;return false}),false);assert.equal(called,true)});
