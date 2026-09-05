@@ -1,5 +1,5 @@
 import { sameSelectionIds, type GenerationSnapshot } from "./research-selections.ts";
-import type { HistoryRequest } from "./short-strike/materialize.ts";
+import type { HistoryRequest } from "./history-requests.ts";
 
 export interface CompletedGeneration {
   eventId: string;

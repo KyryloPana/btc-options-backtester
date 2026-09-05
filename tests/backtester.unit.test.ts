@@ -17,7 +17,8 @@ import {
 } from "../app/lib/backtester.ts";
 import { CHART_GEOMETRY, CHART_SERIES, hitExitGroups, nearestPoint, timestampAtX, timeX, uniqueCanonicalSpreads, visibleMatrixSpreads } from "../app/lib/valuation-chart.ts";
 import { estimateResearchSpread } from "../app/lib/research-valuation.ts";
-import { controlledResearchRole, historyRequests, materializeShortStrikeReference } from "../app/lib/short-strike/materialize.ts";
+import { historyRequests } from "../app/lib/history-requests.ts";
+import { controlledResearchRole, materializeShortStrikeReference } from "../app/lib/short-strike/materialize.ts";
 
 function close(actual: number | undefined, expected: number) {
   assert.ok(actual !== undefined && Math.abs(actual - expected) < 1e-10, `${actual} should be close to ${expected}`);
@@ -105,7 +106,7 @@ test("runtime keeps production observation and controlled Reference seams separa
  assert.match(source,/materializeShortStrikeReference\(/);
  assert.match(source,/buildAndRunObservationRequests\(\s*selectedEvent,\s*canonicalRetrievedSpreads,/);
  assert.doesNotMatch(source,/canonicalRetrievedSpreads\.flatMap\(candidate=>buildAndRunObservationRequests/);
- assert.match(source,/setResearchMaterializations\(controlled\)/);
+ assert.match(source,/setResearchMaterializations\(controlledAttempt\.controlled\)/);
  assert.match(source,/executionScenarios:\{maker:notEvaluated,taker:notEvaluated\}/);
 });
 

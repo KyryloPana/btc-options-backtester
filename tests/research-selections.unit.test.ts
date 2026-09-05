@@ -7,7 +7,9 @@ import { tmpdir } from "node:os";
 import { ResearchSelectionService, researchSelectionApiPlugin } from "../scripts/research-selection-service.ts";
 import { canLeaveDirty } from "../app/lib/trade-datasets.ts";
 import { LOCAL_PERSISTENCE_REQUIRED_MESSAGE, RESEARCH_SELECTION_ENDPOINT_FAILED_MESSAGE, probeLocalPersistence, researchSelectionFailure } from "../app/lib/local-persistence.ts";
+import {attemptControlled,controlledPersistence} from "../app/lib/controlled-research.ts";
 import { LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS, RESEARCH_SELECTION_SCHEMA_VERSION, canSelectResearchCandidate, canonicalJson, compactDelayedExecution, compactEntryEconomics, compactModeledExecution, compactValuationPoint, emptyResearchSelectionStore, migrateResearchSelectionStore, reconcileGeneratedSelection, safeSelectionChangeSet, sameSelectionIds, selectionChangeSet, researchEventPayloadDiagnostics, stableCandidateId, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure, type Venue } from "../app/lib/research-selections.ts";
+import {shortStrikeControlledFixture} from "./fixtures/research-selection-store.ts";
 
 const now="2026-08-16T20:00:00.000Z";
 const identity=(venue:Venue="deribit",eventId="event-a")=>({venue,datasetId:"default-sample-trades",eventId,structure:"credit",optionType:"P",expiryTimestamp:1_800_000_000_000,shortStrike:100_000,longStrike:99_000,strikeMethod:"anchor",targetHorizon:7});
@@ -37,6 +39,16 @@ test("failed retrieval preserves full saved selection identities while a valid d
  assert.deepEqual([...stale.toKeep],saved,"another generation's health cannot authorize removal");assert.deepEqual([...stale.toRemove],[]);
  const valid=safeSelectionChangeSet(saved,draft,{attempted:true,complete:true,contractsLoaded:9,failedContracts:0,generationKey:"current",materiallyRegenerated:true},"current");
  assert.deepEqual([...valid.toRemove],saved);assert.deepEqual([...valid.toKeep],[]);
+});
+test("controlled retrieval or materialization failure cannot poison authoritative production",async()=>{
+ const production={inventory:["BTC-PRODUCTION"],candidateCount:1,health:{attempted:true,complete:true,contractsLoaded:2,failedContracts:0,generationKey:"current",materiallyRegenerated:true}};
+ const retrieval=await attemptControlled(production,async()=>{throw new Error("controlled HTTP 500")});assert.strictEqual(retrieval.production,production);assert.equal(retrieval.authoritative,false);assert.match(retrieval.error,/HTTP 500/);assert.equal(production.health.failedContracts,0);
+ const materialization=await attemptControlled(production,()=>{throw new Error("controlled materializer exploded")});assert.strictEqual(materialization.production,production);assert.equal(materialization.authoritative,false);assert.equal(safeSelectionChangeSet(["keep","remove"],["keep"],production.health,"current").toRemove.has("remove"),true,"production replacement stays authorized");
+});
+test("authoritative production edits preserve prior controlled cohort when controlled research is unavailable",()=>{
+ const savedResearch=structuredClone(shortStrikeControlledFixture().events[0]!.researchStructures!),selectedBefore=["keep","remove"],selectedDraft=["keep"];
+ const change=safeSelectionChangeSet(selectedBefore,selectedDraft,{attempted:true,complete:true,contractsLoaded:2,failedContracts:0,generationKey:"current",materiallyRegenerated:true},"current");
+ assert.deepEqual([...change.toRemove],["remove"]);assert.deepEqual(controlledPersistence(savedResearch,[],false),savedResearch);assert.notStrictEqual(controlledPersistence(savedResearch,[],false),savedResearch);
 });
 test("regeneration exposes stale identity without remapping it",()=>{const result=reconcileGeneratedSelection(["stale-id","same-id"],["same-id","new-id"]);assert.deepEqual([...result.visible],["same-id"]);assert.deepEqual([...result.stale],["stale-id"]);assert.equal(result.visible.has("new-id"),false);});
 test("dataset switching isolates stores",()=>assert.notEqual(emptyResearchSelectionStore("one").datasetId,emptyResearchSelectionStore("two").datasetId));

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtemp,rm} from "node:fs/promises";
+import {mkdtemp,readFile,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {contractGenerationKey,researchStateDirtiness} from "../app/lib/research-state.ts";
@@ -21,6 +21,10 @@ test("contract generation health identity changes with event, request geometry, 
  assert.notEqual(a,contractGenerationKey("event-a",ts,[{...request,boughtStrike:98000}],{executionMode:"maker"}));
  assert.notEqual(a,contractGenerationKey("event-a",ts,[request],{executionMode:"taker"}));
  assert.equal(a,contractGenerationKey("event-a",ts,[request],{executionMode:"maker"}));
+});
+test("core request and generation-health modules have no Short-Strike dependency",async()=>{
+ const state=await readFile(new URL("../app/lib/research-state.ts",import.meta.url),"utf8"),requests=await readFile(new URL("../app/lib/history-requests.ts",import.meta.url),"utf8");
+ assert.doesNotMatch(state,/short-strike/);assert.doesNotMatch(requests,/short-strike/);
 });
 function staleAndCurrent(empty:boolean){
  const current=structuredClone(baseStore.events[0]!.generationSnapshot);
