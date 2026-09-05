@@ -8,7 +8,7 @@ import { ResearchSelectionService, researchSelectionApiPlugin } from "../scripts
 import { canLeaveDirty } from "../app/lib/trade-datasets.ts";
 import { LOCAL_PERSISTENCE_REQUIRED_MESSAGE, RESEARCH_SELECTION_ENDPOINT_FAILED_MESSAGE, probeLocalPersistence, researchSelectionFailure } from "../app/lib/local-persistence.ts";
 import {attemptControlled,controlledPersistence} from "../app/lib/controlled-research.ts";
-import { LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS, RESEARCH_SELECTION_SCHEMA_VERSION, canSelectResearchCandidate, canonicalJson, compactDelayedExecution, compactEntryEconomics, compactModeledExecution, compactValuationPoint, emptyResearchSelectionStore, migrateResearchSelectionStore, reconcileGeneratedSelection, safeSelectionChangeSet, sameSelectionIds, selectionChangeSet, researchEventPayloadDiagnostics, stableCandidateId, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure, type Venue } from "../app/lib/research-selections.ts";
+import { LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS, RESEARCH_SELECTION_SCHEMA_VERSION, canSelectResearchCandidate, canonicalJson, compactDelayedExecution, compactEntryEconomics, compactModeledExecution, compactValuationPoint, emptyResearchSelectionStore, generationAttemptIdentity, migrateResearchSelectionStore, preserveControlledGenerationProvenance, reconcileGeneratedSelection, safeSelectionChangeSet, sameSelectionIds, selectionChangeSet, researchEventPayloadDiagnostics, stableCandidateId, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure, type Venue } from "../app/lib/research-selections.ts";
 import {shortStrikeControlledFixture} from "./fixtures/research-selection-store.ts";
 
 const now="2026-08-16T20:00:00.000Z";
@@ -49,6 +49,18 @@ test("authoritative production edits preserve prior controlled cohort when contr
  const savedResearch=structuredClone(shortStrikeControlledFixture().events[0]!.researchStructures!),selectedBefore=["keep","remove"],selectedDraft=["keep"];
  const change=safeSelectionChangeSet(selectedBefore,selectedDraft,{attempted:true,complete:true,contractsLoaded:2,failedContracts:0,generationKey:"current",materiallyRegenerated:true},"current");
  assert.deepEqual([...change.toRemove],["remove"]);assert.deepEqual(controlledPersistence(savedResearch,[],false),savedResearch);assert.notStrictEqual(controlledPersistence(savedResearch,[],false),savedResearch);
+});
+test("composed save preserves controlled generation provenance during controlled failure",()=>{
+ const persisted=shortStrikeControlledFixture(),prior=structuredClone(persisted.events[0]!),preservedResearch=controlledPersistence(prior.researchStructures!,[],false),technical=structuredClone(prior.generationSnapshot.candidates.find(candidate=>candidate.strikeMethod==="anchor")!);
+ const currentProduction={...structuredClone(prior.generationSnapshot),generatedAtUtc:"2026-08-17T00:00:00.000Z",candidates:[{...technical,selected:false}]};
+ const change=safeSelectionChangeSet(prior.selectedStructures.map(x=>x.candidateId),[],{attempted:true,complete:true,contractsLoaded:2,failedContracts:0,generationKey:"current",materiallyRegenerated:true},"current");assert.equal(change.toRemove.size,1);
+ const candidates=preserveControlledGenerationProvenance(currentProduction.candidates,prior.generationSnapshot.candidates,preservedResearch,false),replacement={...prior,generationSnapshot:{...currentProduction,candidates},selectedStructures:[],researchStructures:preservedResearch};
+ const result=validateResearchSelectionStore({...persisted,events:[replacement]});assert.equal(result.ok,true,result.ok?undefined:result.errors.map(error=>`${error.path}: ${error.message}`).join(" | "));
+ assert.deepEqual(replacement.researchStructures,prior.researchStructures);assert.equal(replacement.selectedStructures.length,0);assert.ok(candidates.some(candidate=>candidate.strikeMethod==="buffered"));assert.ok(candidates.some(candidate=>candidate.strikeMethod==="anchor"));assert.equal(new Set(candidates.map(generationAttemptIdentity)).size,candidates.length);assert.equal(candidates.filter(candidate=>candidate.strikeMethod==="buffered").length,1);
+});
+test("authoritative controlled generation replaces obsolete controlled provenance",()=>{
+ const event=shortStrikeControlledFixture().events[0]!,obsolete={...structuredClone(event.generationSnapshot.candidates[1]!),targetHorizon:30},previous=[...event.generationSnapshot.candidates,obsolete],current=structuredClone(event.generationSnapshot.candidates);
+ const merged=preserveControlledGenerationProvenance(current,previous,event.researchStructures!,true);assert.deepEqual(merged,current);assert.equal(merged.some(candidate=>candidate.targetHorizon===30),false);
 });
 test("regeneration exposes stale identity without remapping it",()=>{const result=reconcileGeneratedSelection(["stale-id","same-id"],["same-id","new-id"]);assert.deepEqual([...result.visible],["same-id"]);assert.deepEqual([...result.stale],["stale-id"]);assert.equal(result.visible.has("new-id"),false);});
 test("dataset switching isolates stores",()=>assert.notEqual(emptyResearchSelectionStore("one").datasetId,emptyResearchSelectionStore("two").datasetId));
