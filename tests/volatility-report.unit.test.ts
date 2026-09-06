@@ -86,3 +86,18 @@ test("duplicate structure volatility candidate identity is an integrity failure"
  const structure={event_id:"e",candidate_id:"duplicate",legs:[],same_expiry_reference:{status:"unavailable"},differentials:[],post_entry_market_iv:[],market_iv_path:[]};
  assert.throws(()=>buildVolatilityReport(dataset({event_volatility_state:[],structure_volatility_state:[structure,{...structure}],valuations:[],outcomes:[]})),/exactly one row per candidate_id/);
 });
+
+test("report exposes structure, endpoint, and path audit summaries without dropping unavailable candidates",()=>{
+ const observed={status:"available",observation:"observed",iv_decimal:.5},market={status:"available",source:"deribit_trade_iv",iv_decimal:.4},missing={status:"unavailable",unavailable_reason:"no_trade"};
+ const usable={event_id:"e1",candidate_id:"usable",legs:[{leg:"short",...observed}],same_expiry_reference:{status:"available",iv_decimal:.45},differentials:[{differential:"short_minus_reference_iv",status:"available",value:.05}],post_entry_market_iv:[{endpoint_id:"4h",short:market,long:missing}],market_iv_path:[{short:market,long:missing},{short:market,long:market}]};
+ const unavailable={event_id:"e2",candidate_id:"unavailable",legs:[],same_expiry_reference:missing,differentials:[],post_entry_market_iv:[{endpoint_id:"4h",short:missing,long:missing}],market_iv_path:[]};
+ const report=buildVolatilityReport(dataset({event_volatility_state:[],structure_volatility_state:[usable,unavailable],valuations:[],outcomes:[]}));
+ assert.deepEqual(report.structureSummary,{total:2,usable:1,reference:1,short:1,long:0,both:0,unavailable:1});
+ assert.deepEqual({...report.endpointSummary,reasons:undefined},{attempts:2,candidateAttempts:2,candidatesUsable:1,short:1,long:0,both:0,unavailable:1,reasons:undefined});assert.equal(report.endpointSummary.reasons.endpoint_market_iv_unavailable,1);
+ assert.deepEqual({...report.pathSummary,histogram:undefined},{zero:1,one:0,shortTwoPlus:1,longTwoPlus:0,bothTwoPlus:0,medianShort:1,medianLong:.5,histogram:undefined});
+});
+
+test("component keeps analytical detail collapsed by default and exposes audit labels",async()=>{
+ const source=await (await import("node:fs/promises")).readFile(new URL("../app/components/volatility-report.tsx",import.meta.url),"utf8");
+ assert.match(source,/<summary>Usable \/ partial/);assert.match(source,/<summary>Unavailable audit/);assert.match(source,/checked=\{showEndpoints\}/);assert.doesNotMatch(source,/checked=\{true\}/);assert.match(source,/Zero-evidence audit/);
+});
