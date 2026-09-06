@@ -1,5 +1,6 @@
 "use client";
 import {useMemo,useState} from "react";
+import {evidenceRowProps,ResearchEvidenceBadge} from "./research-evidence-status";
 import {ChartAxisTag,ChartCrosshair,ChartMarker,ChartReadout,useChartCursor} from "./chart-cursor";
 import {binAt,stepValueAt,type PlotGeometry} from "../lib/chart-interaction";
 import type {
@@ -254,7 +255,7 @@ function PnlSection({rows}:{rows:readonly PnlByOutcomeRow[]}){
  return <div className="table-scroll"><table className="dd-table dd-compact">
   <thead><tr><th>Horizon</th><th>Bucket</th><th>Structures</th><th>Median PnL</th><th>Median worst adverse</th><th>Median MAE before profit</th></tr></thead>
   <tbody>{rows.flatMap(r=>r.buckets.filter(b=>b.n>0).map(b=>
-   <tr key={`${r.horizon.nominalDays}-${b.outcome}`}><td>{r.horizon.label}</td>
+   <tr key={`${r.horizon.nominalDays}-${b.outcome}`} {...evidenceRowProps({status:b.pnlN===b.n&&b.worstAdverseN===b.n?"VALID":b.pnlN||b.worstAdverseN?"PARTIAL":"UNAVAILABLE",reason:b.pnlN===b.n&&b.worstAdverseN===b.n?null:`PnL ${b.pnlN}/${b.n}; worst-adverse ${b.worstAdverseN}/${b.n}; MAE ${b.maeN}/${b.n}.`})}><td><ResearchEvidenceBadge assessment={{status:b.pnlN===b.n&&b.worstAdverseN===b.n?"VALID":b.pnlN||b.worstAdverseN?"PARTIAL":"UNAVAILABLE",reason:b.pnlN===b.n&&b.worstAdverseN===b.n?null:`PnL ${b.pnlN}/${b.n}; worst-adverse ${b.worstAdverseN}/${b.n}; MAE ${b.maeN}/${b.n}.`}}/> {r.horizon.label}</td>
     <td title={b.note??undefined}>{b.label}{b.note&&<small className="dd-muted"> ⓘ</small>}</td>
     <td>{b.n}</td>
     <td className={b.medianPnlUsd===null?"dd-muted":b.medianPnlUsd>=0?"positive":"negative"}>{usd(b.medianPnlUsd)} <small>n={b.pnlN}</small></td>
@@ -272,8 +273,8 @@ function MatchedDteSection({report}:{report:DurationDteReport}){
  if(!report.matchedDte.length)return <p className="dd-empty-inline">{UNAVAILABLE} — no structural variant (same event, strike method, width, structure and option type) appears at two different horizons, so no controlled DTE comparison is possible in this bundle.</p>;
  return <><div className="table-scroll"><table className="dd-table dd-compact">
   <thead><tr><th>Comparison</th><th>Matched variants</th><th>Δ actual DTE</th><th>Δ PnL</th><th>Δ worst adverse</th><th>Δ holding</th><th>Δ T50% capture</th></tr></thead>
-  <tbody>{report.matchedDte.map(r=><tr key={`${r.shorter.nominalDays}-${r.longer.nominalDays}`}>
-   <td>{r.longer.label} − {r.shorter.label}</td>
+  <tbody>{report.matchedDte.map(r=><tr key={`${r.shorter.nominalDays}-${r.longer.nominalDays}`} {...evidenceRowProps({status:r.comparableN.pnl===r.matchedVariants?"VALID":"PARTIAL",reason:r.comparableN.pnl===r.matchedVariants?null:`${r.matchedVariants-r.comparableN.pnl} matched variant(s) lack candidate-relative PnL.`})}>
+   <td><ResearchEvidenceBadge assessment={{status:r.comparableN.pnl===r.matchedVariants?"VALID":"PARTIAL",reason:r.comparableN.pnl===r.matchedVariants?null:`${r.matchedVariants-r.comparableN.pnl} matched variant(s) lack candidate-relative PnL.`}}/> {r.longer.label} − {r.shorter.label}</td>
    <td>{r.matchedVariants} variants / {r.matchedEvents} events</td>
    <td>{signedDays(r.medianDteDeltaDays)} <small>N={r.comparableEventN.dte}/{r.matchedEvents} events</small></td>
    <td className={r.medianPnlDeltaUsd===null?"dd-muted":r.medianPnlDeltaUsd>=0?"positive":"negative"}>{signedUsd(r.medianPnlDeltaUsd)} <small>N={r.comparableN.pnl}/{r.matchedVariants} variants · {r.comparableEventN.pnl}/{r.matchedEvents} events</small></td>
@@ -282,7 +283,7 @@ function MatchedDteSection({report}:{report:DurationDteReport}){
    <td>{signedDays(r.medianCapture50DeltaDays)} <small>N={r.comparableN.capture50}/{r.matchedVariants} · events {r.comparableEventN.capture50}</small></td>
   </tr>)}</tbody>
  </table></div>
- {report.matchedDte.map(r=>{const missing=r.pnlMissing.shorter+r.pnlMissing.longer+r.pnlMissing.both;if(!missing)return null;return <details key={`pnl-missing-${r.shorter.nominalDays}-${r.longer.nominalDays}`}><summary>{r.longer.label} − {r.shorter.label} · Δ PnL missingness ({missing} pairs)</summary><p>Shorter required outcome PnL missing: {r.pnlMissing.shorter} · Longer missing: {r.pnlMissing.longer} · Both missing: {r.pnlMissing.both}</p><p>Required candidate-relative outcomes: {Object.entries(r.pnlMissing.requiredOutcome).map(([k,n])=>`${k} ${n}`).join(" · ")}</p></details>})}
+ {report.matchedDte.map(r=>{const shorter=Object.values(r.pnlMissing.shorter).reduce((a,b)=>a+b,0),longer=Object.values(r.pnlMissing.longer).reduce((a,b)=>a+b,0),missing=Math.max(shorter,longer);if(!missing)return null;return <details key={`pnl-missing-${r.shorter.nominalDays}-${r.longer.nominalDays}`}><summary>{r.longer.label} − {r.shorter.label} · Δ PnL missingness ({r.comparableN.pnl}/{r.matchedVariants} comparable)</summary><p>Missing shorter: {Object.entries(r.pnlMissing.shorter).map(([k,n])=>`${k} ${n}`).join(" · ")||"none"}</p><p>Missing longer: {Object.entries(r.pnlMissing.longer).map(([k,n])=>`${k} ${n}`).join(" · ")||"none"}</p><p>Both missing: {r.pnlMissing.both}</p></details>})}
  <small className="dd-note">Longer minus shorter, within MATCHED structural variants only — the same MR event, short-strike method, width, structure and option type, under the same execution scenario. A variant present at only one horizon is excluded entirely, so a width or strike-placement difference is never attributed to duration.</small>
  </>;
 }

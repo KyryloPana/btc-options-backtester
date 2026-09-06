@@ -159,6 +159,8 @@ export interface DteCandidate {
  readonly pnlAtVpocUsd:number|null;
  readonly pnlAtInvalidationUsd:number|null;
  readonly pnlAtSettlementUsd:number|null;
+ readonly ambiguousResolutionPnlUsd?:number|null;
+ readonly ambiguousResolutionPnlReason?:string|null;
  readonly observedPnlAtVpocUsd:number|null;
  readonly observedPnlAtInvalidationUsd:number|null;
  readonly observedPnlAtSettlementUsd:number|null;
@@ -475,6 +477,10 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
   // A VPOC that predates the structure has no post-entry PnL: pricing it would
   // value an outcome at a timestamp before the position existed.
   const pnlAtVpocUsd=vpocBeforeStructureEntry?null:pnlAtVpocRaw;
+  const sharedResolutionRows=outcomeBeforeExpiry==="ambiguous_before_expiry"&&vpocMs!==null&&vpocMs===invalidationMs&&reference
+   ?reference.valuationPath.filter(trackPointEvaluable).filter(r=>trackTime(r)===vpocMs).map(trackPnlUsd).filter((x):x is number=>x!==null):[];
+  const ambiguousResolutionPnlUsd=sharedResolutionRows.length===1?sharedResolutionRows[0]!:null;
+  const ambiguousResolutionPnlReason=outcomeBeforeExpiry!=="ambiguous_before_expiry"?null:ambiguousResolutionPnlUsd!==null?"PnL at ambiguous shared-resolution timestamp.":"Ambiguous VPOC/invalidation has no single trigger-independent Reference valuation at the shared timestamp; neither labelled endpoint was selected.";
 
   // Structural thesis-survival time is not an operational holding period.
   // Capital efficiency is calculated only by the configured exit-policy path.
@@ -494,7 +500,7 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
    vpocBeforeStructureEntry,postEntryResolutionDays,
    resolvedBeforeExpiry,outcomeBeforeExpiry,noResolutionDetail,dteBufferDays,
    holdingDays,heldToExpiry,
-   pnlAtVpocUsd,pnlAtInvalidationUsd,pnlAtSettlementUsd,
+   pnlAtVpocUsd,pnlAtInvalidationUsd,pnlAtSettlementUsd,ambiguousResolutionPnlUsd,ambiguousResolutionPnlReason,
    observedPnlAtVpocUsd,observedPnlAtInvalidationUsd,observedPnlAtSettlementUsd,
    adversePath:path,observedAdversePath:observedPath,worstAdverseUsd:path.worstAdverseUsd,
    capture25:reference?referenceCapture(reference,25,entry,expiry,vpocMs,invalidationMs):captureObservation(outcomes,candidateId,scenario,25,entry,event.timeToVpocDays,event.timeToInvalidationDays),

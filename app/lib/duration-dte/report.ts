@@ -325,7 +325,7 @@ function captureRow(horizon:HorizonFamily,scenarioRows:readonly DteCandidate[],t
 const PNL_BUCKETS:readonly {outcome:OutcomeBeforeExpiry;label:string;pnl:(c:DteCandidate)=>number|null;note:string|null}[]=[
  {outcome:"vpoc_before_expiry",label:"VPOC before expiry",pnl:c=>c.pnlAtVpocUsd,note:null},
  {outcome:"invalidation_before_expiry",label:"Invalidation before expiry",pnl:c=>c.pnlAtInvalidationUsd,note:null},
- {outcome:"ambiguous_before_expiry",label:"Ambiguous before expiry",pnl:c=>c.pnlAtVpocUsd??c.pnlAtInvalidationUsd,note:null},
+ {outcome:"ambiguous_before_expiry",label:"Ambiguous before expiry",pnl:c=>c.ambiguousResolutionPnlUsd??null,note:"PnL is available only from one trigger-independent Reference valuation at the shared first-resolution timestamp; labelled VPOC/invalidation outcomes are never chosen arbitrarily."},
  {outcome:"no_resolution_before_expiry",label:"No resolution before expiry",pnl:c=>c.pnlAtSettlementUsd,note:null},
  {outcome:"vpoc_before_structure_entry",label:"VPOC already reached before structure entry",pnl:()=>null,
   note:"VPOC preceded this structure's entry, so there is no post-entry PnL at VPOC to report. Credit capture, invalidation, adverse path and settlement remain valid for these structures."},

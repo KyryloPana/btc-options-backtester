@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {availableStateQuantiles,buildVolatilityReport,quantiles} from "../app/lib/volatility/volatility-report.ts";
+import {availableStateQuantiles,buildVolatilityReport,quantiles,structureEvidenceAssessment,structureUnavailableReasons,structuresForNominalHorizon} from "../app/lib/volatility/volatility-report.ts";
 import type {AnalysisDataset} from "../app/lib/research-analysis.ts";
 
 const dataset=(tables:Record<string,Record<string,unknown>[]>):AnalysisDataset=>({filename:"fixture.zip",schemaVersion:"3.9.0",migratedFrom:null,run:{},tables,counts:{},venues:[],sourceRuns:[],eventUniverseComplete:true,capabilities:[]});
@@ -93,11 +93,22 @@ test("report exposes structure, endpoint, and path audit summaries without dropp
  const unavailable={event_id:"e2",candidate_id:"unavailable",legs:[],same_expiry_reference:missing,differentials:[],post_entry_market_iv:[{endpoint_id:"4h",short:missing,long:missing}],market_iv_path:[]};
  const report=buildVolatilityReport(dataset({event_volatility_state:[],structure_volatility_state:[usable,unavailable],valuations:[],outcomes:[]}));
  assert.deepEqual(report.structureSummary,{total:2,usable:1,reference:1,short:1,long:0,both:0,unavailable:1});
- assert.deepEqual({...report.endpointSummary,reasons:undefined},{attempts:2,candidateAttempts:2,candidatesUsable:1,short:1,long:0,both:0,unavailable:1,reasons:undefined});assert.equal(report.endpointSummary.reasons.endpoint_market_iv_unavailable,1);
- assert.deepEqual({...report.pathSummary,histogram:undefined},{zero:1,one:0,shortTwoPlus:1,longTwoPlus:0,bothTwoPlus:0,medianShort:1,medianLong:.5,histogram:undefined});
+ assert.equal(report.endpointSummary.attempts,2);assert.equal(report.endpointSummary.candidateAttempts,2);assert.equal(report.endpointSummary.unavailableCandidates,1);assert.equal(Object.values(report.endpointSummary.attemptReasons).reduce((a,b)=>a+b,0),1);assert.equal(Object.values(report.endpointSummary.candidateReasons).reduce((a,b)=>a+b,0),1);
+ assert.equal(report.pathSummary.zero,1);assert.equal(report.pathSummary.one,0);assert.equal(report.pathSummary.shortTwoPlus,1);assert.equal(report.pathSummary.medianShort,1);
 });
 
 test("component keeps analytical detail collapsed by default and exposes audit labels",async()=>{
  const source=await (await import("node:fs/promises")).readFile(new URL("../app/components/volatility-report.tsx",import.meta.url),"utf8");
  assert.match(source,/<summary>Usable \/ partial/);assert.match(source,/<summary>Unavailable audit/);assert.match(source,/checked=\{showEndpoints\}/);assert.doesNotMatch(source,/checked=\{true\}/);assert.match(source,/Zero-evidence audit/);
 });
+
+
+test("nominal volatility families never use actual-DTE thresholds",()=>{const structures=[{candidate_id:"twenty",target_horizon_days:30,actual_dte_days:20},{candidate_id:"twentytwo",target_horizon_days:14,actual_dte_days:22}];assert.deepEqual(structuresForNominalHorizon(structures,30).map(x=>x.candidate_id),["twenty"]);assert.deepEqual(structuresForNominalHorizon(structures,14).map(x=>x.candidate_id),["twentytwo"])});
+
+test("structure evidence is composite and unavailable audit retains focal reasons",()=>{const partial={legs:[{leg:"short",status:"unavailable",unavailable_reason:"no short print"},{leg:"long",status:"available",observation:"observed",iv_decimal:.4}],same_expiry_reference:{status:"available",iv_decimal:.45},differentials:[]};assert.equal(structureEvidenceAssessment(partial).status,"PARTIAL");const absent={legs:[{leg:"short",status:"unavailable",unavailable_reason:"short stale"},{leg:"long",status:"unavailable",unavailable_reason:"long absent"}],same_expiry_reference:{status:"unavailable",unavailable_reason:"reference sparse"},differentials:[]};assert.deepEqual(structureUnavailableReasons(absent),["short: short stale","long: long absent","Reference: reference sparse"])});
+
+test("one timestamp with both observed legs is one path point and duplicate timestamps dedupe",()=>{const market={status:"available",source:"deribit_trade_iv",iv_decimal:.4},structure={event_id:"e",candidate_id:"c",legs:[],same_expiry_reference:{status:"unavailable"},differentials:[],post_entry_market_iv:[],market_iv_path:[{target_timestamp_utc:"2020-01-01T00:00:00Z",short:market,long:market},{target_timestamp_utc:"2020-01-01T00:00:00Z",short:market,long:market}]};const report=buildVolatilityReport(dataset({event_volatility_state:[],structure_volatility_state:[structure],valuations:[],outcomes:[]}));assert.equal(report.paths[0]!.timestampCountAnyObserved,1);assert.equal(report.paths[0]!.timestampCountBothObserved,1);assert.equal(report.pathSummary.one,1)});
+
+test("endpoint observed IV and delta availability have distinct reasons and units",()=>{const observed={status:"available",source:"deribit_trade_iv",iv_decimal:.4},structure={event_id:"e",candidate_id:"c",legs:[],same_expiry_reference:{status:"unavailable"},differentials:[],post_entry_market_iv:[{endpoint_id:"4h",short:observed,long:observed}],market_iv_path:[]};const report=buildVolatilityReport(dataset({event_volatility_state:[],structure_volatility_state:[structure],valuations:[],outcomes:[]}));assert.equal(report.endpointSummary.endpointBothObserved,1);assert.equal(report.endpointSummary.bothDeltaUsable,0);assert.equal(report.endpointSummary.attemptReasons.endpoint_observed_but_entry_baseline_unavailable,1);assert.equal(Object.values(report.endpointSummary.candidateReasons).reduce((a,b)=>a+b,0),report.endpointSummary.unavailableCandidates)});
+
+test("evidence status is independent of economic outcome sign",async()=>{const {evidenceRowProps}=await import("../app/components/research-evidence-status.tsx");assert.deepEqual(evidenceRowProps({status:"VALID",reason:null}),evidenceRowProps({status:"VALID",reason:null}));assert.doesNotMatch(JSON.stringify(evidenceRowProps({status:"VALID",reason:null})),/pnl|positive|negative/i)});

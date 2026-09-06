@@ -334,7 +334,7 @@ test("F: ambiguous resolution keeps its own bucket and never receives a capital-
  const buckets=report.pnlByOutcome.flatMap(r=>r.buckets);
  assert.equal(buckets.find(b=>b.outcome==="vpoc_before_expiry"&&b.n>0)?.medianPnlUsd,500,"only c1a is a VPOC-before-expiry result");
  const ambiguous=buckets.find(b=>b.outcome==="ambiguous_before_expiry"&&b.n>0)!;
- assert.equal(ambiguous.n,2,"both e4 width variants land in the ambiguous bucket, not the VPOC or invalidation ones");
+ assert.equal(ambiguous.n,2,"both e4 width variants land in the ambiguous bucket, not the VPOC or invalidation ones"); const bucket=report.pnlByOutcome.flatMap(x=>x.buckets).find(x=>x.outcome==="ambiguous_before_expiry"&&x.n>0);if(bucket)assert.equal(bucket.medianPnlUsd,null,"labelled VPOC/invalidation PnL is never selected arbitrarily");
 });
 
 test("PNL BUCKETS: a structure is priced at the outcome that happened while it existed",()=>{
@@ -478,7 +478,7 @@ test("MATCHED DTE: headline weight is one median per event and missing PnL sides
  const first=buildMatchedDteComparison(candidates,report.horizons).find(r=>r.shorter.nominalDays===7&&r.longer.nominalDays===14)!;
  assert.equal(first.medianPnlDeltaUsd,375,"event A median 550 and event B 200 receive equal weight");assert.equal(first.matchedEvents,2);
  const missing=buildMatchedDteComparison([clone(a,"M","M",null),clone(b,"M","M",20)],report.horizons)[0]!;
- assert.equal(missing.pnlMissing.shorter,1);assert.equal(missing.comparableN.pnl,0);assert.equal(missing.pnlMissing.requiredOutcome.VPOC,2);
+ assert.equal(missing.pnlMissing.shorter["VPOC required"],1);assert.equal(missing.pnlMissing.longer["VPOC required"],undefined,"healthy longer side is not counted");assert.equal(missing.comparableN.pnl,0);
 });
 
 test("G: structural candidates never compute legacy capital-day return",()=>{
