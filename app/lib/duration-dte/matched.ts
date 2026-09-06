@@ -40,6 +40,8 @@ export interface MatchedDteComparisonRow {
  readonly medianCapture50DeltaDays:number|null;
  readonly medianDteDeltaDays:number|null;
  readonly comparableN:{readonly pnl:number;readonly worstAdverse:number;readonly holding:number;readonly capture50:number};
+ /** Evidence-complete capture paths include evaluated "not reached" observations; elapsed-time deltas still require both reached. */
+ readonly capture50EvidenceN:number;
  readonly comparableEventN:{readonly dte:number;readonly pnl:number;readonly worstAdverse:number;readonly holding:number;readonly capture50:number};
  readonly pnlMissing:{readonly shorter:Readonly<Record<string,number>>;readonly longer:Readonly<Record<string,number>>;readonly both:number};
  readonly shorterOnlyN:number;readonly longerOnlyN:number;
@@ -78,6 +80,7 @@ export function buildMatchedDteComparison(candidates:readonly DteCandidate[],hor
    shorter,longer,matchedVariants:matched.length,matchedEvents:new Set(matched.map(([l])=>l.eventId)).size,
    medianPnlDeltaUsd:median(ev.pnl),medianWorstAdverseDeltaUsd:median(ev.worstAdverse),medianHoldingDeltaDays:median(ev.holding),medianCapture50DeltaDays:median(ev.capture50),medianDteDeltaDays:median(ev.dte),
    comparableN:{pnl:raw.pnl.length,worstAdverse:raw.worstAdverse.length,holding:raw.holding.length,capture50:raw.capture50.length},comparableEventN:{dte:ev.dte.length,pnl:ev.pnl.length,worstAdverse:ev.worstAdverse.length,holding:ev.holding.length,capture50:ev.capture50.length},
+   capture50EvidenceN:matched.filter(([l,s])=>l.capture50?.evaluable===true&&s.capture50?.evaluable===true).length,
    pnlMissing,
    shorterOnlyN:[...a.keys()].filter(k=>!b.has(k)).length,longerOnlyN:[...b.keys()].filter(k=>!a.has(k)).length,
   });

@@ -724,3 +724,8 @@ test("matched tables disclose exact economic pair denominators separately from s
  assert.ok(execution);assert.ok(execution.comparableN.pnl<=execution.matchedN);assert.ok(execution.comparableN.synchronization<=execution.matchedN);
  const dte=r.matchedDte[0];if(dte){assert.ok(dte.comparableN.pnl<=dte.matchedVariants);assert.ok(dte.shorterOnlyN>=0&&dte.longerOnlyN>=0)}
 });
+
+test("MATCHED DTE: evaluated capture not reached is complete evidence, not a missing path",()=>{
+ const shorter={...byId("c1a"),eventId:"NR",structuralVariantKey:"NR",capture50:{thresholdPct:50,reached:false,timeToCaptureDays:null,beforeVpoc:null,beforeInvalidation:null,evaluable:true,unavailableReason:null}},longer={...byId("c1b"),eventId:"NR",structuralVariantKey:"NR",capture50:{thresholdPct:50,reached:false,timeToCaptureDays:null,beforeVpoc:null,beforeInvalidation:null,evaluable:true,unavailableReason:null}};
+ const matched=buildMatchedDteComparison([shorter,longer],report.horizons)[0]!;assert.equal(matched.comparableN.capture50,0);assert.equal(matched.capture50EvidenceN,1);
+});
