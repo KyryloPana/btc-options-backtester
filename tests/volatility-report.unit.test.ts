@@ -81,3 +81,8 @@ test("unavailable and degenerate slopes contribute neither raw nor per-day value
  assert.deepEqual(availableStateQuantiles(events,"term_structure","slope_7d_14d","value"),{n:1,p25:.2,median:.2,p75:.2});
  assert.equal(availableStateQuantiles(events,"term_structure","slope_7d_14d","value_per_day").median,.02);
 });
+
+test("duplicate structure volatility candidate identity is an integrity failure",()=>{
+ const structure={event_id:"e",candidate_id:"duplicate",legs:[],same_expiry_reference:{status:"unavailable"},differentials:[],post_entry_market_iv:[],market_iv_path:[]};
+ assert.throws(()=>buildVolatilityReport(dataset({event_volatility_state:[],structure_volatility_state:[structure,{...structure}],valuations:[],outcomes:[]})),/exactly one row per candidate_id/);
+});

@@ -2,7 +2,7 @@ import type {AnalysisDataset} from "../research-analysis.ts";
 import {normalizeMrEvents,type ResolutionOutcome} from "../underlying-resolution/normalize.ts";
 // Adverse-path evidence is a shared canonical primitive: Short-Strike answers
 // the same question and must answer it identically, so both import one copy.
-import {adversePath,type AdversePathObservation} from "../adverse-path.ts";
+import {adversePath,evaluateReferenceAdversePath,type AdversePathObservation} from "../adverse-path.ts";
 import {normalizeExecutionScenarioStatus,type ExecutionScenarioStatus} from "../execution-scenario.ts";
 import {buildResearchAnalyticsModel,type ScenarioTrack} from "../research-analytics-model.ts";
 export {type AdversePathObservation,type PathEvidenceStatus} from "../adverse-path.ts";
@@ -363,13 +363,8 @@ function referenceCapture(track:ScenarioTrack|undefined,threshold:25|50|70,entry
  return {thresholdPct:threshold,reached:!!hit,timeToCaptureDays:days,evaluable:true,unavailableReason:null,beforeVpoc:hit&&vpocMs!==null?hit.t<=vpocMs:null,beforeInvalidation:hit&&invalidationMs!==null?hit.t<=invalidationMs:null};
 }
 function referenceAdverse(track:ScenarioTrack|undefined,entry:number|null,boundary:number|null):AdversePathObservation{
- if(!track||track.status!=="available")return {worstAdverseUsd:null,maeBeforeProfitUsd:null,profitObserved:false,rawMarksInWindow:0,status:"no_raw_marks",reason:"No Reference priced marks: Reference track unavailable."};
- const inWindow=track.valuationPath.filter(trackPointEvaluable).map(r=>({t:trackTime(r),usd:trackPnlUsd(r),native:trackPnlNative(r)})).filter(x=>x.t!==null&&(entry===null||x.t>=entry)&&(boundary===null||x.t<=boundary));
- const marks=inWindow.flatMap(x=>x.t!==null&&x.usd!==null?[{t:x.t,p:x.usd}]:[]).sort((a,b)=>a.t-b.t);
- if(!marks.length){const native=inWindow.some(x=>x.native!==null);return {worstAdverseUsd:null,maeBeforeProfitUsd:null,profitObserved:false,rawMarksInWindow:0,status:native?"usd_representation_unavailable":"no_raw_marks",reason:native?"Reference path has native PnL marks in the candidate observation window, but no USD-valued PnL evidence; BTC is not used as USD.":"Reference path has no USD-valued priced mark in the candidate observation window."};}
- const firstProfit=marks.findIndex(x=>x.p>0),before=firstProfit<0?[]:marks.slice(0,firstProfit+1);
- const nativeOnly=inWindow.filter(x=>x.usd===null&&x.native!==null).length;
- return {worstAdverseUsd:Math.min(0,...marks.map(x=>x.p)),maeBeforeProfitUsd:before.length?Math.min(0,...before.map(x=>x.p)):null,profitObserved:firstProfit>=0,rawMarksInWindow:marks.length,status:"available",reason:nativeOnly?`USD adverse metrics use ${marks.length} USD-valued mark(s); ${nativeOnly} native-only mark(s) were excluded rather than treated as USD.`:null};
+ const points=track?.status==="available"?track.valuationPath.filter(trackPointEvaluable).map(r=>({timestampMs:trackTime(r),pnlUsd:trackPnlUsd(r),pnlNative:trackPnlNative(r)})):[];
+ return evaluateReferenceAdversePath(points,entry,boundary);
 }
 
 export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCandidate[]{

@@ -108,6 +108,7 @@ export interface PnlBucket {
  readonly medianWorstAdverseUsd:number|null;
  readonly medianMaeBeforeProfitUsd:number|null;
  readonly pnlN:number;readonly worstAdverseN:number;readonly maeN:number;readonly profitObservedN:number;
+ readonly worstAdverseUnavailableReasons:Readonly<Record<string,number>>;readonly maeUnavailableReasons:Readonly<Record<string,number>>;
  /** Set when the bucket is structurally excluded from a PnL figure rather than merely empty. */
  readonly note:string|null;
 }
@@ -339,9 +340,10 @@ function pnlRow(horizon:HorizonFamily,scenarioRows:readonly DteCandidate[]):PnlB
  const selected=atHorizon(eligible(scenarioRows),horizon.nominalDays);
  return {horizon,buckets:PNL_BUCKETS.map(({outcome,label,pnl,note})=>{
   const items=selected.filter(c=>c.outcomeBeforeExpiry===outcome);
-  const pnls=defined(items.map(pnl)),worst=defined(items.map(c=>c.worstAdverseUsd)),mae=defined(items.map(c=>c.adversePath.maeBeforeProfitUsd));return {
+  const pnls=defined(items.map(pnl)),worst=defined(items.map(c=>c.worstAdverseUsd)),mae=defined(items.map(c=>c.adversePath.maeBeforeProfitUsd)),reasons=(maeOnly=false)=>{const out:Record<string,number>={};for(const c of items){if((maeOnly?c.adversePath.maeBeforeProfitUsd:c.worstAdverseUsd)!==null)continue;const reason=maeOnly&&c.adversePath.status==="available"&&!c.adversePath.profitObserved?"profit never observed":c.adversePath.status==="no_raw_marks"?"no Reference priced marks":c.adversePath.status.replaceAll("_"," ");out[reason]=(out[reason]??0)+1}return out};return {
    outcome,label,n:items.length,
    medianPnlUsd:median(pnls),medianWorstAdverseUsd:median(worst),medianMaeBeforeProfitUsd:median(mae),pnlN:pnls.length,worstAdverseN:worst.length,maeN:mae.length,profitObservedN:items.filter(c=>c.adversePath.profitObserved).length,
+   worstAdverseUnavailableReasons:reasons(),maeUnavailableReasons:reasons(true),
    note,
   } satisfies PnlBucket;
  })};

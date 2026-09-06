@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type {AnalysisDataset} from "../app/lib/research-analysis.ts";
 import {buildHorizonAvailability,buildHorizonFamilies,normalizeDteCandidates} from "../app/lib/duration-dte/normalize.ts";
 import {buildDurationDteReport} from "../app/lib/duration-dte/report.ts";
+import {buildMatchedDteComparison} from "../app/lib/duration-dte/matched.ts";
 import {buildEntryDelayReport} from "../app/lib/duration-dte/entry-delay.ts";
 import {share} from "../app/lib/duration-dte/statistics.ts";
 import {normalizeExecutionScenarioStatus} from "../app/lib/execution-scenario.ts";
@@ -468,6 +469,16 @@ test("MATCHED DTE: economics are compared only across identical structural varia
  // compared to each other as if duration were the difference.
  assert.notEqual(byId("c4a").structuralVariantKey,byId("c4b").structuralVariantKey);
  assert.equal(byId("c1a").structuralVariantKey,byId("c1b").structuralVariantKey);
+});
+
+
+test("MATCHED DTE: headline weight is one median per event and missing PnL sides are diagnosed",()=>{
+ const a=byId("c1a"),b=byId("c1b"),clone=(base:typeof a,eventId:string,key:string,pnl:number|null)=>({...base,eventId,structuralVariantKey:key,outcomeBeforeExpiry:"vpoc_before_expiry" as const,pnlAtVpocUsd:pnl});
+ const candidates=[clone(a,"A","A-1",0),clone(b,"A","A-1",100),clone(a,"A","A-2",0),clone(b,"A","A-2",1000),clone(a,"B","B-1",0),clone(b,"B","B-1",200)];
+ const first=buildMatchedDteComparison(candidates,report.horizons).find(r=>r.shorter.nominalDays===7&&r.longer.nominalDays===14)!;
+ assert.equal(first.medianPnlDeltaUsd,375,"event A median 550 and event B 200 receive equal weight");assert.equal(first.matchedEvents,2);
+ const missing=buildMatchedDteComparison([clone(a,"M","M",null),clone(b,"M","M",20)],report.horizons)[0]!;
+ assert.equal(missing.pnlMissing.shorter,1);assert.equal(missing.comparableN.pnl,0);assert.equal(missing.pnlMissing.requiredOutcome.VPOC,2);
 });
 
 test("G: structural candidates never compute legacy capital-day return",()=>{

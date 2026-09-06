@@ -466,6 +466,11 @@ test("ADVERSE SEMANTICS: MAE and worst adverse are loss excursions capped at zer
  assert.deepEqual([observe([-20,-40]).worstAdverseUsd,observe([-20,-40]).maeBeforeProfitUsd],[-40,null],"MAE-before-profit is unavailable when profit never occurs");
  const reference=referenceAdversePath([{candidate_id:"c",pricing_track:"reference",timestamp_utc:D(1),net_pnl_usd:12}],"c",T(1),T(2));
  assert.equal(reference.worstAdverseUsd,0);assert.equal(reference.maeBeforeProfitUsd,0);
+ const ref=(pnls:number[])=>referenceAdversePath(pnls.map((net_pnl_usd,i)=>({candidate_id:"c",pricing_track:"reference_fair_value",timestamp_utc:new Date(T(1)+i*H).toISOString(),net_pnl_usd})),"c",T(1),T(2));
+ assert.deepEqual([ref([-30,10]).worstAdverseUsd,ref([-30,10]).maeBeforeProfitUsd],[-30,-30]);
+ assert.deepEqual([ref([-20,-40]).worstAdverseUsd,ref([-20,-40]).maeBeforeProfitUsd],[-40,null]);
+ assert.equal(referenceAdversePath([],"c",T(1),T(2)).status,"no_raw_marks");
+ assert.equal(referenceAdversePath([{candidate_id:"c",pricing_track:"reference",timestamp_utc:D(1),net_pnl_native:.01}],"c",T(1),T(2)).status,"usd_representation_unavailable");
 });
 
 /* ---------------- summary and missing data ---------------- */
