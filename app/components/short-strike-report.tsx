@@ -193,7 +193,7 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
     <tbody>{rows.map((p:MatchedPair)=>{
      const state=(x:MatchedPair["technical"])=>x.challenge.reason!==null?"—":x.challenge.breached?"breach":x.challenge.invalidatedInWindow?"invalidated":x.challenge.touched?"touch":"clean";
      const realized=p.deltas.find(d=>d.label==="Δ realized PnL")?.value??null;
-     const assessment={status:(p.economicsComparable?"VALID":"PARTIAL") as "VALID"|"PARTIAL",reason:p.economicsComparable?null:"Matched structure exists, but focal economics are incomplete."};return <tr key={p.matchKey} {...evidenceRowProps(assessment)}>
+     const challengeUsable=p.technical.challenge.reason===null&&p.buffered.challenge.reason===null,complete=p.economicsComparable&&challengeUsable,assessment={status:(complete?"VALID":"PARTIAL") as "VALID"|"PARTIAL",reason:complete?null:[!p.economicsComparable?"Focal economics incomplete.":null,!challengeUsable?"Focal challenge evidence unresolved.":null].filter(Boolean).join(" ")};return <tr key={p.matchKey} {...evidenceRowProps(assessment)}>
       <td><ResearchEvidenceBadge assessment={assessment}/> {p.eventId}</td><td>{p.actualDteDays===null?"—":d1(p.actualDteDays)}</td><td>{money(p.widthUsd)}</td>
       <td className="dd-muted" title={p.technical.executionScenarioReason??p.buffered.executionScenarioReason??undefined}>{report.scenario==="reference"?"Reference fair value":p.executionScenario??"—"} · {executionScenarioStatusLabel(p.technical.executionScenarioStatus)} / {executionScenarioStatusLabel(p.buffered.executionScenarioStatus)}</td>
       <td>{money(p.technical.geometry.shortStrike)}</td><td>{money(p.buffered.geometry.shortStrike)}</td>
