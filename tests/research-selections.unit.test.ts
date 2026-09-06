@@ -8,7 +8,7 @@ import { ResearchSelectionService, researchSelectionApiPlugin } from "../scripts
 import { canLeaveDirty } from "../app/lib/trade-datasets.ts";
 import { LOCAL_PERSISTENCE_REQUIRED_MESSAGE, RESEARCH_SELECTION_ENDPOINT_FAILED_MESSAGE, probeLocalPersistence, researchSelectionFailure } from "../app/lib/local-persistence.ts";
 import {attemptControlled,controlledPersistence} from "../app/lib/controlled-research.ts";
-import { LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS, RESEARCH_SELECTION_SCHEMA_VERSION, canSelectResearchCandidate, canonicalJson, compactDelayedExecution, compactEntryEconomics, compactModeledExecution, compactValuationPoint, emptyResearchSelectionStore, generationAttemptIdentity, migrateResearchSelectionStore, preserveControlledGenerationProvenance, reconcileGeneratedSelection, safeSelectionChangeSet, sameSelectionIds, selectionChangeSet, researchEventPayloadDiagnostics, stableCandidateId, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure, type Venue } from "../app/lib/research-selections.ts";
+import { LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS, RESEARCH_SELECTION_SCHEMA_VERSION, canSelectResearchCandidate, canonicalJson, compactDelayedExecution, compactEntryEconomics, compactModeledExecution, compactValuationPoint, emptyResearchSelectionStore, generationAttemptIdentity, migrateResearchSelectionStore, planCandidatePersistence, preserveControlledGenerationProvenance, reconcileGeneratedSelection, safeSelectionChangeSet, sameSelectionIds, selectionChangeSet, researchEventPayloadDiagnostics, stableCandidateId, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure, type Venue } from "../app/lib/research-selections.ts";
 import {shortStrikeControlledFixture} from "./fixtures/research-selection-store.ts";
 
 const now="2026-08-16T20:00:00.000Z";
@@ -39,6 +39,31 @@ test("failed retrieval preserves full saved selection identities while a valid d
  assert.deepEqual([...stale.toKeep],saved,"another generation's health cannot authorize removal");assert.deepEqual([...stale.toRemove],[]);
  const valid=safeSelectionChangeSet(saved,draft,{attempted:true,complete:true,contractsLoaded:9,failedContracts:0,generationKey:"current",materiallyRegenerated:true},"current");
  assert.deepEqual([...valid.toRemove],saved);assert.deepEqual([...valid.toKeep],[]);
+});
+test("partial generation saves a materially valid model candidate without authorizing absence",()=>{
+ const prior=shortStrikeControlledFixture(),base=structuredClone(prior.events[0]!),saved=base.selectedStructures[0]!,modelOnly={...structuredClone(saved),candidateId:"reference-only",selectionId:"s-reference-only",executionScenarios:{maker:{status:"unavailable" as const,reason:"No causal tape.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]},taker:{status:"unavailable" as const,reason:"No causal tape.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]}},selectionProvenance:"model-only-diagnostic" as const};
+ const health={attempted:true,complete:false,contractsLoaded:4,failedContracts:1,generationKey:"current",materiallyRegenerated:true};
+ const transition=planCandidatePersistence({saved:[saved.candidateId,"missing-saved"],draft:[saved.candidateId,"missing-saved",modelOnly.candidateId],materiallyValid:[saved.candidateId,modelOnly.candidateId],generation:health,currentGenerationKey:"current"});
+ assert.deepEqual([...transition.toAdd],["reference-only"]);assert.ok(transition.toRefresh.has(saved.candidateId));assert.ok(transition.toKeepUnchanged.has("missing-saved"));assert.equal(transition.absenceAuthoritative,false);
+ const missing={...structuredClone(saved),candidateId:"missing-saved",selectionId:"s-missing-saved"},candidateTemplate=base.generationSnapshot.candidates.find(candidate=>candidate.candidateId===saved.candidateId)!,replacement={...base,generationSnapshot:{...base.generationSnapshot,candidates:[...base.generationSnapshot.candidates,{...candidateTemplate,candidateId:"reference-only",selected:true},{...candidateTemplate,candidateId:"missing-saved",selected:true}]},selectedStructures:[modelOnly,structuredClone(saved),missing]};
+ assert.equal(modelOnly.referenceValuation.status,"valued");assert.equal(modelOnly.executionScenarios.maker.status,"unavailable");assert.equal(modelOnly.executionScenarios.taker.status,"unavailable");
+ const checked=validateResearchSelectionStore({...prior,events:[replacement]});assert.equal(checked.ok,true,checked.ok?undefined:checked.errors.map(e=>`${e.path}: ${e.message}`).join(" | "));
+});
+test("86 failures preserve nine untouched structures in a validating composed store",()=>{
+ const priorEvent=event("failure-event",Array.from({length:9},(_,i)=>`candidate-${i}`)),prior=store([priorEvent]);
+ const transition=planCandidatePersistence({saved:priorEvent.selectedStructures.map(x=>x.candidateId),draft:[],materiallyValid:[],generation:{attempted:true,complete:false,contractsLoaded:0,failedContracts:86,generationKey:"current",materiallyRegenerated:false},currentGenerationKey:"current"});
+ assert.equal(transition.blockedImplicitRemoval.size,9);assert.equal(transition.toRemoveImplicitly.size,0);
+ const composed={...prior,events:[{...priorEvent,selectedStructures:priorEvent.selectedStructures.filter(x=>transition.toKeepUnchanged.has(x.candidateId))}]};assert.deepEqual(composed.events[0]!.selectedStructures,priorEvent.selectedStructures);assert.equal(validateResearchSelectionStore(composed).ok,true);
+});
+test("explicit deselection is honored while an unrelated missing candidate is preserved",()=>{
+ const transition=planCandidatePersistence({saved:["a","b"],draft:[],materiallyValid:["a"],explicitlyDeselected:["a"],generation:{attempted:true,complete:false,contractsLoaded:2,failedContracts:1,generationKey:"current",materiallyRegenerated:true},currentGenerationKey:"current"});
+ assert.deepEqual([...transition.toRemoveExplicitly],["a"]);assert.deepEqual([...transition.blockedImplicitRemoval],["b"]);assert.deepEqual([...transition.toKeepUnchanged],["b"]);
+ const prior=store([event("explicit",["a","b"])]),replacement={...prior.events[0]!,selectedStructures:prior.events[0]!.selectedStructures.filter(x=>transition.toKeepUnchanged.has(x.candidateId))};assert.equal(validateResearchSelectionStore({...prior,events:[replacement]}).ok,true);
+ const healthy=planCandidatePersistence({saved:["a","b"],draft:["b"],materiallyValid:["a","b"],explicitlyDeselected:["a"],generation:{attempted:true,complete:true,contractsLoaded:2,failedContracts:0,generationKey:"current",materiallyRegenerated:true},currentGenerationKey:"current"});assert.ok(healthy.toRemoveExplicitly.has("a"));assert.ok(healthy.toRefresh.has("b"));
+});
+test("stale generation key blocks additions but never destroys saved candidates",()=>{
+ const transition=planCandidatePersistence({saved:["keep"],draft:["keep","new"],materiallyValid:["new"],generation:{attempted:true,complete:true,contractsLoaded:2,failedContracts:0,generationKey:"old",materiallyRegenerated:true},currentGenerationKey:"current"});
+ assert.match(transition.blockedAdd.get("new")!,/stale/);assert.ok(transition.toKeepUnchanged.has("keep"));assert.equal(transition.toAdd.size,0);
 });
 test("controlled retrieval or materialization failure cannot poison authoritative production",async()=>{
  const production={inventory:["BTC-PRODUCTION"],candidateCount:1,health:{attempted:true,complete:true,contractsLoaded:2,failedContracts:0,generationKey:"current",materiallyRegenerated:true}};

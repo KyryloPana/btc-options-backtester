@@ -236,6 +236,43 @@ export function safeSelectionChangeSet(saved:Iterable<string>,draft:Iterable<str
  }
  return change;
 }
+
+export interface CandidatePersistenceTransition {
+ toAdd:Set<string>; toRefresh:Set<string>; toKeepUnchanged:Set<string>;
+ toRemoveExplicitly:Set<string>; toRemoveImplicitly:Set<string>;
+ blockedImplicitRemoval:Set<string>; blockedAdd:Map<string,string>;
+ absenceAuthoritative:boolean;
+}
+
+/**
+ * Candidate-aware save authorization. Generation health governs only whether
+ * absence is evidence; a current, materially admissible candidate may still be
+ * added or refreshed during a partial retrieval. Explicit checkbox intent is
+ * independent of both rules.
+ */
+export function planCandidatePersistence(input:{
+ saved:Iterable<string>; draft:Iterable<string>; materiallyValid:Iterable<string>;
+ explicitlyDeselected?:Iterable<string>; generation:GenerationUsability;
+ currentGenerationKey?:string;
+}):CandidatePersistenceTransition{
+ const saved=new Set(input.saved),draft=new Set(input.draft),valid=new Set(input.materiallyValid),explicit=new Set(input.explicitlyDeselected??[]);
+ const keyCurrent=Boolean(input.currentGenerationKey&&input.generation.generationKey===input.currentGenerationKey);
+ const absenceAuthoritative=generationAuthorizesReplacement(input.generation,input.currentGenerationKey);
+ const toAdd=new Set<string>(),toRefresh=new Set<string>(),toKeepUnchanged=new Set<string>(),toRemoveExplicitly=new Set<string>(),toRemoveImplicitly=new Set<string>(),blockedImplicitRemoval=new Set<string>(),blockedAdd=new Map<string,string>();
+ for(const id of draft){
+  if(saved.has(id)){if(keyCurrent&&valid.has(id))toRefresh.add(id);else toKeepUnchanged.add(id);continue;}
+  if(!keyCurrent){blockedAdd.set(id,"current contract generation is stale; reload contracts before adding this candidate");continue;}
+  if(!valid.has(id)){blockedAdd.set(id,"structure is unresolved or no admissible analytical track is available");continue;}
+  toAdd.add(id);
+ }
+ for(const id of saved){
+  if(draft.has(id))continue;
+  if(explicit.has(id))toRemoveExplicitly.add(id);
+  else if(absenceAuthoritative)toRemoveImplicitly.add(id);
+  else{blockedImplicitRemoval.add(id);toKeepUnchanged.add(id);}
+ }
+ return{toAdd,toRefresh,toKeepUnchanged,toRemoveExplicitly,toRemoveImplicitly,blockedImplicitRemoval,blockedAdd,absenceAuthoritative};
+}
 export function sameSelectionIds(left:Iterable<string>,right:Iterable<string>){const a=new Set(left),b=new Set(right);return a.size===b.size&&[...a].every(id=>b.has(id));}
 /** Reconciles persisted ids against a regenerated universe without remapping identities. */
 export function reconcileGeneratedSelection(saved:Iterable<string>,currentCandidates:Iterable<string>){
