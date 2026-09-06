@@ -363,13 +363,13 @@ function referenceCapture(track:ScenarioTrack|undefined,threshold:25|50|70,entry
  return {thresholdPct:threshold,reached:!!hit,timeToCaptureDays:days,evaluable:true,unavailableReason:null,beforeVpoc:hit&&vpocMs!==null?hit.t<=vpocMs:null,beforeInvalidation:hit&&invalidationMs!==null?hit.t<=invalidationMs:null};
 }
 function referenceAdverse(track:ScenarioTrack|undefined,entry:number|null,boundary:number|null):AdversePathObservation{
- if(!track||track.status!=="available")return {worstAdverseUsd:null,maeBeforeProfitUsd:null,profitObserved:false,rawMarksInWindow:0,status:"no_raw_marks",reason:"Reference track unavailable."};
+ if(!track||track.status!=="available")return {worstAdverseUsd:null,maeBeforeProfitUsd:null,profitObserved:false,rawMarksInWindow:0,status:"no_raw_marks",reason:"No Reference priced marks: Reference track unavailable."};
  const inWindow=track.valuationPath.filter(trackPointEvaluable).map(r=>({t:trackTime(r),usd:trackPnlUsd(r),native:trackPnlNative(r)})).filter(x=>x.t!==null&&(entry===null||x.t>=entry)&&(boundary===null||x.t<=boundary));
  const marks=inWindow.flatMap(x=>x.t!==null&&x.usd!==null?[{t:x.t,p:x.usd}]:[]).sort((a,b)=>a.t-b.t);
  if(!marks.length){const native=inWindow.some(x=>x.native!==null);return {worstAdverseUsd:null,maeBeforeProfitUsd:null,profitObserved:false,rawMarksInWindow:0,status:native?"usd_representation_unavailable":"no_raw_marks",reason:native?"Reference path has native PnL marks in the candidate observation window, but no USD-valued PnL evidence; BTC is not used as USD.":"Reference path has no USD-valued priced mark in the candidate observation window."};}
  const firstProfit=marks.findIndex(x=>x.p>0),before=firstProfit<0?[]:marks.slice(0,firstProfit+1);
  const nativeOnly=inWindow.filter(x=>x.usd===null&&x.native!==null).length;
- return {worstAdverseUsd:Math.min(...marks.map(x=>x.p)),maeBeforeProfitUsd:before.length?Math.min(...before.map(x=>x.p)):null,profitObserved:firstProfit>=0,rawMarksInWindow:marks.length,status:"available",reason:nativeOnly?`USD adverse metrics use ${marks.length} USD-valued mark(s); ${nativeOnly} native-only mark(s) were excluded rather than treated as USD.`:null};
+ return {worstAdverseUsd:Math.min(0,...marks.map(x=>x.p)),maeBeforeProfitUsd:before.length?Math.min(0,...before.map(x=>x.p)):null,profitObserved:firstProfit>=0,rawMarksInWindow:marks.length,status:"available",reason:nativeOnly?`USD adverse metrics use ${marks.length} USD-valued mark(s); ${nativeOnly} native-only mark(s) were excluded rather than treated as USD.`:null};
 }
 
 export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCandidate[]{

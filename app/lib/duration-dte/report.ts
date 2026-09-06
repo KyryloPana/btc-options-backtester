@@ -84,6 +84,8 @@ export interface SynchronizationRow {
  readonly medianMinutes:number|null;
  readonly p95Minutes:number|null;
  readonly n:number;
+ readonly maker:{readonly medianMinutes:number|null;readonly p95Minutes:number|null;readonly n:number};
+ readonly taker:{readonly medianMinutes:number|null;readonly p95Minutes:number|null;readonly n:number};
 }
 
 export interface CaptureThresholdRow {
@@ -105,6 +107,7 @@ export interface PnlBucket {
  readonly medianPnlUsd:number|null;
  readonly medianWorstAdverseUsd:number|null;
  readonly medianMaeBeforeProfitUsd:number|null;
+ readonly pnlN:number;readonly worstAdverseN:number;readonly maeN:number;readonly profitObservedN:number;
  /** Set when the bucket is structurally excluded from a PnL figure rather than merely empty. */
  readonly note:string|null;
 }
@@ -336,11 +339,9 @@ function pnlRow(horizon:HorizonFamily,scenarioRows:readonly DteCandidate[]):PnlB
  const selected=atHorizon(eligible(scenarioRows),horizon.nominalDays);
  return {horizon,buckets:PNL_BUCKETS.map(({outcome,label,pnl,note})=>{
   const items=selected.filter(c=>c.outcomeBeforeExpiry===outcome);
-  return {
+  const pnls=defined(items.map(pnl)),worst=defined(items.map(c=>c.worstAdverseUsd)),mae=defined(items.map(c=>c.adversePath.maeBeforeProfitUsd));return {
    outcome,label,n:items.length,
-   medianPnlUsd:median(defined(items.map(pnl))),
-   medianWorstAdverseUsd:median(defined(items.map(c=>c.worstAdverseUsd))),
-   medianMaeBeforeProfitUsd:median(defined(items.map(c=>c.adversePath.maeBeforeProfitUsd))),
+   medianPnlUsd:median(pnls),medianWorstAdverseUsd:median(worst),medianMaeBeforeProfitUsd:median(mae),pnlN:pnls.length,worstAdverseN:worst.length,maeN:mae.length,profitObservedN:items.filter(c=>c.adversePath.profitObserved).length,
    note,
   } satisfies PnlBucket;
  })};
@@ -441,7 +442,8 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
   availability,
   synchronization:horizons.map(h=>{
    const values=[...(availabilityByHorizon.get(h.nominalDays)?.synchronizationMinutes[scenario]??[])];
-   return {horizon:h,medianMinutes:median(values),p95Minutes:values.length<2?null:pct(values,0.95),n:values.length};
+   const stats=(kind:"maker"|"taker")=>{const xs=[...(availabilityByHorizon.get(h.nominalDays)?.synchronizationMinutes[kind]??[])];return{medianMinutes:median(xs),p95Minutes:xs.length<2?null:pct(xs,0.95),n:xs.length}};
+   return {horizon:h,medianMinutes:median(values),p95Minutes:values.length<2?null:pct(values,0.95),n:values.length,maker:stats("maker"),taker:stats("taker")};
   }),
   coverageCurve:coverageFromSurvival(underlying.survival),
   actualDteAll:defined(okStructures.map(c=>c.actualDteDays)),

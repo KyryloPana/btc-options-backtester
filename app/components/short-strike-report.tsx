@@ -114,7 +114,7 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
    </div>}
   </header>
 
-  {volatility&&<EmbeddedVolatilityContext report={volatility} kind="strike"/>}
+  {volatility&&<EmbeddedVolatilityContext report={volatility} kind="strike" candidateIds={new Set(report.pairs.flatMap(p=>[p.technical.candidateId,p.buffered.candidateId]))}/>}
   {/* 1 · Summary */}
   <div className="dd-cards">
    <Card label="Matched pairs" value={String(s.matchedPairs)} detail={`${s.matchedEvents} event(s)`}/>

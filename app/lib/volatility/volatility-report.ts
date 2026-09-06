@@ -9,6 +9,7 @@ const s=(v:unknown)=>typeof v==="string"?v:null;
 const observed=(v:unknown):Row|null=>{const x=v&&typeof v==="object"?v as Row:null;return x?.status==="available"&&x.observation==="observed"&&n(x.iv_decimal)!==null?x:null};
 export const volatilityLeg=(r:Row,k:"short"|"long")=>observed(rows(r.legs).find(x=>x.leg===k));
 export const volatilityDiff=(r:Row,k:string)=>rows(r.differentials).find(x=>x.differential===k&&x.status==="available")??null;
+export const hasUsableStructureVolatility=(r:Row)=>Boolean(volatilityLeg(r,"short")||volatilityLeg(r,"long")||n((r.same_expiry_reference as Row|undefined)?.iv_decimal)!==null||["short_minus_reference_iv","long_minus_reference_iv","short_minus_long_iv"].some(k=>n(volatilityDiff(r,k)?.value)!==null));
 export const quantiles=(xs:readonly number[])=>{const a=[...xs].sort((x,y)=>x-y),q=(p:number)=>{if(!a.length)return null;const z=(a.length-1)*p,l=Math.floor(z),u=Math.ceil(z);return a[l]!+(a[u]!-a[l]!)*(z-l)};return{n:a.length,p25:q(.25),median:q(.5),p75:q(.75)}};
 export const availableStateQuantiles=(subjects:readonly Row[],collection:string,identity:string,field:string)=>quantiles(subjects.flatMap(subject=>{const state=rows(subject[collection]).find(x=>x.nominal_tenor===identity||x.horizon===identity||x.slope===identity),value=state?.status==="available"?n(state[field]):null;return value===null?[]:[value]}));
 const tally=(available:number,total:number,reason:string):AvailabilityTally=>({available,total,ratio:total?available/total:null,reasons:available===total?{}:{[reason]:total-available}});
@@ -21,6 +22,7 @@ export interface VolatilityReport {executionIndependent:true;coverage:ReturnType
 /** Descriptive market-IV analytics. Pricing/reconstructed IV is never admitted. */
 export function buildVolatilityReport(dataset:AnalysisDataset):VolatilityReport{
  const p=projectVolatilityAnalytics(dataset.tables),structures=p.structures;
+ const ids=structures.map(r=>String(r.candidate_id));if(new Set(ids).size!==ids.length)throw new Error("Integrity failure: structure_volatility_state must contain exactly one row per candidate_id.");
  const eventDenominator=dataset.tables.events?.length??p.events.length,structureDenominator=new Set((dataset.tables.candidates??[]).map(x=>String(x.candidate_id))).size||structures.length;
  const shortN=structures.filter(x=>volatilityLeg(x,"short")).length,longN=structures.filter(x=>volatilityLeg(x,"long")).length,bothN=structures.filter(x=>volatilityLeg(x,"short")&&volatilityLeg(x,"long")).length;
  const metrics:Record<string,number[]>={short_iv:[],long_iv:[],reference_iv:[],short_minus_reference_iv:[],long_minus_reference_iv:[],short_minus_long_iv:[]};
