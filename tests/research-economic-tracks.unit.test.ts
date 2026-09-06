@@ -33,7 +33,11 @@ test("SCHEMA 4.1 E2E: selected technical and unselected buffered survive without
 test("MERGE: current research Reference wins while selected execution overlays survive",()=>{
  const fixture=shortStrikeControlledFixture(),selected=fixture.events[0]!.selectedStructures[0]!,entry=structuredClone((selected.referenceValuation as Record<string,unknown>).entrySnapshot),path=structuredClone((selected.referenceValuation as Record<string,unknown>).valuationPathSnapshot),outcomes=structuredClone((selected.referenceValuation as Record<string,unknown>).outcomeSnapshots);selected.executionScenarios={maker:{status:"evaluated",reason:null,entrySnapshot:entry,valuationPathSnapshot:path as never[],outcomeSnapshots:outcomes as never[]},taker:{status:"evaluated",reason:null,entrySnapshot:entry,valuationPathSnapshot:path as never[],outcomeSnapshots:outcomes as never[]}};
  const selectedReference=((selected.referenceValuation as Record<string,unknown>).entrySnapshot as Record<string,unknown>).netOpeningCashFlowBtc,researchReference=(((fixture.events[0]!.researchStructures![0]!.referenceValuation as Record<string,unknown>).entrySnapshot) as Record<string,unknown>).netOpeningCashFlowBtc;assert.notEqual(selectedReference,researchReference);
+<<<<<<< HEAD
  const bundle=buildResearchBundle(fixture,now),rows=parse(bundle.files["candidates.jsonl"]).filter(r=>r.candidate_id===selected.candidateId);assert.equal(new Set(rows.map(r=>r.candidate_id)).size,1);assert.ok(rows.every(r=>(r.reference_valuation as Record<string,any>).entrySnapshot.netOpeningCashFlowBtc===researchReference));assert.ok(rows.every(r=>r.execution_scenario_status==="evaluated"));
+=======
+ const bundle=buildResearchBundle(fixture,now),rows=parse(bundle.files["candidates.jsonl"]).filter(r=>r.candidate_id===selected.candidateId);assert.equal(new Set(rows.map(r=>r.candidate_id)).size,1);assert.ok(rows.every(r=>((r.reference_valuation as {entrySnapshot:{netOpeningCashFlowBtc:unknown}}).entrySnapshot.netOpeningCashFlowBtc)===researchReference));assert.ok(rows.every(r=>r.execution_scenario_status==="evaluated"));
+>>>>>>> 4e3c71390da544865dae67e310623c7c58585e41
 });
 
 test("UNRESOLVED: requested buffered geometry and exact failure survive export/import without fabricated actuals",()=>{
