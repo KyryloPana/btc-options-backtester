@@ -766,11 +766,10 @@ export function generateDesiredSpreads(event: BacktestEvent, dtes: number[], wid
     ? Math.floor(event.extremePrice / 1000) * 1000
     : Math.ceil(event.extremePrice / 1000) * 1000;
   const anchors = [{ strike: rounded, buffered: false }];
-  // Short-strike research asks whether an additional strike step is worth its
-  // surrendered credit.  It is triggered only when the technical strike is
-  // less than $500 beyond the extreme.  Exactly $500 is already sufficiently
-  // buffered.  Both legs are shifted below, so target width is unchanged.
-  if (technicalDistanceFromExtreme(event.direction, event.extremePrice, rounded) < 500) {
+  // This is the established interactive-engine rule. Short-Strike's wider
+  // analytical counterfactual is deliberately materialized by the research
+  // helper below and must not expand this production candidate universe.
+  if (Math.abs(event.extremePrice - rounded) < 100) {
     anchors.push({ strike: rounded + (bullish ? -1000 : 1000), buffered: true });
   }
   const optionType: OptionType = kind === "credit"
@@ -807,6 +806,21 @@ export function generateDesiredSpreads(event: BacktestEvent, dtes: number[], wid
 /** Positive OTM distance for both puts (bullish MR) and calls (bearish MR). */
 export function technicalDistanceFromExtreme(direction:BacktestEvent["direction"],extreme:number,technicalStrike:number):number{
   return direction==="long"?extreme-technicalStrike:technicalStrike-extreme;
+}
+
+/**
+ * Research-only projection of the Short-Strike technical/buffer comparison.
+ * Callers must materialize this cohort separately; it is not an input to the
+ * interactive matrix, expiry ranking, contract loading, or normal backtest.
+ */
+export function generateShortStrikeResearchSpreads(event:BacktestEvent,dtes:number[],widths:number[],kind:SpreadKind):DesiredSpread[]{
+  if(!event.extremePrice)return[];
+  const bullish=event.direction==="long";
+  const rounded=bullish?Math.floor(event.extremePrice/1000)*1000:Math.ceil(event.extremePrice/1000)*1000;
+  const production=generateDesiredSpreads(event,dtes,widths,kind).filter(spread=>!spread.buffered);
+  if(technicalDistanceFromExtreme(event.direction,event.extremePrice,rounded)>=500)return production;
+  const shift=bullish?-1000:1000,bufferedAnchor=rounded+shift;
+  return [...production,...production.map(spread=>({...spread,id:`${kind}-${spread.targetDte}-${spread.targetWidth}-${bufferedAnchor}`,anchorStrike:bufferedAnchor,soldStrike:spread.soldStrike+shift,boughtStrike:spread.boughtStrike+shift,buffered:true}))];
 }
 
 function nearestStrike(series: ContractSeries[], desired: number) {
