@@ -33,12 +33,17 @@ export interface MatchedDteComparisonRow {
  readonly longer:HorizonFamily;
  /** Structural variants present at BOTH horizons -- the only population compared. */
  readonly matchedVariants:number;
+ readonly matchedEvents:number;
  readonly medianPnlDeltaUsd:number|null;
  readonly medianWorstAdverseDeltaUsd:number|null;
  readonly medianHoldingDeltaDays:number|null;
  readonly medianCapture50DeltaDays:number|null;
  readonly medianDteDeltaDays:number|null;
  readonly comparableN:{readonly pnl:number;readonly worstAdverse:number;readonly holding:number;readonly capture50:number};
+ /** Evidence-complete capture paths include evaluated "not reached" observations; elapsed-time deltas still require both reached. */
+ readonly capture50EvidenceN:number;
+ readonly comparableEventN:{readonly dte:number;readonly pnl:number;readonly worstAdverse:number;readonly holding:number;readonly capture50:number};
+ readonly pnlMissing:{readonly shorter:Readonly<Record<string,number>>;readonly longer:Readonly<Record<string,number>>;readonly both:number};
  readonly shorterOnlyN:number;readonly longerOnlyN:number;
 }
 
@@ -67,12 +72,16 @@ export function buildMatchedDteComparison(candidates:readonly DteCandidate[],hor
   if(!a||!b)continue;
   const matched=[...a.keys()].filter(k=>b.has(k)).map(k=>[b.get(k)!,a.get(k)!] as const);
   if(!matched.length)continue;
-  const pnl=delta(matched.map(([l,s])=>[realizedPnlOf(l),realizedPnlOf(s)] as const)),worst=delta(matched.map(([l,s])=>[l.worstAdverseUsd,s.worstAdverseUsd] as const)),holding=delta(matched.map(([l,s])=>[l.holdingDays,s.holdingDays] as const)),capture=delta(matched.map(([l,s])=>[l.capture50?.reached?l.capture50.timeToCaptureDays:null,s.capture50?.reached?s.capture50.timeToCaptureDays:null] as const));
+  const raw={dte:delta(matched.map(([l,s])=>[l.actualDteDays,s.actualDteDays] as const)),pnl:delta(matched.map(([l,s])=>[realizedPnlOf(l),realizedPnlOf(s)] as const)),worstAdverse:delta(matched.map(([l,s])=>[l.worstAdverseUsd,s.worstAdverseUsd] as const)),holding:delta(matched.map(([l,s])=>[l.holdingDays,s.holdingDays] as const)),capture50:delta(matched.map(([l,s])=>[l.capture50?.reached?l.capture50.timeToCaptureDays:null,s.capture50?.reached?s.capture50.timeToCaptureDays:null] as const))};
+  const pnlMissing={shorter:{} as Record<string,number>,longer:{} as Record<string,number>,both:0},category=(c:DteCandidate)=>c.outcomeBeforeExpiry==="vpoc_before_expiry"?"VPOC required":c.outcomeBeforeExpiry==="invalidation_before_expiry"?"invalidation required":c.outcomeBeforeExpiry==="no_resolution_before_expiry"?"settlement required":c.outcomeBeforeExpiry==="ambiguous_before_expiry"?"ambiguous resolution":c.outcomeBeforeExpiry==="vpoc_before_structure_entry"?"VPOC before structure entry":"outcome unknown / non-comparable";for(const [l,s] of matched){const lv=realizedPnlOf(l),sv=realizedPnlOf(s);if(lv===null&&sv===null)pnlMissing.both++;if(sv===null){const key=category(s);pnlMissing.shorter[key]=(pnlMissing.shorter[key]??0)+1}if(lv===null){const key=category(l);pnlMissing.longer[key]=(pnlMissing.longer[key]??0)+1}}
+  const eventValues=(get:(pair:typeof matched[number])=>number|null)=>[...new Set(matched.map(([l])=>l.eventId))].flatMap(eventId=>{const values=matched.filter(([l])=>l.eventId===eventId).map(get).filter((x):x is number=>x!==null);const value=median(values);return value===null?[]:[value]});
+  const ev={dte:eventValues(([l,s])=>l.actualDteDays!==null&&s.actualDteDays!==null?l.actualDteDays-s.actualDteDays:null),pnl:eventValues(([l,s])=>{const a=realizedPnlOf(l),b=realizedPnlOf(s);return a!==null&&b!==null?a-b:null}),worstAdverse:eventValues(([l,s])=>l.worstAdverseUsd!==null&&s.worstAdverseUsd!==null?l.worstAdverseUsd-s.worstAdverseUsd:null),holding:eventValues(([l,s])=>l.holdingDays!==null&&s.holdingDays!==null?l.holdingDays-s.holdingDays:null),capture50:eventValues(([l,s])=>l.capture50?.reached&&s.capture50?.reached&&l.capture50.timeToCaptureDays!==null&&s.capture50.timeToCaptureDays!==null?l.capture50.timeToCaptureDays-s.capture50.timeToCaptureDays:null)};
   rows.push({
-   shorter,longer,matchedVariants:matched.length,
-   medianPnlDeltaUsd:median(pnl),medianWorstAdverseDeltaUsd:median(worst),medianHoldingDeltaDays:median(holding),medianCapture50DeltaDays:median(capture),
-   medianDteDeltaDays:median(delta(matched.map(([l,s])=>[l.actualDteDays,s.actualDteDays] as const))),
-   comparableN:{pnl:pnl.length,worstAdverse:worst.length,holding:holding.length,capture50:capture.length},
+   shorter,longer,matchedVariants:matched.length,matchedEvents:new Set(matched.map(([l])=>l.eventId)).size,
+   medianPnlDeltaUsd:median(ev.pnl),medianWorstAdverseDeltaUsd:median(ev.worstAdverse),medianHoldingDeltaDays:median(ev.holding),medianCapture50DeltaDays:median(ev.capture50),medianDteDeltaDays:median(ev.dte),
+   comparableN:{pnl:raw.pnl.length,worstAdverse:raw.worstAdverse.length,holding:raw.holding.length,capture50:raw.capture50.length},comparableEventN:{dte:ev.dte.length,pnl:ev.pnl.length,worstAdverse:ev.worstAdverse.length,holding:ev.holding.length,capture50:ev.capture50.length},
+   capture50EvidenceN:matched.filter(([l,s])=>l.capture50?.evaluable===true&&s.capture50?.evaluable===true).length,
+   pnlMissing,
    shorterOnlyN:[...a.keys()].filter(k=>!b.has(k)).length,longerOnlyN:[...b.keys()].filter(k=>!a.has(k)).length,
   });
  }

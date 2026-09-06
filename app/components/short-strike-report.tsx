@@ -1,5 +1,6 @@
 "use client";
 import {useState} from "react";
+import {evidenceRowProps,ResearchEvidenceBadge} from "./research-evidence-status";
 import type {ConditionalBucket,MatchedPair,ShortStrikeReport} from "../lib/short-strike/report";
 import type {VolatilityReport} from "../lib/volatility/volatility-report";
 import {EmbeddedVolatilityContext} from "./volatility-report";
@@ -114,7 +115,7 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
    </div>}
   </header>
 
-  {volatility&&<EmbeddedVolatilityContext report={volatility} kind="strike"/>}
+  {volatility&&<EmbeddedVolatilityContext report={volatility} kind="strike" candidateIds={new Set(report.pairs.flatMap(p=>[p.technical.candidateId,p.buffered.candidateId]))}/>}
   {/* 1 · Summary */}
   <div className="dd-cards">
    <Card label="Matched pairs" value={String(s.matchedPairs)} detail={`${s.matchedEvents} event(s)`}/>
@@ -192,8 +193,8 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
     <tbody>{rows.map((p:MatchedPair)=>{
      const state=(x:MatchedPair["technical"])=>x.challenge.reason!==null?"—":x.challenge.breached?"breach":x.challenge.invalidatedInWindow?"invalidated":x.challenge.touched?"touch":"clean";
      const realized=p.deltas.find(d=>d.label==="Δ realized PnL")?.value??null;
-     return <tr key={p.matchKey}>
-      <td>{p.eventId}</td><td>{p.actualDteDays===null?"—":d1(p.actualDteDays)}</td><td>{money(p.widthUsd)}</td>
+     const challengeUsable=p.technical.challenge.reason===null&&p.buffered.challenge.reason===null,complete=p.economicsComparable&&challengeUsable,assessment={status:(complete?"VALID":"PARTIAL") as "VALID"|"PARTIAL",reason:complete?null:[!p.economicsComparable?"Focal economics incomplete.":null,!challengeUsable?"Focal challenge evidence unresolved.":null].filter(Boolean).join(" ")};return <tr key={p.matchKey} {...evidenceRowProps(assessment)}>
+      <td><ResearchEvidenceBadge assessment={assessment}/> {p.eventId}</td><td>{p.actualDteDays===null?"—":d1(p.actualDteDays)}</td><td>{money(p.widthUsd)}</td>
       <td className="dd-muted" title={p.technical.executionScenarioReason??p.buffered.executionScenarioReason??undefined}>{report.scenario==="reference"?"Reference fair value":p.executionScenario??"—"} · {executionScenarioStatusLabel(p.technical.executionScenarioStatus)} / {executionScenarioStatusLabel(p.buffered.executionScenarioStatus)}</td>
       <td>{money(p.technical.geometry.shortStrike)}</td><td>{money(p.buffered.geometry.shortStrike)}</td>
       <td>{usd(p.extraDistanceUsd)}</td>

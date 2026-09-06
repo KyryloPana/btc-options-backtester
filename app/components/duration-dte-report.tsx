@@ -1,5 +1,6 @@
 "use client";
 import {useMemo,useState} from "react";
+import {evidenceRowProps,ResearchEvidenceBadge} from "./research-evidence-status";
 import {ChartAxisTag,ChartCrosshair,ChartMarker,ChartReadout,useChartCursor} from "./chart-cursor";
 import {binAt,stepValueAt,type PlotGeometry} from "../lib/chart-interaction";
 import type {
@@ -116,17 +117,16 @@ function EntryQualityBars({report}:{report:DurationDteReport}){
  })}</div>;
 }
 
-function SynchronizationTable({rows,scenario}:{rows:readonly SynchronizationRow[];scenario:string}){
+function SynchronizationTable({rows}:{rows:readonly SynchronizationRow[];scenario:string}){
  return <div className="table-scroll"><table className="dd-table dd-compact">
-  <thead><tr><th>Horizon</th><th>Median sync (min)</th><th>P95 sync (min)</th><th>N</th></tr></thead>
+  <thead><tr><th>Horizon</th><th>Maker median</th><th>Maker P95</th><th>Maker N</th><th>Taker median</th><th>Taker P95</th><th>Taker N</th></tr></thead>
   <tbody>{rows.map(r=><tr key={r.horizon.nominalDays}>
    <td>{r.horizon.label}</td>
-   <td>{r.medianMinutes===null?NOT_ESTIMABLE:`${r.medianMinutes.toFixed(2)}m`}</td>
-   <td title={r.n<2?"N < 2":undefined}>{r.p95Minutes===null?NOT_ESTIMABLE:`${r.p95Minutes.toFixed(2)}m`}</td>
-   <td>{r.n}</td>
+   <td>{r.maker.medianMinutes===null?NOT_ESTIMABLE:`${r.maker.medianMinutes.toFixed(2)}m`}</td><td title={r.maker.n<2?"N < 2":undefined}>{r.maker.p95Minutes===null?NOT_ESTIMABLE:`${r.maker.p95Minutes.toFixed(2)}m`}</td><td>{r.maker.n}</td>
+   <td>{r.taker.medianMinutes===null?NOT_ESTIMABLE:`${r.taker.medianMinutes.toFixed(2)}m`}</td><td title={r.taker.n<2?"N < 2":undefined}>{r.taker.p95Minutes===null?NOT_ESTIMABLE:`${r.taker.p95Minutes.toFixed(2)}m`}</td><td>{r.taker.n}</td>
   </tr>)}</tbody>
  </table>
- <small className="dd-note">Median and P95 leg-synchronization gap for the {scenario} scenario only — maker and taker draw on different tape prints, so their gaps are reported separately rather than pooled.</small>
+ <small className="dd-note">Synchronization measures contemporaneity of the two leg-evidence timestamps. It is therefore scenario-specific: Maker and Taker use their own tape prints, are never pooled, and each P95 is not estimable at N&lt;2. Reference has no synchronization statistic because fair value is not two-leg historical execution evidence.</small>
  </div>;
 }
 
@@ -251,15 +251,16 @@ function CaptureSection({report}:{report:DurationDteReport}){
 /* ---------- 7. PnL by candidate-relative outcome ---------- */
 
 function PnlSection({rows}:{rows:readonly PnlByOutcomeRow[]}){
+ const reasons=(r:Readonly<Record<string,number>>)=>Object.entries(r).map(([reason,n])=>`${reason}: ${n}`).join(" · ")||undefined;
  return <div className="table-scroll"><table className="dd-table dd-compact">
-  <thead><tr><th>Horizon</th><th>Bucket</th><th>N</th><th>Median PnL</th><th>Median worst adverse</th><th>Median MAE before profit</th></tr></thead>
+  <thead><tr><th>Horizon</th><th>Bucket</th><th>Structures</th><th>Median PnL</th><th>Median worst adverse</th><th>Median MAE before profit</th></tr></thead>
   <tbody>{rows.flatMap(r=>r.buckets.filter(b=>b.n>0).map(b=>
-   <tr key={`${r.horizon.nominalDays}-${b.outcome}`}><td>{r.horizon.label}</td>
+   <tr key={`${r.horizon.nominalDays}-${b.outcome}`} {...evidenceRowProps({status:b.pnlN===b.n&&b.worstAdverseN===b.n?"VALID":b.pnlN||b.worstAdverseN?"PARTIAL":"UNAVAILABLE",reason:b.pnlN===b.n&&b.worstAdverseN===b.n?null:`PnL ${b.pnlN}/${b.n}; worst-adverse ${b.worstAdverseN}/${b.n}; MAE ${b.maeN}/${b.n}.`})}><td><ResearchEvidenceBadge assessment={{status:b.pnlN===b.n&&b.worstAdverseN===b.n?"VALID":b.pnlN||b.worstAdverseN?"PARTIAL":"UNAVAILABLE",reason:b.pnlN===b.n&&b.worstAdverseN===b.n?null:`PnL ${b.pnlN}/${b.n}; worst-adverse ${b.worstAdverseN}/${b.n}; MAE ${b.maeN}/${b.n}.`}}/> {r.horizon.label}</td>
     <td title={b.note??undefined}>{b.label}{b.note&&<small className="dd-muted"> ⓘ</small>}</td>
     <td>{b.n}</td>
-    <td className={b.medianPnlUsd===null?"dd-muted":b.medianPnlUsd>=0?"positive":"negative"}>{usd(b.medianPnlUsd)}</td>
-    <td className={b.medianWorstAdverseUsd===null?"dd-muted":"negative"}>{usd(b.medianWorstAdverseUsd)}</td>
-    <td className={b.medianMaeBeforeProfitUsd===null?"dd-muted":"negative"}>{usd(b.medianMaeBeforeProfitUsd)}</td>
+    <td className={b.medianPnlUsd===null?"dd-muted":b.medianPnlUsd>=0?"positive":"negative"}>{usd(b.medianPnlUsd)} <small>n={b.pnlN}</small></td>
+    <td className={b.medianWorstAdverseUsd===null?"dd-muted":"negative"} title={reasons(b.worstAdverseUnavailableReasons)}>{usd(b.medianWorstAdverseUsd)} <small>n={b.worstAdverseN}{Object.keys(b.worstAdverseUnavailableReasons).length?" · ⓘ":""}</small></td>
+    <td className={b.medianMaeBeforeProfitUsd===null?"dd-muted":"negative"} title={reasons(b.maeUnavailableReasons)}>{usd(b.medianMaeBeforeProfitUsd)} <small>n={b.maeN} · profit observed {b.profitObservedN}{Object.keys(b.maeUnavailableReasons).length?" · ⓘ":""}</small></td>
    </tr>))}</tbody>
  </table>
  <small className="dd-note">Each bucket is priced at the outcome that actually occurred while the structure existed: VPOC before expiry → PnL at VPOC, invalidation before expiry → PnL at invalidation, no resolution before expiry → settlement. A structure entered after VPOC has no post-entry PnL at VPOC and is reported in its own bucket.</small>
@@ -272,16 +273,17 @@ function MatchedDteSection({report}:{report:DurationDteReport}){
  if(!report.matchedDte.length)return <p className="dd-empty-inline">{UNAVAILABLE} — no structural variant (same event, strike method, width, structure and option type) appears at two different horizons, so no controlled DTE comparison is possible in this bundle.</p>;
  return <><div className="table-scroll"><table className="dd-table dd-compact">
   <thead><tr><th>Comparison</th><th>Matched variants</th><th>Δ actual DTE</th><th>Δ PnL</th><th>Δ worst adverse</th><th>Δ holding</th><th>Δ T50% capture</th></tr></thead>
-  <tbody>{report.matchedDte.map(r=><tr key={`${r.shorter.nominalDays}-${r.longer.nominalDays}`}>
-   <td>{r.longer.label} − {r.shorter.label}</td>
-   <td>{r.matchedVariants}</td>
-   <td>{signedDays(r.medianDteDeltaDays)}</td>
-   <td className={r.medianPnlDeltaUsd===null?"dd-muted":r.medianPnlDeltaUsd>=0?"positive":"negative"}>{signedUsd(r.medianPnlDeltaUsd)}</td>
-   <td className={r.medianWorstAdverseDeltaUsd===null?"dd-muted":"negative"}>{signedUsd(r.medianWorstAdverseDeltaUsd)}</td>
-   <td>{signedDays(r.medianHoldingDeltaDays)}</td>
-   <td>{signedDays(r.medianCapture50DeltaDays)}</td>
+  <tbody>{report.matchedDte.map(r=><tr key={`${r.shorter.nominalDays}-${r.longer.nominalDays}`} {...evidenceRowProps({status:[r.comparableN.pnl,r.comparableN.worstAdverse,r.comparableN.holding,r.capture50EvidenceN].every(n=>n===r.matchedVariants)?"VALID":[r.comparableN.pnl,r.comparableN.worstAdverse,r.comparableN.holding,r.capture50EvidenceN].some(n=>n>0)?"PARTIAL":"UNAVAILABLE",reason:`Comparable variants — PnL ${r.comparableN.pnl}, worst adverse ${r.comparableN.worstAdverse}, holding ${r.comparableN.holding}, capture-path evidence ${r.capture50EvidenceN}, reached-pair T50 ${r.comparableN.capture50}; matched ${r.matchedVariants}.`})}>
+   <td><ResearchEvidenceBadge assessment={{status:[r.comparableN.pnl,r.comparableN.worstAdverse,r.comparableN.holding,r.capture50EvidenceN].every(n=>n===r.matchedVariants)?"VALID":[r.comparableN.pnl,r.comparableN.worstAdverse,r.comparableN.holding,r.capture50EvidenceN].some(n=>n>0)?"PARTIAL":"UNAVAILABLE",reason:`Comparable variants — PnL ${r.comparableN.pnl}, worst adverse ${r.comparableN.worstAdverse}, holding ${r.comparableN.holding}, capture-path evidence ${r.capture50EvidenceN}, reached-pair T50 ${r.comparableN.capture50}; matched ${r.matchedVariants}.`}}/> {r.longer.label} − {r.shorter.label}</td>
+   <td>{r.matchedVariants} variants / {r.matchedEvents} events</td>
+   <td>{signedDays(r.medianDteDeltaDays)} <small>N={r.comparableEventN.dte}/{r.matchedEvents} events</small></td>
+   <td className={r.medianPnlDeltaUsd===null?"dd-muted":r.medianPnlDeltaUsd>=0?"positive":"negative"}>{signedUsd(r.medianPnlDeltaUsd)} <small>N={r.comparableN.pnl}/{r.matchedVariants} variants · {r.comparableEventN.pnl}/{r.matchedEvents} events</small></td>
+   <td className={r.medianWorstAdverseDeltaUsd===null?"dd-muted":"negative"}>{signedUsd(r.medianWorstAdverseDeltaUsd)} <small>N={r.comparableN.worstAdverse}/{r.matchedVariants} · events {r.comparableEventN.worstAdverse}</small></td>
+   <td>{signedDays(r.medianHoldingDeltaDays)} <small>N={r.comparableN.holding}/{r.matchedVariants} · events {r.comparableEventN.holding}</small></td>
+   <td>{signedDays(r.medianCapture50DeltaDays)} <small>N={r.comparableN.capture50}/{r.matchedVariants} · events {r.comparableEventN.capture50}</small></td>
   </tr>)}</tbody>
  </table></div>
+ {report.matchedDte.map(r=>{const shorter=Object.values(r.pnlMissing.shorter).reduce((a,b)=>a+b,0),longer=Object.values(r.pnlMissing.longer).reduce((a,b)=>a+b,0),missing=Math.max(shorter,longer);if(!missing)return null;return <details key={`pnl-missing-${r.shorter.nominalDays}-${r.longer.nominalDays}`}><summary>{r.longer.label} − {r.shorter.label} · Δ PnL missingness ({r.comparableN.pnl}/{r.matchedVariants} comparable)</summary><p>Missing shorter: {Object.entries(r.pnlMissing.shorter).map(([k,n])=>`${k} ${n}`).join(" · ")||"none"}</p><p>Missing longer: {Object.entries(r.pnlMissing.longer).map(([k,n])=>`${k} ${n}`).join(" · ")||"none"}</p><p>Both missing: {r.pnlMissing.both}</p></details>})}
  <small className="dd-note">Longer minus shorter, within MATCHED structural variants only — the same MR event, short-strike method, width, structure and option type, under the same execution scenario. A variant present at only one horizon is excluded entirely, so a width or strike-placement difference is never attributed to duration.</small>
  </>;
 }

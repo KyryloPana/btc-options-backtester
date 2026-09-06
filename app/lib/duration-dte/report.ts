@@ -84,6 +84,8 @@ export interface SynchronizationRow {
  readonly medianMinutes:number|null;
  readonly p95Minutes:number|null;
  readonly n:number;
+ readonly maker:{readonly medianMinutes:number|null;readonly p95Minutes:number|null;readonly n:number};
+ readonly taker:{readonly medianMinutes:number|null;readonly p95Minutes:number|null;readonly n:number};
 }
 
 export interface CaptureThresholdRow {
@@ -105,6 +107,8 @@ export interface PnlBucket {
  readonly medianPnlUsd:number|null;
  readonly medianWorstAdverseUsd:number|null;
  readonly medianMaeBeforeProfitUsd:number|null;
+ readonly pnlN:number;readonly worstAdverseN:number;readonly maeN:number;readonly profitObservedN:number;
+ readonly worstAdverseUnavailableReasons:Readonly<Record<string,number>>;readonly maeUnavailableReasons:Readonly<Record<string,number>>;
  /** Set when the bucket is structurally excluded from a PnL figure rather than merely empty. */
  readonly note:string|null;
 }
@@ -321,7 +325,7 @@ function captureRow(horizon:HorizonFamily,scenarioRows:readonly DteCandidate[],t
 const PNL_BUCKETS:readonly {outcome:OutcomeBeforeExpiry;label:string;pnl:(c:DteCandidate)=>number|null;note:string|null}[]=[
  {outcome:"vpoc_before_expiry",label:"VPOC before expiry",pnl:c=>c.pnlAtVpocUsd,note:null},
  {outcome:"invalidation_before_expiry",label:"Invalidation before expiry",pnl:c=>c.pnlAtInvalidationUsd,note:null},
- {outcome:"ambiguous_before_expiry",label:"Ambiguous before expiry",pnl:c=>c.pnlAtVpocUsd??c.pnlAtInvalidationUsd,note:null},
+ {outcome:"ambiguous_before_expiry",label:"Ambiguous before expiry",pnl:c=>c.ambiguousResolutionPnlUsd??null,note:"PnL is available only from one trigger-independent Reference valuation at the shared first-resolution timestamp; labelled VPOC/invalidation outcomes are never chosen arbitrarily."},
  {outcome:"no_resolution_before_expiry",label:"No resolution before expiry",pnl:c=>c.pnlAtSettlementUsd,note:null},
  {outcome:"vpoc_before_structure_entry",label:"VPOC already reached before structure entry",pnl:()=>null,
   note:"VPOC preceded this structure's entry, so there is no post-entry PnL at VPOC to report. Credit capture, invalidation, adverse path and settlement remain valid for these structures."},
@@ -336,11 +340,10 @@ function pnlRow(horizon:HorizonFamily,scenarioRows:readonly DteCandidate[]):PnlB
  const selected=atHorizon(eligible(scenarioRows),horizon.nominalDays);
  return {horizon,buckets:PNL_BUCKETS.map(({outcome,label,pnl,note})=>{
   const items=selected.filter(c=>c.outcomeBeforeExpiry===outcome);
-  return {
+  const pnls=defined(items.map(pnl)),worst=defined(items.map(c=>c.worstAdverseUsd)),mae=defined(items.map(c=>c.adversePath.maeBeforeProfitUsd)),reasons=(maeOnly=false)=>{const out:Record<string,number>={};for(const c of items){if((maeOnly?c.adversePath.maeBeforeProfitUsd:c.worstAdverseUsd)!==null)continue;const reason=maeOnly&&c.adversePath.status==="available"&&!c.adversePath.profitObserved?"profit never observed":c.adversePath.status==="no_raw_marks"?"no Reference priced marks":c.adversePath.status.replaceAll("_"," ");out[reason]=(out[reason]??0)+1}return out};return {
    outcome,label,n:items.length,
-   medianPnlUsd:median(defined(items.map(pnl))),
-   medianWorstAdverseUsd:median(defined(items.map(c=>c.worstAdverseUsd))),
-   medianMaeBeforeProfitUsd:median(defined(items.map(c=>c.adversePath.maeBeforeProfitUsd))),
+   medianPnlUsd:median(pnls),medianWorstAdverseUsd:median(worst),medianMaeBeforeProfitUsd:median(mae),pnlN:pnls.length,worstAdverseN:worst.length,maeN:mae.length,profitObservedN:items.filter(c=>c.adversePath.profitObserved).length,
+   worstAdverseUnavailableReasons:reasons(),maeUnavailableReasons:reasons(true),
    note,
   } satisfies PnlBucket;
  })};
@@ -441,7 +444,8 @@ export function buildDurationDteReport(dataset:AnalysisDataset,scenario:Executio
   availability,
   synchronization:horizons.map(h=>{
    const values=[...(availabilityByHorizon.get(h.nominalDays)?.synchronizationMinutes[scenario]??[])];
-   return {horizon:h,medianMinutes:median(values),p95Minutes:values.length<2?null:pct(values,0.95),n:values.length};
+   const stats=(kind:"maker"|"taker")=>{const xs=[...(availabilityByHorizon.get(h.nominalDays)?.synchronizationMinutes[kind]??[])];return{medianMinutes:median(xs),p95Minutes:xs.length<2?null:pct(xs,0.95),n:xs.length}};
+   return {horizon:h,medianMinutes:median(values),p95Minutes:values.length<2?null:pct(values,0.95),n:values.length,maker:stats("maker"),taker:stats("taker")};
   }),
   coverageCurve:coverageFromSurvival(underlying.survival),
   actualDteAll:defined(okStructures.map(c=>c.actualDteDays)),

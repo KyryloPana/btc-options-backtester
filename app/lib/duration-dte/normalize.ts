@@ -2,7 +2,7 @@ import type {AnalysisDataset} from "../research-analysis.ts";
 import {normalizeMrEvents,type ResolutionOutcome} from "../underlying-resolution/normalize.ts";
 // Adverse-path evidence is a shared canonical primitive: Short-Strike answers
 // the same question and must answer it identically, so both import one copy.
-import {adversePath,type AdversePathObservation} from "../adverse-path.ts";
+import {adversePath,evaluateReferenceAdversePath,type AdversePathObservation} from "../adverse-path.ts";
 import {normalizeExecutionScenarioStatus,type ExecutionScenarioStatus} from "../execution-scenario.ts";
 import {buildResearchAnalyticsModel,type ScenarioTrack} from "../research-analytics-model.ts";
 export {type AdversePathObservation,type PathEvidenceStatus} from "../adverse-path.ts";
@@ -159,6 +159,8 @@ export interface DteCandidate {
  readonly pnlAtVpocUsd:number|null;
  readonly pnlAtInvalidationUsd:number|null;
  readonly pnlAtSettlementUsd:number|null;
+ readonly ambiguousResolutionPnlUsd?:number|null;
+ readonly ambiguousResolutionPnlReason?:string|null;
  readonly observedPnlAtVpocUsd:number|null;
  readonly observedPnlAtInvalidationUsd:number|null;
  readonly observedPnlAtSettlementUsd:number|null;
@@ -363,13 +365,8 @@ function referenceCapture(track:ScenarioTrack|undefined,threshold:25|50|70,entry
  return {thresholdPct:threshold,reached:!!hit,timeToCaptureDays:days,evaluable:true,unavailableReason:null,beforeVpoc:hit&&vpocMs!==null?hit.t<=vpocMs:null,beforeInvalidation:hit&&invalidationMs!==null?hit.t<=invalidationMs:null};
 }
 function referenceAdverse(track:ScenarioTrack|undefined,entry:number|null,boundary:number|null):AdversePathObservation{
- if(!track||track.status!=="available")return {worstAdverseUsd:null,maeBeforeProfitUsd:null,profitObserved:false,rawMarksInWindow:0,status:"no_raw_marks",reason:"Reference track unavailable."};
- const inWindow=track.valuationPath.filter(trackPointEvaluable).map(r=>({t:trackTime(r),usd:trackPnlUsd(r),native:trackPnlNative(r)})).filter(x=>x.t!==null&&(entry===null||x.t>=entry)&&(boundary===null||x.t<=boundary));
- const marks=inWindow.flatMap(x=>x.t!==null&&x.usd!==null?[{t:x.t,p:x.usd}]:[]).sort((a,b)=>a.t-b.t);
- if(!marks.length){const native=inWindow.some(x=>x.native!==null);return {worstAdverseUsd:null,maeBeforeProfitUsd:null,profitObserved:false,rawMarksInWindow:0,status:native?"usd_representation_unavailable":"no_raw_marks",reason:native?"Reference path has native PnL marks in the candidate observation window, but no USD-valued PnL evidence; BTC is not used as USD.":"Reference path has no USD-valued priced mark in the candidate observation window."};}
- const firstProfit=marks.findIndex(x=>x.p>0),before=firstProfit<0?[]:marks.slice(0,firstProfit+1);
- const nativeOnly=inWindow.filter(x=>x.usd===null&&x.native!==null).length;
- return {worstAdverseUsd:Math.min(...marks.map(x=>x.p)),maeBeforeProfitUsd:before.length?Math.min(...before.map(x=>x.p)):null,profitObserved:firstProfit>=0,rawMarksInWindow:marks.length,status:"available",reason:nativeOnly?`USD adverse metrics use ${marks.length} USD-valued mark(s); ${nativeOnly} native-only mark(s) were excluded rather than treated as USD.`:null};
+ const points=track?.status==="available"?track.valuationPath.filter(trackPointEvaluable).map(r=>({timestampMs:trackTime(r),pnlUsd:trackPnlUsd(r),pnlNative:trackPnlNative(r)})):[];
+ return evaluateReferenceAdversePath(points,entry,boundary);
 }
 
 export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCandidate[]{
@@ -480,6 +477,10 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
   // A VPOC that predates the structure has no post-entry PnL: pricing it would
   // value an outcome at a timestamp before the position existed.
   const pnlAtVpocUsd=vpocBeforeStructureEntry?null:pnlAtVpocRaw;
+  const sharedResolutionRows=outcomeBeforeExpiry==="ambiguous_before_expiry"&&vpocMs!==null&&vpocMs===invalidationMs&&reference
+   ?reference.valuationPath.filter(trackPointEvaluable).filter(r=>trackTime(r)===vpocMs).map(trackPnlUsd).filter((x):x is number=>x!==null):[];
+  const ambiguousResolutionPnlUsd=sharedResolutionRows.length===1?sharedResolutionRows[0]!:null;
+  const ambiguousResolutionPnlReason=outcomeBeforeExpiry!=="ambiguous_before_expiry"?null:ambiguousResolutionPnlUsd!==null?"PnL at ambiguous shared-resolution timestamp.":"Ambiguous VPOC/invalidation has no single trigger-independent Reference valuation at the shared timestamp; neither labelled endpoint was selected.";
 
   // Structural thesis-survival time is not an operational holding period.
   // Capital efficiency is calculated only by the configured exit-policy path.
@@ -499,7 +500,7 @@ export function normalizeDteCandidates(dataset:AnalysisDataset):readonly DteCand
    vpocBeforeStructureEntry,postEntryResolutionDays,
    resolvedBeforeExpiry,outcomeBeforeExpiry,noResolutionDetail,dteBufferDays,
    holdingDays,heldToExpiry,
-   pnlAtVpocUsd,pnlAtInvalidationUsd,pnlAtSettlementUsd,
+   pnlAtVpocUsd,pnlAtInvalidationUsd,pnlAtSettlementUsd,ambiguousResolutionPnlUsd,ambiguousResolutionPnlReason,
    observedPnlAtVpocUsd,observedPnlAtInvalidationUsd,observedPnlAtSettlementUsd,
    adversePath:path,observedAdversePath:observedPath,worstAdverseUsd:path.worstAdverseUsd,
    capture25:reference?referenceCapture(reference,25,entry,expiry,vpocMs,invalidationMs):captureObservation(outcomes,candidateId,scenario,25,entry,event.timeToVpocDays,event.timeToInvalidationDays),

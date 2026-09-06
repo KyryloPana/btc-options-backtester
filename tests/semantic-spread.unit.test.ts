@@ -8,3 +8,11 @@ test("reversed call leg objects are repaired only with full evidence",()=>{const
 test("reversed put leg objects are repaired only with full evidence",()=>{const r=reconcileCandidateSpread({...base("rp","P",80000,90000),entry_legs:{short:{action:"buy",instrument:"BTC-21AUG26-80000-P",price_native:.01},long:{action:"sell",instrument:"BTC-21AUG26-90000-P",price_native:.02}}});assert.equal(r.valid,true);assert.equal((r.row.actual_strikes as any).short,90000)});
 test("ambiguous reversed data is not silently repaired",()=>{const r=reconcileCandidateSpread({...base("bad","C",120000,110000),entry_legs:{short:{action:"sell",instrument:null,price_native:.02},long:{action:"buy",instrument:null,price_native:.01}}});assert.equal(r.valid,false);assert.match(r.diagnostics[0].reason,/bear call/)});
 test("instrument strike and type disagreement invalidates candidate",()=>{assert.equal(reconcileCandidateSpread({...base("type","C",110000,120000),entry_legs:{short:{action:"sell",instrument:"BTC-21AUG26-110000-P",price_native:.02},long:{action:"buy",instrument:"BTC-21AUG26-120000-C",price_native:.01}}}).valid,false);assert.equal(reconcileCandidateSpread({...base("strike","C",110000,120000),entry_legs:{short:{action:"sell",instrument:"BTC-21AUG26-111000-C",price_native:.02},long:{action:"buy",instrument:"BTC-21AUG26-120000-C",price_native:.01}}}).valid,false)});
+
+test("structural semantic diagnostics dedupe maker/taker rows without hiding invalidity",async()=>{
+ const {dedupeSpreadDiagnostics}=await import("../app/lib/research-analysis.ts");
+ const invalid={event_id:"e",candidate_id:"c",option_type:"C",actual_strikes:{short:110,long:100,width:10}};
+ const maker=reconcileCandidateSpread({...invalid,execution_scenario:"maker"}),taker=reconcileCandidateSpread({...invalid,execution_scenario:"taker"});
+ assert.equal(maker.valid,false);assert.equal(taker.valid,false);
+ const diagnostics=dedupeSpreadDiagnostics([...maker.diagnostics,...taker.diagnostics]);assert.equal(diagnostics.length,1);assert.match(diagnostics[0]!.reason,/bear call/);
+});

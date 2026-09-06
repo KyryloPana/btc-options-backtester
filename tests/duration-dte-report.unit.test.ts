@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type {AnalysisDataset} from "../app/lib/research-analysis.ts";
 import {buildHorizonAvailability,buildHorizonFamilies,normalizeDteCandidates} from "../app/lib/duration-dte/normalize.ts";
 import {buildDurationDteReport} from "../app/lib/duration-dte/report.ts";
+import {buildMatchedDteComparison} from "../app/lib/duration-dte/matched.ts";
 import {buildEntryDelayReport} from "../app/lib/duration-dte/entry-delay.ts";
 import {share} from "../app/lib/duration-dte/statistics.ts";
 import {normalizeExecutionScenarioStatus} from "../app/lib/execution-scenario.ts";
@@ -333,7 +334,7 @@ test("F: ambiguous resolution keeps its own bucket and never receives a capital-
  const buckets=report.pnlByOutcome.flatMap(r=>r.buckets);
  assert.equal(buckets.find(b=>b.outcome==="vpoc_before_expiry"&&b.n>0)?.medianPnlUsd,500,"only c1a is a VPOC-before-expiry result");
  const ambiguous=buckets.find(b=>b.outcome==="ambiguous_before_expiry"&&b.n>0)!;
- assert.equal(ambiguous.n,2,"both e4 width variants land in the ambiguous bucket, not the VPOC or invalidation ones");
+ assert.equal(ambiguous.n,2,"both e4 width variants land in the ambiguous bucket, not the VPOC or invalidation ones"); const bucket=report.pnlByOutcome.flatMap(x=>x.buckets).find(x=>x.outcome==="ambiguous_before_expiry"&&x.n>0);if(bucket)assert.equal(bucket.medianPnlUsd,null,"labelled VPOC/invalidation PnL is never selected arbitrarily");
 });
 
 test("PNL BUCKETS: a structure is priced at the outcome that happened while it existed",()=>{
@@ -468,6 +469,16 @@ test("MATCHED DTE: economics are compared only across identical structural varia
  // compared to each other as if duration were the difference.
  assert.notEqual(byId("c4a").structuralVariantKey,byId("c4b").structuralVariantKey);
  assert.equal(byId("c1a").structuralVariantKey,byId("c1b").structuralVariantKey);
+});
+
+
+test("MATCHED DTE: headline weight is one median per event and missing PnL sides are diagnosed",()=>{
+ const a=byId("c1a"),b=byId("c1b"),clone=(base:typeof a,eventId:string,key:string,pnl:number|null)=>({...base,eventId,structuralVariantKey:key,outcomeBeforeExpiry:"vpoc_before_expiry" as const,pnlAtVpocUsd:pnl});
+ const candidates=[clone(a,"A","A-1",0),clone(b,"A","A-1",100),clone(a,"A","A-2",0),clone(b,"A","A-2",1000),clone(a,"B","B-1",0),clone(b,"B","B-1",200)];
+ const first=buildMatchedDteComparison(candidates,report.horizons).find(r=>r.shorter.nominalDays===7&&r.longer.nominalDays===14)!;
+ assert.equal(first.medianPnlDeltaUsd,375,"event A median 550 and event B 200 receive equal weight");assert.equal(first.matchedEvents,2);
+ const missing=buildMatchedDteComparison([clone(a,"M","M",null),clone(b,"M","M",20)],report.horizons)[0]!;
+ assert.equal(missing.pnlMissing.shorter["VPOC required"],1);assert.equal(missing.pnlMissing.longer["VPOC required"],undefined,"healthy longer side is not counted");assert.equal(missing.comparableN.pnl,0);
 });
 
 test("G: structural candidates never compute legacy capital-day return",()=>{
@@ -712,4 +723,9 @@ test("matched tables disclose exact economic pair denominators separately from s
  const execution=r.matchedExecution.find(x=>x.matchedN>0)!;
  assert.ok(execution);assert.ok(execution.comparableN.pnl<=execution.matchedN);assert.ok(execution.comparableN.synchronization<=execution.matchedN);
  const dte=r.matchedDte[0];if(dte){assert.ok(dte.comparableN.pnl<=dte.matchedVariants);assert.ok(dte.shorterOnlyN>=0&&dte.longerOnlyN>=0)}
+});
+
+test("MATCHED DTE: evaluated capture not reached is complete evidence, not a missing path",()=>{
+ const shorter={...byId("c1a"),eventId:"NR",structuralVariantKey:"NR",capture50:{thresholdPct:50,reached:false,timeToCaptureDays:null,beforeVpoc:null,beforeInvalidation:null,evaluable:true,unavailableReason:null}},longer={...byId("c1b"),eventId:"NR",structuralVariantKey:"NR",capture50:{thresholdPct:50,reached:false,timeToCaptureDays:null,beforeVpoc:null,beforeInvalidation:null,evaluable:true,unavailableReason:null}};
+ const matched=buildMatchedDteComparison([shorter,longer],report.horizons)[0]!;assert.equal(matched.comparableN.capture50,0);assert.equal(matched.capture50EvidenceN,1);
 });

@@ -116,7 +116,7 @@ export function SpreadWidthReportView({report,volatility,view="maker",onViewChan
    </div>}
   </header>
 
-  {volatility&&<EmbeddedVolatilityContext report={volatility} kind="width"/>}
+  {volatility&&<EmbeddedVolatilityContext report={volatility} kind="width" candidateIds={new Set(report.structures.map(s=>s.candidateId))}/>}
   {/* 1 · Summary */}
   <div className="dd-cards">
    <Card label="Matched observations" value={String(s.matchedObservations)} detail={`${s.matchedGroups} ladder(s), ${s.adjacentSteps} step(s)`}/>

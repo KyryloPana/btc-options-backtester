@@ -44,6 +44,19 @@ export interface AdversePathObservation {
  readonly reason:string|null;
 }
 
+export interface ReferenceAdversePoint {readonly timestampMs:number|null;readonly pnlUsd:number|null;readonly pnlNative:number|null}
+
+/** Canonical evaluator for an already-projected Reference fair-value path. */
+export function evaluateReferenceAdversePath(points:readonly ReferenceAdversePoint[],entryMs:number|null,boundaryMs:number|null):AdversePathObservation{
+ const empty={worstAdverseUsd:null,maeBeforeProfitUsd:null,profitObserved:false,rawMarksInWindow:0} as const;
+ if(entryMs===null||boundaryMs===null)return {...empty,status:"no_observation_window",reason:"Reference entry or first-resolution/censoring boundary is unknown."};
+ const inWindow=points.filter(p=>p.timestampMs!==null&&p.timestampMs>=entryMs&&p.timestampMs<=boundaryMs);
+ const marks=inWindow.filter((p):p is ReferenceAdversePoint&{timestampMs:number;pnlUsd:number}=>p.timestampMs!==null&&p.pnlUsd!==null).sort((a,b)=>a.timestampMs-b.timestampMs);
+ if(!marks.length){const native=inWindow.some(p=>p.pnlNative!==null);return {...empty,status:native?"usd_representation_unavailable":"no_raw_marks",reason:native?"Reference path has native PnL marks but no valid USD representation; native values are not relabelled as USD.":"No Reference priced marks are available in the candidate observation window."};}
+ const firstProfit=marks.findIndex(p=>p.pnlUsd>0),throughProfit=firstProfit<0?[]:marks.slice(0,firstProfit+1);
+ const nativeOnly=inWindow.filter(p=>p.pnlUsd===null&&p.pnlNative!==null).length,reason=[nativeOnly?`${nativeOnly} native-only Reference mark(s) excluded because no valid USD representation exists.`:null,firstProfit<0?"MAE before profit is unavailable because no profitable Reference mark was observed.":null].filter(Boolean).join(" ")||null;return {worstAdverseUsd:Math.min(0,...marks.map(p=>p.pnlUsd)),maeBeforeProfitUsd:throughProfit.length?Math.min(0,...throughProfit.map(p=>p.pnlUsd)):null,profitObserved:firstProfit>=0,rawMarksInWindow:marks.length,status:"available",reason};
+}
+
 const str=(v:unknown):string|null=>typeof v==="string"&&v.trim()?v:null;
 const num=(v:unknown):number|null=>typeof v==="number"&&Number.isFinite(v)?v:null;
 const ms=(v:unknown):number|null=>{const s=str(v);if(!s)return null;const t=Date.parse(s);return Number.isFinite(t)?t:null};
@@ -105,11 +118,5 @@ export function referenceAdversePath(
  valuations:readonly Readonly<Record<string,unknown>>[],candidateId:string,
  entryMs:number|null,boundaryMs:number|null,
 ):AdversePathObservation{
- const empty={worstAdverseUsd:null,maeBeforeProfitUsd:null,profitObserved:false,rawMarksInWindow:0} as const;
- if(entryMs===null||boundaryMs===null)return {...empty,status:"no_observation_window",reason:"Reference entry or resolution boundary is unknown."};
- const rows=valuations.filter(r=>r.candidate_id===candidateId&&r.pricing_track==="reference").map(r=>({t:ms(r.timestamp_utc)??ms(r.timestamp),usd:num(r.net_pnl_usd)??num(r.estimatedNetPnlUsd),native:num(r.net_pnl_native)??num(r.estimatedNetPnlBtc)})).filter(r=>r.t!==null&&r.t>=entryMs&&r.t<=boundaryMs);
- const marks=rows.filter((r):r is {t:number;usd:number;native:number|null}=>r.t!==null&&r.usd!==null).map(r=>({t:r.t,p:r.usd})).sort((a,b)=>a.t-b.t);
- if(!marks.length)return {...empty,status:rows.some(r=>r.native!==null)?"usd_representation_unavailable":"no_raw_marks",reason:rows.some(r=>r.native!==null)?"Reference path has native marks but no USD PnL; BTC is not labelled USD.":"Reference path has no USD-valued mark in the post-entry window."};
- const firstProfit=marks.findIndex(m=>m.p>0),before=firstProfit<0?[]:marks.slice(0,firstProfit+1);
- return {worstAdverseUsd:Math.min(0,...marks.map(m=>m.p)),maeBeforeProfitUsd:before.length?Math.min(0,...before.map(m=>m.p)):null,profitObserved:firstProfit>=0,rawMarksInWindow:marks.length,status:"available",reason:null};
+ return evaluateReferenceAdversePath(valuations.filter(r=>r.candidate_id===candidateId&&(r.pricing_track==="reference"||r.pricing_track==="reference_fair_value")).map(r=>({timestampMs:ms(r.timestamp_utc)??ms(r.timestamp),pnlUsd:num(r.net_pnl_usd)??num(r.estimatedNetPnlUsd),pnlNative:num(r.net_pnl_native)??num(r.estimatedNetPnlBtc)})),entryMs,boundaryMs);
 }
