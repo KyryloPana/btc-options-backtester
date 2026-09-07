@@ -644,7 +644,7 @@ function canonicalSnapshotTrack(
             ...outcome,
             net_pnl_native: n(outcome.estimatedNetPnlBtc),
             net_pnl_usd: n(outcome.estimatedNetPnlUsd),
-            closing_fees_native: n(outcome.feesBtc),
+            closing_fees_native: n(outcome.closing_fees_native) ?? n(outcome.feesBtc),
             valuation_timestamp_utc: outcome.valuationTimestamp,
           } as Row)
         : undefined,
