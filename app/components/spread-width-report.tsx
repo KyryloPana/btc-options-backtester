@@ -74,14 +74,13 @@ function ProtectionVsCost({report}:{report:SpreadWidthReport}){
       title={`${hovered.eventId} · ${widthLabel(hovered.identity.actualWidthUsd??0)} wide`}
       lines={[
        {label:"Protection cost",value:usd(hovered.protection.totalProtectionCostUsd)},
-       {label:"Tail benefit",value:usd(hovered.protection.benefitAtDeepTailUsd.value)},
-       {label:"At long strike",value:usd(hovered.protection.benefitAtLongStrikeUsd.value),tone:"muted"},
+       {label:`Gross tail benefit @ ${money(hovered.protection.deepTailIndex)}`,value:usd(hovered.protection.benefitAtDeepTailUsd.value)},
        {label:"Net",value:signedUsd(hovered.protection.netProtectionValueUsd),tone:hovered.protection.netProtectionValueUsd!>=0?"positive":"negative"},
       ]}/>
     </>}
    </svg>
   </figure>
-  <small className="dd-note">Each point is one matched structure. The diagonal is the break-even line where the tail protection is worth exactly what the long leg cost. The counterfactual removes only the protective long — same event, short option, entry timing, execution scenario and settlement index — so the difference is attributable to the leg itself. An unprotected inverse short has no finite worst case, which is what the long leg bounds; the deep-tail reference index is stated rather than predicted.</small>
+  <small className="dd-note">Each point is one matched structure. The diagonal is the break-even line where gross tail protection equals its entry cost. The diagnostic stress is 50% of K-long for puts and 200% for calls; it is deterministic, not optimized, predicted, or an expected BTC price. A naked short call has unbounded terminal USD loss as BTC rises; a naked short put has a finite strike-related terminal USD bound even though its BTC liability diverges near zero. In both cases the protective long bounds the spread.</small>
  </>;
 }
 
@@ -128,6 +127,7 @@ export function SpreadWidthReportView({report,volatility,view="maker",onViewChan
    <Card label="Capital data" value={`${s.openingMarginAvailableN} / ${s.matchedObservations}`} detail="opening margin available" title="Margin depends on the account model, so it is Unavailable unless the canonical margin scenario reports it."/>
   </div>
   {report.robustness&&<section className="dd-block"><h3>Execution Robustness</h3><p className="dd-note">Observed adjacent steps remain strict and separate. Matched N: Maker {report.robustness.maker.groups.flatMap(g=>g.steps).filter(s=>s.economicsComparable).length}; Taker {report.robustness.taker.groups.flatMap(g=>g.steps).filter(s=>s.economicsComparable).length}. Reference and modeled values are never relabeled as fills.</p></section>}
+  <p className="dd-note"><strong>Descriptive support versus primary evidence.</strong> Width-level medians below may contain different event compositions and are descriptive. The paired adjacent-width section is the controlled within-ladder evidence used to assess width stability.</p>
 
   {/* 2 · Entry economics */}
   <section className="dd-block"><h3>1 · Descriptive entry economics by actual width</h3>
@@ -137,78 +137,77 @@ export function SpreadWidthReportView({report,volatility,view="maker",onViewChan
      <td>{widthLabel(r.actualWidthUsd)}{r.substitutedN>0&&<small className="dd-muted"> · {r.substitutedN} substituted</small>}</td>
      <td>{r.n} structures · {r.eventN} events</td>
      <td>{withN(usd(r.medianGrossCreditUsd),r.metricN.grossCredit!,r.n)}</td><td>{withN(usd(r.medianNetCreditUsd),r.metricN.netCredit!,r.n)}</td>
-     <td>{ratio(r.medianCreditPerActualWidth)}</td>
-     <td className="dd-muted">{ratio(r.medianCreditPerRequestedWidth)}</td>
-     <td>{ratio(r.medianCreditPerStructuralLoss)}</td>
-     <td>{usd(r.medianLongLegCostUsd)}</td><td>{pct(r.medianLongLegShareOfShortPremium)}</td>
-     <td>{pct(r.medianFeeDragOnOpening)}</td><td>{pct(r.medianFeeDragRoundTrip)}</td>
-     <td>{money(r.medianBreakEvenIndex)}</td>
-     <td className="negative">{usd(r.medianStructuralLossUsd)}</td>
+     <td>{withN(ratio(r.medianCreditPerActualWidth),r.metricN.creditActual!,r.n)}</td>
+     <td className="dd-muted">{withN(ratio(r.medianCreditPerRequestedWidth),r.metricN.creditRequested!,r.n)}</td>
+     <td>{withN(ratio(r.medianCreditPerStructuralLoss),r.metricN.creditStructural!,r.n)}</td>
+     <td>{withN(usd(r.medianLongLegCostUsd),r.metricN.longLegCost!,r.n)}</td><td>{withN(pct(r.medianLongLegShareOfShortPremium),r.metricN.longShare!,r.n)}</td>
+     <td>{withN(pct(r.medianFeeDragOnOpening),r.metricN.feeDragOpening!,r.n)}</td><td>{withN(pct(r.medianFeeDragRoundTrip),r.metricN.feeDrag!,r.n)}</td>
+     <td>{withN(money(r.medianBreakEvenIndex),r.metricN.breakeven!,r.n)}</td>
+     <td className="negative">{withN(usd(r.medianStructuralLossUsd),r.metricN.structuralLoss!,r.n)}</td>
     </tr>)}</tbody>
    </table></div>
    <small className="dd-note">Maximum structural loss is the canonical bounded structural risk exported by the research bundle, not width minus credit and not recomputed here. It deliberately excludes settlement delivery fees: a delivery fee is a fixed BTC amount, so its USD value grows without bound as the settlement index grows and no finite fee-inclusive maximum exists for a bear call. Delivery fees are reported separately at a named settlement scenario. Credit-per-requested-width is shown muted because it is audit information — the actual contracts drive every economic figure.</small>
   </section>
 
   {/* 3 · Protection vs cost */}
-  <section className="dd-block dd-centerpiece"><h3>2 · Protection purchased vs its cost</h3><ProtectionVsCost report={report}/>
+  <section className="dd-block dd-centerpiece"><h3>2 · Descriptive protection economics by actual width</h3><ProtectionVsCost report={report}/>
    <div className="table-scroll"><table className="dd-table dd-compact">
-    <thead><tr><th>Actual width</th><th>N / event N</th><th>Protection cost</th><th>Gross contribution at K-long</th><th>Gross tail benefit at diagnostic stress</th><th>Net tail protection value</th></tr></thead>
+    <thead><tr><th>Actual width</th><th>N</th><th>Protection cost</th><th>Gross tail benefit at diagnostic stress</th><th>Net tail protection value</th></tr></thead>
     <tbody>{report.protection.map(r=><tr key={r.actualWidthUsd}>
-     <td>{widthLabel(r.actualWidthUsd)}</td><td>{r.n} / {r.eventN}</td>
+     <td>{widthLabel(r.actualWidthUsd)}</td><td>{r.n} structures · {r.eventN} events</td>
      <td className="negative">{withN(usd(r.medianProtectionCostUsd),r.metricN.protectionCost!,r.n)}</td>
-     <td>{usd(r.medianBenefitAtLongStrikeUsd)}</td>
-     <td className="positive">{usd(r.medianBenefitAtDeepTailUsd)}</td>
-     <td className={r.medianNetProtectionValueUsd===null?"dd-muted":r.medianNetProtectionValueUsd>=0?"positive":"negative"}>{signedUsd(r.medianNetProtectionValueUsd)}</td>
+     <td className="positive">{withN(usd(r.medianBenefitAtDeepTailUsd),r.metricN.grossBenefit!,r.n)}</td>
+     <td className={r.medianNetProtectionValueUsd===null?"dd-muted":r.medianNetProtectionValueUsd>=0?"positive":"negative"}>{withN(signedUsd(r.medianNetProtectionValueUsd),r.metricN.netProtection!,r.n)}</td>
     </tr>)}</tbody>
    </table></div>
   </section>
 
   {/* 4 · Path risk */}
-  <section className="dd-block"><h3>3 · Path risk by width</h3>
+  <section className="dd-block"><h3>3 · Descriptive path risk by actual width</h3>
    <div className="table-scroll"><table className="dd-table dd-compact">
     <thead><tr><th>Actual width</th><th>N</th><th>PnL at VPOC</th><th>PnL at invalidation</th><th>Worst adverse</th><th>MAE</th><th>Settlement</th><th>Touched</th><th>Breached</th><th>Touched PnL</th><th>Breached PnL</th></tr></thead>
     <tbody>{report.pathRisk.map(r=><tr key={r.actualWidthUsd}>
-     <td>{widthLabel(r.actualWidthUsd)}</td><td>{r.n}</td>
-     <td className={r.medianPnlAtVpocUsd===null?"dd-muted":"positive"}>{usd(r.medianPnlAtVpocUsd)}</td>
-     <td className={r.medianPnlAtInvalidationUsd===null?"dd-muted":"negative"}>{usd(r.medianPnlAtInvalidationUsd)}</td>
-     <td className={r.medianWorstAdverseUsd===null?"dd-muted":"negative"}>{usd(r.medianWorstAdverseUsd)}</td>
-     <td className={r.medianMaeUsd===null?"dd-muted":"negative"}>{usd(r.medianMaeUsd)}</td>
-     <td>{usd(r.medianSettlementUsd)}</td>
+     <td>{widthLabel(r.actualWidthUsd)}</td><td>{r.n} structures · {r.eventN} events</td>
+     <td className={r.medianPnlAtVpocUsd===null?"dd-muted":"positive"}>{withN(usd(r.medianPnlAtVpocUsd),r.metricN.vpoc!,r.n)}</td>
+     <td className={r.medianPnlAtInvalidationUsd===null?"dd-muted":"negative"}>{withN(usd(r.medianPnlAtInvalidationUsd),r.metricN.invalidation!,r.n)}</td>
+     <td className={r.medianWorstAdverseUsd===null?"dd-muted":"negative"}>{withN(usd(r.medianWorstAdverseUsd),r.metricN.worstAdverse!,r.n)}</td>
+     <td className={r.medianMaeUsd===null?"dd-muted":"negative"}>{withN(usd(r.medianMaeUsd),r.metricN.mae!,r.n)}</td>
+     <td>{withN(usd(r.medianSettlementUsd),r.metricN.settlement!,r.n)}</td>
      <td>{r.touchedN}</td><td className={r.breachedN>0?"negative":undefined}>{r.breachedN}</td>
-     <td>{usd(r.medianTouchedPnlUsd)}</td><td>{usd(r.medianBreachedPnlUsd)}</td>
+     <td>{withN(r.touchedN?usd(r.medianTouchedPnlUsd):NOT_ESTIMABLE,r.metricN.touched!,r.touchedN)}</td><td>{withN(r.breachedN?usd(r.medianBreachedPnlUsd):NOT_ESTIMABLE,r.metricN.breached!,r.breachedN)}</td>
     </tr>)}</tbody>
    </table></div>
    <small className="dd-note">Touch and breach depend on the short strike and the path alone, so every width in a ladder shares the same challenge state — what changes with width is the loss those states produce. PnL at invalidation is used only where the invalidation genuinely fell inside the structure&rsquo;s life.</small>
   </section>
 
   {/* 4b · Slow resolution */}
-  <section className="dd-block"><h3>4 · Behaviour by MR resolution speed</h3>
+  <section className="dd-block"><h3>4 · Descriptive behaviour by MR resolution speed</h3>
    <p className="dd-sub">Canonical Duration &amp; DTE cohorts: fast &lt; P25 ({report.cohortBoundaries.p25Days===null?NOT_ESTIMABLE:`${d1(report.cohortBoundaries.p25Days)}d`}), slow &gt; P75 ({report.cohortBoundaries.p75Days===null?NOT_ESTIMABLE:`${d1(report.cohortBoundaries.p75Days)}d`}), over {report.cohortBoundaries.resolvedEventsN} resolved event(s). Unresolved stays its own cohort.</p>
    <div className="table-scroll"><table className="dd-table dd-compact">
     <thead><tr><th>Actual width</th><th>Cohort</th><th>N</th><th>Median realized PnL</th><th>Median worst adverse</th></tr></thead>
     <tbody>{report.slowResolution.flatMap(row=>row.cells.filter(c=>c.n>0).map(c=>
      <tr key={`${row.actualWidthUsd}-${c.cohort}`}>
       <td>{widthLabel(row.actualWidthUsd)}</td>
-      <td className={c.cohort==="unresolved"?"dd-muted":undefined}>{c.cohort}</td><td>{c.n}</td>
-      <td className={c.medianRealizedPnlUsd===null?"dd-muted":c.medianRealizedPnlUsd>=0?"positive":"negative"}>{usd(c.medianRealizedPnlUsd)}</td>
-      <td className={c.medianWorstAdverseUsd===null?"dd-muted":"negative"}>{usd(c.medianWorstAdverseUsd)}</td>
+      <td className={c.cohort==="unresolved"?"dd-muted":undefined}>{c.cohort}</td><td>{c.n} structures · {c.eventN} events</td>
+      <td className={c.medianRealizedPnlUsd===null?"dd-muted":c.medianRealizedPnlUsd>=0?"positive":"negative"}>{withN(usd(c.medianRealizedPnlUsd),c.realizedN,c.n)}</td>
+      <td className={c.medianWorstAdverseUsd===null?"dd-muted":"negative"}>{withN(usd(c.medianWorstAdverseUsd),c.adverseN,c.n)}</td>
      </tr>))}</tbody>
    </table></div>
    <small className="dd-note">Cohorts come from the observed first-resolution distribution; no hypothetical path is fabricated, and DTE is held constant inside each matched ladder.</small>
   </section>
 
   {/* 5 · Capital economics */}
-  <section className="dd-block"><h3>5 · Capital economics</h3>
+  <section className="dd-block"><h3>5 · Descriptive capital economics by actual width</h3>
    <div className="table-scroll"><table className="dd-table dd-compact">
     <thead><tr><th>Actual width</th><th>N</th><th>Max structural loss</th><th>Opening margin</th><th>Peak margin</th><th>Return on structural loss</th><th>Return on opening margin</th><th>Return on peak capital</th></tr></thead>
     <tbody>{report.capital.map(r=><tr key={r.actualWidthUsd}>
-     <td>{widthLabel(r.actualWidthUsd)}</td><td>{r.n}</td>
-     <td className="negative">{usd(r.medianStructuralLossUsd)}</td>
-     <td className={r.openingMarginAvailableN?undefined:"dd-muted"} title={r.marginUnavailableReason??undefined}>{r.openingMarginAvailableN?usd(r.medianOpeningMarginUsd):UNAVAILABLE}</td>
-     <td className={r.peakMarginAvailableN?undefined:"dd-muted"} title={r.marginUnavailableReason??undefined}>{r.peakMarginAvailableN?usd(r.medianPeakMarginUsd):UNAVAILABLE}</td>
-     <td>{ratio(r.medianReturnOnStructuralLoss)}</td>
-     <td className={r.medianReturnOnOpeningMargin===null?"dd-muted":undefined}>{ratio(r.medianReturnOnOpeningMargin)}</td>
-     <td className={r.medianReturnOnPeakCapital===null?"dd-muted":undefined}>{ratio(r.medianReturnOnPeakCapital)}</td>
+     <td>{widthLabel(r.actualWidthUsd)}</td><td>{r.n} structures · {r.eventN} events</td>
+     <td className="negative">{withN(usd(r.medianStructuralLossUsd),r.metricN.structuralLoss!,r.n)}</td>
+     <td className={r.openingMarginAvailableN?undefined:"dd-muted"} title={r.marginUnavailableReason??undefined}>{withN(r.openingMarginAvailableN?usd(r.medianOpeningMarginUsd):UNAVAILABLE,r.metricN.openingMargin!,r.n)}</td>
+     <td className={r.peakMarginAvailableN?undefined:"dd-muted"} title={r.marginUnavailableReason??undefined}>{withN(r.peakMarginAvailableN?usd(r.medianPeakMarginUsd):UNAVAILABLE,r.metricN.peakMargin!,r.n)}</td>
+     <td>{withN(ratio(r.medianReturnOnStructuralLoss),r.metricN.returnStructural!,r.n)}</td>
+     <td className={r.medianReturnOnOpeningMargin===null?"dd-muted":undefined}>{withN(ratio(r.medianReturnOnOpeningMargin),r.metricN.returnOpening!,r.n)}</td>
+     <td className={r.medianReturnOnPeakCapital===null?"dd-muted":undefined}>{withN(ratio(r.medianReturnOnPeakCapital),r.metricN.returnPeak!,r.n)}</td>
     </tr>)}</tbody>
    </table></div>
    <small className="dd-note">Three separate concepts. Maximum structural loss is an economic property of the structure, consumed from the canonical export; it is not Initial Margin and not Maintenance Margin. Opening and peak margin are properties of the ACCOUNT — they depend on Deribit&rsquo;s margin model, standard versus portfolio margin and segregated versus cross collateral — so where the canonical margin scenario does not report them they stay Unavailable. The protective-leg cost, the width and the structural loss are never substituted for a margin figure, and a return whose denominator is Unavailable is itself Unavailable rather than zero.</small>
@@ -237,7 +236,7 @@ export function SpreadWidthReportView({report,volatility,view="maker",onViewChan
   </section>
 
   {/* 7 · Audit */}
-  <section className="dd-block"><h3>7 · Matched structures</h3>
+  <section className="dd-block"><h3>7 · Matched structures audit</h3>
    <div className="table-scroll"><table className="dd-table">
     <thead><tr><th>Event</th><th>Candidate</th><th>DTE</th><th>Short / long K</th><th>Requested</th><th>Actual</th><th>Analytical layer</th><th>Gross</th><th>Net</th><th>Long-leg cost</th><th>Fees</th><th>Max structural loss</th><th>Resolution</th><th>PnL VPOC</th><th>PnL inval.</th><th>Worst adverse</th><th>Settlement</th><th>Realized thesis exit</th><th>Gross protection</th><th>Net protection</th><th>Return on structural loss</th></tr></thead>
     <tbody>{rows.map((r:WidthStructure)=><tr key={r.structureExecutionId}>

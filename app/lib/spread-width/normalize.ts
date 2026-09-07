@@ -121,13 +121,13 @@ export interface ProtectionFacts {
  /** Extra opening fee incurred purely by carrying the second leg. */
  readonly extraOpeningFeeBtc:number|null;
  readonly totalProtectionCostUsd:number|null;
- /** Spread PnL minus naked-short PnL at the long strike, where protection first bites. */
+ /** Audit-only activation boundary: gross intrinsic contribution is zero at K_long. */
  readonly benefitAtLongStrikeUsd:Availability<number>;
  /** The same comparison at a stated deep-tail reference index. */
  readonly benefitAtDeepTailUsd:Availability<number>;
  readonly deepTailIndex:number|null;
- /** An unprotected inverse short has no finite worst case; the long leg is what bounds it. */
- readonly nakedTailUnbounded:boolean;
+ /** Whether the naked short's terminal loss is unbounded in the USD basis used by this report. */
+ readonly nakedUsdTailUnbounded:boolean|null;
  readonly netProtectionValueUsd:number|null;
 }
 
@@ -201,6 +201,10 @@ const scenarioOf=(v:unknown):ExecutionScenario|null=>{const s=str(v);return s===
 const scenarioStatusOf=normalizeExecutionScenarioStatus;
 const optionTypeOf=(v:unknown):OptionType|null=>{const s=str(v);return s==="C"||s==="P"?s:null};
 const DAY=864e5;
+// calculateOptionFee retains an execution-mode parameter for ledger provenance,
+// but the standard option schedule is mode-invariant. This local constant is a
+// calculator adapter only and is never written into analytical-track identity.
+const CANONICAL_FEE_CALCULATION_MODE:ExecutionScenario="maker";
 
 const MARGIN_UNAVAILABLE="The canonical margin scenario does not report this figure. Deribit's requirement depends on the account model -- standard versus portfolio margin, segregated versus cross collateral -- so it is left Unavailable rather than approximated from the protective-leg cost, the width or the maximum structural loss.";
 
@@ -247,9 +251,9 @@ function payoffFactsOf(input:ExpiryPayoffInput|null,loss:StructuralLossReading):
  }
 }
 
-function protectionFactsOf(input:ExpiryPayoffInput|null,scenario:ExecutionScenario|null):ProtectionFacts{
+function protectionFactsOf(input:ExpiryPayoffInput|null):ProtectionFacts{
  const empty={longLegPremiumBtc:null,longLegPremiumUsd:null,extraOpeningFeeBtc:null,totalProtectionCostUsd:null,
-  deepTailIndex:null,nakedTailUnbounded:true,netProtectionValueUsd:null} as const;
+  deepTailIndex:null,nakedUsdTailUnbounded:null,netProtectionValueUsd:null} as const;
  if(!input)return {...empty,
   benefitAtLongStrikeUsd:missing("The exact canonical payoff inputs are absent, so gross protection cannot be priced."),
   benefitAtDeepTailUsd:missing("Same missing payoff inputs.")};
@@ -258,8 +262,7 @@ function protectionFactsOf(input:ExpiryPayoffInput|null,scenario:ExecutionScenar
  const bothLegFees=input.openingFeesBtc;
  // Fee rates are side/scenario invariant under the canonical schedule.  For
  // Reference this invocation is only a fee calculation, never fill evidence.
- const feeMode=scenario??"maker";
- const shortOnlyFee=calculateOptionFee(input.shortEntryPremiumBtc,amount,feeMode,STANDARD_INVERSE_BTC_OPTION_FEE).finalFee;
+ const shortOnlyFee=calculateOptionFee(input.shortEntryPremiumBtc,amount,CANONICAL_FEE_CALCULATION_MODE,STANDARD_INVERSE_BTC_OPTION_FEE).finalFee;
  // A short put spread's tail lies below the strikes; a call spread's above.
  const deepTailIndex=input.optionType==="P"?Math.max(1,input.longStrike*.5):input.longStrike*2;
  // Gross benefit is the terminal loss reduction supplied by the long before
@@ -277,7 +280,7 @@ function protectionFactsOf(input:ExpiryPayoffInput|null,scenario:ExecutionScenar
   extraOpeningFeeBtc:Math.max(0,bothLegFees-shortOnlyFee),
   totalProtectionCostUsd,
   benefitAtLongStrikeUsd:has(atLongStrike),benefitAtDeepTailUsd:has(atDeepTail),
-  deepTailIndex,nakedTailUnbounded:true,
+  deepTailIndex,nakedUsdTailUnbounded:input.optionType==="C",
   netProtectionValueUsd:atDeepTail-totalProtectionCostUsd,
  };
 }
@@ -371,15 +374,19 @@ export function normalizeWidthStructures(dataset:AnalysisDataset):readonly Width
    fallback:input,
   });
   const payoff=payoffFactsOf(input,structuralLoss);
-  const protection=protectionFactsOf(input,scenario);
+  const protection=protectionFactsOf(input);
 
   const toUsd=(v:number|null)=>v!==null&&entryIndex!==null?v*entryIndex:null;
   // A round trip is four legs: two opened and two closed. The closing pair is
   // estimated with the SAME canonical fee schedule applied to the entry
   // premiums -- an explicit estimate, never presented as a recorded fee.
-  const estimatedClosingFeesBtc=input&&scenario
-   ?calculateOptionFee(input.shortEntryPremiumBtc,Math.abs(input.amount),scenario,STANDARD_INVERSE_BTC_OPTION_FEE).finalFee
-    +calculateOptionFee(input.longEntryPremiumBtc,Math.abs(input.amount),scenario,STANDARD_INVERSE_BTC_OPTION_FEE).finalFee
+  // The standard option fee schedule is execution-mode invariant. The local
+  // adapter constant satisfies the calculator signature and remains separate from
+  // this structure's evidence identity, so Reference remains null-scenario and
+  // this entry-price closing pair remains an estimate rather than fill evidence.
+  const estimatedClosingFeesBtc=input
+   ?calculateOptionFee(input.shortEntryPremiumBtc,Math.abs(input.amount),CANONICAL_FEE_CALCULATION_MODE,STANDARD_INVERSE_BTC_OPTION_FEE).finalFee
+    +calculateOptionFee(input.longEntryPremiumBtc,Math.abs(input.amount),CANONICAL_FEE_CALCULATION_MODE,STANDARD_INVERSE_BTC_OPTION_FEE).finalFee
    :null;
   const estimatedRoundTripFeesBtc=openingFeesBtc!==null&&estimatedClosingFeesBtc!==null?openingFeesBtc+estimatedClosingFeesBtc:null;
   const entry:EntryEconomics={
@@ -411,7 +418,9 @@ export function normalizeWidthStructures(dataset:AnalysisDataset):readonly Width
   const firstVpoc=vpocInWindow&&(!invalidationInWindow||vpoc.time!<invalidation.time!);
   const firstInvalidation=invalidationInWindow&&(!vpocInWindow||invalidation.time!<vpoc.time!);
   const pnlAtVpocUsd=vpocInWindow?pnlAt(outcomes,candidateId,scenario,reference,"vpoc"):null;
-  const pnlAtInvalidationUsd=invalidationInWindow?pnlAt(outcomes,candidateId,scenario,reference,"invalidation"):null;
+  // Operational Thesis Exit only: an invalidation after VPOC belongs to a
+  // counterfactual post-exit path and must not enter this report's endpoint.
+  const pnlAtInvalidationUsd=firstInvalidation?pnlAt(outcomes,candidateId,scenario,reference,"invalidation"):null;
   const pnlAtSettlementUsd=pnlAt(outcomes,candidateId,scenario,reference,"settlement");
   const realizedPnlUsd=ambiguousResolution?null:firstVpoc?pnlAtVpocUsd:firstInvalidation?pnlAtInvalidationUsd:(!vpocInWindow&&!invalidationInWindow?pnlAtSettlementUsd:null);
   const resolution=ambiguousResolution?"ambiguous_resolution_order" as const:firstVpoc?"vpoc" as const:firstInvalidation?"invalidation" as const:!vpocInWindow&&!invalidationInWindow?"settlement" as const:"unresolved" as const;
