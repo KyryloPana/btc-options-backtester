@@ -330,6 +330,7 @@ function projectOutcome(
   const sourceStatus = s(x.source_status) ?? outcomeSourceStatus(x);
   const decision = isoTime(x.decision_available_timestamp_utc) ?? isoTime(x.decisionTimestamp);
   const valuation = isoTime(x.valuation_timestamp_utc) ?? isoTime(x.valuationTimestamp);
+  const triggerTimestamp = isoTime(x.trigger_timestamp_utc) ?? isoTime(x.triggerTimestamp);
   const nativePnl = n(x.net_pnl_native) ?? n(x.estimatedNetPnlBtc) ?? n(x.raw_net_pnl_native);
   const usdPnl = n(x.net_pnl_usd) ?? n(x.estimatedNetPnlUsd) ?? n(x.raw_net_pnl_usd);
   // Two vocabularies share the field name. An exported tabular row states
@@ -369,7 +370,12 @@ function projectOutcome(
     trigger_status: triggerStatus,
     source_status: sourceStatus,
     decision_available_timestamp_utc: decision,
+    trigger_timestamp_utc: triggerTimestamp,
     valuation_timestamp_utc: valuation,
+    closing_fees_native: n(x.closing_fees_native) ?? n(x.feesBtc),
+    evidence_reason: s(x.evidence_reason) ?? s(x.evidenceReason),
+    evidence_source: s(x.evidence_source) ?? s(x.evidenceSource),
+    quality: s(x.quality) ?? s(x.estimateQuality),
     holding_hours: holding,
     // A per-pricing-track status that the source already stated is preserved;
     // otherwise it follows this outcome's own state, never the track's.
@@ -638,6 +644,7 @@ function canonicalSnapshotTrack(
             ...outcome,
             net_pnl_native: n(outcome.estimatedNetPnlBtc),
             net_pnl_usd: n(outcome.estimatedNetPnlUsd),
+            closing_fees_native: n(outcome.feesBtc),
             valuation_timestamp_utc: outcome.valuationTimestamp,
           } as Row)
         : undefined,
