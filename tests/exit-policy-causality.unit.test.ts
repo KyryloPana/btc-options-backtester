@@ -74,6 +74,23 @@ test("winning-exit IV separates observed endpoints from usable delta pairs",()=>
  assert.ok(Math.abs(result.medianDeltaShortIv!+.05)<1e-12);
 });
 
+test("winning-exit paired IV arrows exclude exit-only endpoint observations",()=>{
+ const observed=(iv:number)=>({status:"available",observation:"observed",source:"deribit_trade_iv",iv_decimal:iv});
+ const structures=[
+  {candidate_id:"paired-a",legs:[{leg:"short",...observed(.5)}],same_expiry_reference:{status:"unavailable"},differentials:[],post_entry_market_iv:[{endpoint_id:"vpoc",target_timestamp_utc:D(4),short:observed(.45),long:{status:"unavailable"}}],market_iv_path:[]},
+  {candidate_id:"paired-b",legs:[{leg:"short",...observed(.6)}],same_expiry_reference:{status:"unavailable"},differentials:[],post_entry_market_iv:[{endpoint_id:"vpoc",target_timestamp_utc:D(4),short:observed(.55),long:{status:"unavailable"}}],market_iv_path:[]},
+  {candidate_id:"exit-only",legs:[{leg:"short",status:"unavailable"}],same_expiry_reference:{status:"unavailable"},differentials:[],post_entry_market_iv:[{endpoint_id:"vpoc",target_timestamp_utc:D(4),short:observed(.1),long:{status:"unavailable"}}],market_iv_path:[]}
+ ];
+ const vol=buildVolatilityReport({...dataset([]),tables:{...dataset([]).tables,structure_volatility_state:structures}} as AnalysisDataset),base=thesis(dataset([outcome("vpoc",4)]));
+ const observations=structures.map(x=>({...base,candidateId:x.candidate_id,matchKey:x.candidate_id,winningTrigger:"vpoc" as const,valuationTimestamp:D(4)}));
+ const result=winningExitVolatility(vol,[{policyId:"thesis",observations}],new Set(observations.map(x=>x.candidateId)))[0]!;
+ assert.equal(result.shortObservedN,3);
+ assert.equal(result.shortDeltaN,2);
+ assert.equal(result.medianEntryShortIv,.55);
+ assert.equal(result.medianExitShortIv,.5);
+ assert.ok(Math.abs(result.medianDeltaShortIv!+.05)<1e-12);
+});
+
 test("winning-exit IV absence is unavailable evidence while measured zero remains numeric",()=>{
  const observed=(iv:number)=>({status:"available",observation:"observed",source:"deribit_trade_iv",iv_decimal:iv});
  const structures=[{candidate_id:"no-entry",legs:[{leg:"short",status:"unavailable"}],same_expiry_reference:{status:"unavailable"},differentials:[],post_entry_market_iv:[{endpoint_id:"vpoc",target_timestamp_utc:D(4),short:observed(.45),long:{status:"unavailable"}}],market_iv_path:[]},{candidate_id:"zero",legs:[{leg:"short",...observed(.5)}],same_expiry_reference:{status:"unavailable"},differentials:[],post_entry_market_iv:[{endpoint_id:"vpoc",target_timestamp_utc:D(4),short:observed(.5),long:{status:"unavailable"}}],market_iv_path:[]}];
@@ -97,4 +114,9 @@ test("Exit presentation scopes overflow, fixed cards, identities, IV units and n
  assert.match(volatilityView,/className="exit-table-scroll"/);
  assert.match(css,/\.exit-table-scroll \{ width: 100%; max-width: 100%; min-width: 0; overflow-x: auto/);
  assert.match(css,/\.exit-fixed-grid \{ display: grid; grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
+ assert.match(css,/\.exit-capture-grid \{ display: grid; gap: 10px; min-width: 0; \}/);
+ assert.match(view,/Policies with determinate exits/);
+ assert.match(view,/policiesWithDeterminateExits=report\.policies\.filter\(x=>x\.stats\.denominators\.triggerDeterminate\.n>0\)\.length/);
+ assert.doesNotMatch(view,/Policies evaluated/);
+ assert.match(view,/\{value!==null&&<i className=\{`exit-delta-fill/);
 });
