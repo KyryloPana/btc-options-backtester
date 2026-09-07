@@ -1,8 +1,8 @@
 import type {AnalysisDataset} from "../research-analysis.ts";
-import {adversePath,type AdversePathObservation} from "../adverse-path.ts";
+import {adversePath,referenceAdversePath,type AdversePathObservation} from "../adverse-path.ts";
 import {challengeOf,type ChallengeObservation} from "../strike-challenge.ts";
 import {calculateDeliveryFee,calculateOptionFee,STANDARD_INVERSE_BTC_OPTION_FEE} from "../accounting.ts";
-import {breakEven,expiryPayoff,intrinsicBtc,payoffExtrema,type ExpiryPayoffInput} from "../expiry-payoff.ts";
+import {breakEven,intrinsicBtc,payoffExtrema,type ExpiryPayoffInput} from "../expiry-payoff.ts";
 import {indexByCandidate,readCanonicalStructuralLoss,type StructuralLossReading,type StructuralLossSettlementFees,type StructuralLossSource} from "../canonical-structural-loss.ts";
 import type {OptionType} from "../backtester.ts";
 import {normalizeExecutionScenarioStatus,type ExecutionScenarioStatus} from "../execution-scenario.ts";
@@ -39,6 +39,7 @@ import {normalizeExecutionScenarioStatus,type ExecutionScenarioStatus} from "../
  */
 
 export type ExecutionScenario="maker"|"taker";
+export const WIDTH_EXIT_POLICY="thesis_exit_v1" as const;
 export type {ExecutionScenarioStatus} from "../execution-scenario.ts";
 export type UnavailableReason=string;
 
@@ -120,13 +121,13 @@ export interface ProtectionFacts {
  /** Extra opening fee incurred purely by carrying the second leg. */
  readonly extraOpeningFeeBtc:number|null;
  readonly totalProtectionCostUsd:number|null;
- /** Spread PnL minus naked-short PnL at the long strike, where protection first bites. */
+ /** Audit-only activation boundary: gross intrinsic contribution is zero at K_long. */
  readonly benefitAtLongStrikeUsd:Availability<number>;
  /** The same comparison at a stated deep-tail reference index. */
  readonly benefitAtDeepTailUsd:Availability<number>;
  readonly deepTailIndex:number|null;
- /** An unprotected inverse short has no finite worst case; the long leg is what bounds it. */
- readonly nakedTailUnbounded:boolean;
+ /** Whether the naked short's terminal loss is unbounded in the USD basis used by this report. */
+ readonly nakedUsdTailUnbounded:boolean|null;
  readonly netProtectionValueUsd:number|null;
 }
 
@@ -157,6 +158,7 @@ export interface WidthStructure {
  readonly candidateId:string;
  readonly structureExecutionId:string;
  readonly executionScenario:ExecutionScenario|null;
+ readonly analyticsTrack:"reference"|"immediate_maker"|"immediate_taker"|null;
  readonly executionScenarioStatus:ExecutionScenarioStatus|null;
  readonly executionScenarioReason:string|null;
  readonly executionScenarioLegacyUndifferentiated:boolean;
@@ -183,6 +185,8 @@ export interface WidthStructure {
  readonly pnlAtInvalidationUsd:number|null;
  readonly pnlAtSettlementUsd:number|null;
  readonly realizedPnlUsd:number|null;
+ readonly resolution:"vpoc"|"invalidation"|"settlement"|"ambiguous_resolution_order"|"unresolved";
+ readonly resolutionReason:string|null;
  readonly worstAdverseUsd:number|null;
  readonly maeUsd:number|null;
  /** Time from event entry to first resolution, for the slow-resolution cohorts. */
@@ -197,6 +201,10 @@ const scenarioOf=(v:unknown):ExecutionScenario|null=>{const s=str(v);return s===
 const scenarioStatusOf=normalizeExecutionScenarioStatus;
 const optionTypeOf=(v:unknown):OptionType|null=>{const s=str(v);return s==="C"||s==="P"?s:null};
 const DAY=864e5;
+// calculateOptionFee retains an execution-mode parameter for ledger provenance,
+// but the standard option schedule is mode-invariant. This local constant is a
+// calculator adapter only and is never written into analytical-track identity.
+const CANONICAL_FEE_CALCULATION_MODE:ExecutionScenario="maker";
 
 const MARGIN_UNAVAILABLE="The canonical margin scenario does not report this figure. Deribit's requirement depends on the account model -- standard versus portfolio margin, segregated versus cross collateral -- so it is left Unavailable rather than approximated from the protective-leg cost, the width or the maximum structural loss.";
 
@@ -211,22 +219,6 @@ function payoffInputOf(s:{optionType:OptionType|null;shortStrike:number|null;lon
  return {optionType:s.optionType,shortStrike:s.shortStrike,longStrike:s.longStrike,
   shortEntryPremiumBtc:s.shortPremiumBtc,longEntryPremiumBtc:s.longPremiumBtc,
   entryIndex:s.entryIndex,amount:s.quantity,openingFeesBtc:s.openingFeesBtc,expiryTimestamp:s.expiryTimestampMs};
-}
-
-/**
- * The same position with the protective long removed, priced through the same
- * primitives the spread uses: canonical short premium, the canonical fee
- * schedule for a single opening leg, inverse intrinsic at settlement and the
- * canonical delivery fee. Nothing else about the position changes.
- */
-function nakedShortPnlUsd(input:ExpiryPayoffInput,scenario:ExecutionScenario,settlementIndex:number):number{
- const amount=Math.abs(input.amount);
- const openingFee=calculateOptionFee(input.shortEntryPremiumBtc,amount,scenario,STANDARD_INVERSE_BTC_OPTION_FEE).finalFee;
- const netEntryBtc=input.shortEntryPremiumBtc*amount-openingFee;
- const shortIntrinsic=intrinsicBtc(input.optionType,input.shortStrike,settlementIndex);
- const settlementFee=calculateDeliveryFee(shortIntrinsic,amount,input.dailyOption??false).finalFeeBtc;
- const netPositionBtc=-shortIntrinsic*amount-settlementFee;
- return netEntryBtc*input.entryIndex+netPositionBtc*settlementIndex;
 }
 
 /**
@@ -259,19 +251,28 @@ function payoffFactsOf(input:ExpiryPayoffInput|null,loss:StructuralLossReading):
  }
 }
 
-function protectionFactsOf(input:ExpiryPayoffInput|null,scenario:ExecutionScenario|null):ProtectionFacts{
+function protectionFactsOf(input:ExpiryPayoffInput|null):ProtectionFacts{
  const empty={longLegPremiumBtc:null,longLegPremiumUsd:null,extraOpeningFeeBtc:null,totalProtectionCostUsd:null,
-  deepTailIndex:null,nakedTailUnbounded:true,netProtectionValueUsd:null} as const;
- if(!input||scenario===null)return {...empty,
-  benefitAtLongStrikeUsd:missing("The exact payoff inputs or the execution scenario are absent, so the unprotected counterfactual cannot be priced with the same primitives."),
+  deepTailIndex:null,nakedUsdTailUnbounded:null,netProtectionValueUsd:null} as const;
+ if(!input)return {...empty,
+  benefitAtLongStrikeUsd:missing("The exact canonical payoff inputs are absent, so gross protection cannot be priced."),
   benefitAtDeepTailUsd:missing("Same missing payoff inputs.")};
  const amount=Math.abs(input.amount);
  const longLegPremiumBtc=input.longEntryPremiumBtc*amount;
  const bothLegFees=input.openingFeesBtc;
- const shortOnlyFee=calculateOptionFee(input.shortEntryPremiumBtc,amount,scenario,STANDARD_INVERSE_BTC_OPTION_FEE).finalFee;
+ // Fee rates are side/scenario invariant under the canonical schedule.  For
+ // Reference this invocation is only a fee calculation, never fill evidence.
+ const shortOnlyFee=calculateOptionFee(input.shortEntryPremiumBtc,amount,CANONICAL_FEE_CALCULATION_MODE,STANDARD_INVERSE_BTC_OPTION_FEE).finalFee;
  // A short put spread's tail lies below the strikes; a call spread's above.
  const deepTailIndex=input.optionType==="P"?Math.max(1,input.longStrike*.5):input.longStrike*2;
- const benefit=(index:number)=>expiryPayoff(input,index,"usd-cash-flow").pnl-nakedShortPnlUsd(input,scenario,index);
+ // Gross benefit is the terminal loss reduction supplied by the long before
+ // its purchase cash flow.  Do not subtract two lifetime PnLs: that would
+ // already include premium/fees and make Net subtract the cost twice.
+ const benefit=(index:number)=>{
+  const intrinsic=intrinsicBtc(input.optionType,input.longStrike,index);
+  const deliveryFee=calculateDeliveryFee(intrinsic,amount,input.dailyOption??false).finalFeeBtc;
+  return (intrinsic*amount-deliveryFee)*index;
+ };
  const atLongStrike=benefit(input.longStrike),atDeepTail=benefit(deepTailIndex);
  const totalProtectionCostUsd=(longLegPremiumBtc+Math.max(0,bothLegFees-shortOnlyFee))*input.entryIndex;
  return {
@@ -279,7 +280,7 @@ function protectionFactsOf(input:ExpiryPayoffInput|null,scenario:ExecutionScenar
   extraOpeningFeeBtc:Math.max(0,bothLegFees-shortOnlyFee),
   totalProtectionCostUsd,
   benefitAtLongStrikeUsd:has(atLongStrike),benefitAtDeepTailUsd:has(atDeepTail),
-  deepTailIndex,nakedTailUnbounded:true,
+  deepTailIndex,nakedUsdTailUnbounded:input.optionType==="C",
   netProtectionValueUsd:atDeepTail-totalProtectionCostUsd,
  };
 }
@@ -308,11 +309,20 @@ function capitalFactsOf(payoff:PayoffFacts,marginRow:Readonly<Record<string,unkn
  };
 }
 
-function pnlAt(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:string,scenario:ExecutionScenario|null,kind:"vpoc"|"invalidation"|"settlement"):number|null{
- if(scenario===null)return null;
- const row=outcomes.find(o=>o.candidate_id===candidateId&&o.execution_scenario===scenario&&o.outcome_type===kind);
+function outcomeOf(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:string,scenario:ExecutionScenario|null,reference:boolean,kind:"vpoc"|"invalidation"|"settlement"){
+ return outcomes.find(o=>o.candidate_id===candidateId&&o.execution_scenario===scenario&&o.outcome_type===kind&&
+  (reference?(o.analytics_track===undefined||o.analytics_track==="reference"):o.analytics_track!=="reference"));
+}
+function pnlAt(outcomes:readonly Readonly<Record<string,unknown>>[],candidateId:string,scenario:ExecutionScenario|null,reference:boolean,kind:"vpoc"|"invalidation"|"settlement"):number|null{
+ const row=outcomeOf(outcomes,candidateId,scenario,reference,kind);
  if(!row||row.status!=="priced")return null;
- return num(row.net_pnl_usd)??num(row.net_pnl_native);
+ const usd=num(row.net_pnl_usd);if(usd!==null)return usd;
+ const native=num(row.net_pnl_native),index=num(row.conversion_index)??num(row.target_index);
+ return native!==null&&index!==null&&index>0?native*index:null;
+}
+
+function outcomeTimestamp(row:Readonly<Record<string,unknown>>|undefined):number|null{
+ return ms(row?.trigger_timestamp_utc)??ms(row?.decision_available_timestamp_utc)??ms(row?.decision_timestamp_utc)??ms(row?.valuation_timestamp_utc);
 }
 
 export function normalizeWidthStructures(dataset:AnalysisDataset):readonly WidthStructure[]{
@@ -330,6 +340,7 @@ export function normalizeWidthStructures(dataset:AnalysisDataset):readonly Width
  return candidates.map(row=>{
   const eventId=str(row.event_id)??"unknown-event",candidateId=str(row.candidate_id)??"unknown-candidate";
   const scenario=scenarioOf(row.execution_scenario),scenarioStatus=scenarioStatusOf(row.execution_scenario_status);
+  const reference=row.analytics_track==="reference";
   const evaluated=scenarioStatus==="evaluated";
   const event=eventById.get(eventId);
   const directionRaw=str(row.direction)??str(event?.direction);
@@ -363,15 +374,19 @@ export function normalizeWidthStructures(dataset:AnalysisDataset):readonly Width
    fallback:input,
   });
   const payoff=payoffFactsOf(input,structuralLoss);
-  const protection=protectionFactsOf(input,scenario);
+  const protection=protectionFactsOf(input);
 
   const toUsd=(v:number|null)=>v!==null&&entryIndex!==null?v*entryIndex:null;
   // A round trip is four legs: two opened and two closed. The closing pair is
   // estimated with the SAME canonical fee schedule applied to the entry
   // premiums -- an explicit estimate, never presented as a recorded fee.
-  const estimatedClosingFeesBtc=input&&scenario
-   ?calculateOptionFee(input.shortEntryPremiumBtc,Math.abs(input.amount),scenario,STANDARD_INVERSE_BTC_OPTION_FEE).finalFee
-    +calculateOptionFee(input.longEntryPremiumBtc,Math.abs(input.amount),scenario,STANDARD_INVERSE_BTC_OPTION_FEE).finalFee
+  // The standard option fee schedule is execution-mode invariant. The local
+  // adapter constant satisfies the calculator signature and remains separate from
+  // this structure's evidence identity, so Reference remains null-scenario and
+  // this entry-price closing pair remains an estimate rather than fill evidence.
+  const estimatedClosingFeesBtc=input
+   ?calculateOptionFee(input.shortEntryPremiumBtc,Math.abs(input.amount),CANONICAL_FEE_CALCULATION_MODE,STANDARD_INVERSE_BTC_OPTION_FEE).finalFee
+    +calculateOptionFee(input.longEntryPremiumBtc,Math.abs(input.amount),CANONICAL_FEE_CALCULATION_MODE,STANDARD_INVERSE_BTC_OPTION_FEE).finalFee
    :null;
   const estimatedRoundTripFeesBtc=openingFeesBtc!==null&&estimatedClosingFeesBtc!==null?openingFeesBtc+estimatedClosingFeesBtc:null;
   const entry:EntryEconomics={
@@ -391,39 +406,55 @@ export function normalizeWidthStructures(dataset:AnalysisDataset):readonly Width
   };
 
   const invalidationMs=ms(event?.invalidation_decision_timestamp_utc);
-  const challenge=challengeOf(pathByEvent.get(eventId)??[],shortStrike,direction,structureEntryMs,expiryTimestampMs,invalidationMs);
-
-  const pnlAtVpocUsd=pnlAt(outcomes,candidateId,scenario,"vpoc");
-  const pnlAtInvalidationUsd=challenge.invalidatedInWindow===true?pnlAt(outcomes,candidateId,scenario,"invalidation"):null;
-  const pnlAtSettlementUsd=pnlAt(outcomes,candidateId,scenario,"settlement");
-  const realizedPnlUsd=challenge.invalidatedInWindow===true?pnlAtInvalidationUsd:pnlAtSettlementUsd;
-
-  const boundaryMs=challenge.invalidatedInWindow===true&&invalidationMs!==null
-   ?Math.min(invalidationMs,expiryTimestampMs??invalidationMs):expiryTimestampMs;
-  const adverse=adversePath(valuations,candidateId,scenario,evaluated,structureEntryMs,boundaryMs);
+  const endpoint=(kind:"vpoc"|"invalidation")=>{
+   const o=outcomeOf(outcomes,candidateId,scenario,reference,kind),trigger=str(o?.trigger_status);
+   if(o&&trigger!==null&&trigger!=="reached")return {time:trigger==="ambiguous"?outcomeTimestamp(o):null,ambiguous:trigger==="ambiguous"};
+   return {time:outcomeTimestamp(o)??(kind==="vpoc"?ms(event?.vpoc_decision_timestamp_utc)??ms(event?.vpoc_trigger_timestamp_utc):invalidationMs),ambiguous:false};
+  };
+  const vpoc=endpoint("vpoc"),invalidation=endpoint("invalidation");
+  const inWindow=(t:number|null)=>t!==null&&structureEntryMs!==null&&t>=structureEntryMs&&(expiryTimestampMs===null||t<=expiryTimestampMs);
+  const vpocInWindow=inWindow(vpoc.time),invalidationInWindow=inWindow(invalidation.time);
+  const ambiguousResolution=vpoc.ambiguous||invalidation.ambiguous||(vpocInWindow&&invalidationInWindow&&vpoc.time===invalidation.time);
+  const firstVpoc=vpocInWindow&&(!invalidationInWindow||vpoc.time!<invalidation.time!);
+  const firstInvalidation=invalidationInWindow&&(!vpocInWindow||invalidation.time!<vpoc.time!);
+  // Operational endpoint metrics are symmetric: only the first causal Thesis
+  // Exit exists for the position. Later canonical outcomes remain in the
+  // bundle but do not populate this operational report.
+  const pnlAtVpocUsd=firstVpoc?pnlAt(outcomes,candidateId,scenario,reference,"vpoc"):null;
+  // Operational Thesis Exit only: an invalidation after VPOC belongs to a
+  // counterfactual post-exit path and must not enter this report's endpoint.
+  const pnlAtInvalidationUsd=firstInvalidation?pnlAt(outcomes,candidateId,scenario,reference,"invalidation"):null;
+  const pnlAtSettlementUsd=pnlAt(outcomes,candidateId,scenario,reference,"settlement");
+  const realizedPnlUsd=ambiguousResolution?null:firstVpoc?pnlAtVpocUsd:firstInvalidation?pnlAtInvalidationUsd:(!vpocInWindow&&!invalidationInWindow?pnlAtSettlementUsd:null);
+  const resolution=ambiguousResolution?"ambiguous_resolution_order" as const:firstVpoc?"vpoc" as const:firstInvalidation?"invalidation" as const:!vpocInWindow&&!invalidationInWindow?"settlement" as const:"unresolved" as const;
+  const resolutionReason=ambiguousResolution?"VPOC and invalidation share the same available timestamp precision; causal order is ambiguous under thesis_exit_v1, so realized PnL is unavailable.":realizedPnlUsd===null?"The causal thesis_exit_v1 outcome was reached but has no priced canonical USD PnL.":null;
+  const resolutionMs=firstVpoc?vpoc.time:firstInvalidation?invalidation.time:null;
+  const ambiguousBoundaryMs=ambiguousResolution?[vpoc.time,invalidation.time].filter((x):x is number=>x!==null).sort((a,b)=>a-b)[0]??null:null;
+  const firstResolutionMs=resolutionMs??ambiguousBoundaryMs;
+  const boundaryMs=firstResolutionMs??expiryTimestampMs;
+  const challenge=challengeOf(pathByEvent.get(eventId)??[],shortStrike,direction,structureEntryMs,boundaryMs,invalidationMs,firstResolutionMs);
+  const adverse=reference?referenceAdversePath(valuations,candidateId,structureEntryMs,boundaryMs):adversePath(valuations,candidateId,scenario,evaluated,structureEntryMs,boundaryMs);
 
   const marginRow=margins.find(m=>m.candidate_id===candidateId);
   const capital=capitalFactsOf(payoff,marginRow,realizedPnlUsd,entryIndex);
 
   // First-resolution time, for the canonical slow-resolution cohorts.
   const eventEntry=ms(event?.entry_timestamp_utc);
-  const vpocMs=ms(event?.vpoc_trigger_timestamp_utc);
-  const resolutionMs=[vpocMs,invalidationMs].filter((t):t is number=>t!==null).sort((a,b)=>a-b)[0]??null;
-  const timeToResolutionDays=resolutionMs===null||eventEntry===null?null:(resolutionMs-eventEntry)/DAY;
+  const timeToResolutionDays=firstResolutionMs===null||eventEntry===null?null:(firstResolutionMs-eventEntry)/DAY;
 
   // The short strike is part of the key: comparing widths across different
   // short strikes would attribute a placement difference to width.
   const matchKey=[eventId,expiryTimestampMs??"unknown-expiry",actualDteDays??"unknown-dte",shortStrike??"unknown-short",
-   str(row.structure_type)??"unknown-structure",optionType??"unknown-type","canonical-exit-policy"].join("|");
+   str(row.structure_type)??"unknown-structure",optionType??"unknown-type",WIDTH_EXIT_POLICY].join("|");
 
   return {
    eventId,candidateId,structureExecutionId:str(row.structure_execution_id)??`${candidateId}~${scenario??"unknown"}`,
-   executionScenario:scenario,executionScenarioStatus:scenarioStatus,executionScenarioReason:str(row.execution_scenario_reason),
+   executionScenario:scenario,analyticsTrack:reference?"reference":scenario==="maker"?"immediate_maker":scenario==="taker"?"immediate_taker":null,executionScenarioStatus:scenarioStatus,executionScenarioReason:str(row.execution_scenario_reason),
    executionScenarioLegacyUndifferentiated:row.execution_scenario_legacy_undifferentiated===true,
    direction,optionType,structureType:str(row.structure_type),
    expiryTimestampMs,actualDteDays,structureEntryMs,quantity,entryIndex,matchKey,
    identity,entry,payoff,protection,capital,challenge,adverse,
-   pnlAtVpocUsd,pnlAtInvalidationUsd,pnlAtSettlementUsd,realizedPnlUsd,
+   pnlAtVpocUsd,pnlAtInvalidationUsd,pnlAtSettlementUsd,realizedPnlUsd,resolution,resolutionReason,
    worstAdverseUsd:adverse.worstAdverseUsd,maeUsd:adverse.maeBeforeProfitUsd,
    timeToResolutionDays,
   } satisfies WidthStructure;

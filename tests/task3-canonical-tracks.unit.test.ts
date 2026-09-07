@@ -32,9 +32,10 @@ test("Task 3 structural reports retain Reference as their counterfactual basis",
  assert.equal(strike.robustness?.taker.pairs[0]?.economicsComparable,false);
  const width=buildSpreadWidthReport(d);
  assert.equal(width.scenario,"reference");
- assert.equal(width.groups.length,0,"Reference is not substituted for missing Q50 economics");
+ assert.equal(width.groups.length,1,"Width primary consumes Reference directly rather than gating it on missing Q50 or strict execution");
+ assert.ok(width.groups[0]?.structures.every(s=>s.executionScenario===null&&s.analyticsTrack==="reference"));
  assert.equal(width.robustness?.maker.groups[0]?.steps[0]?.economicsComparable,false);
- assert.equal(width.capital.length,0);
+ assert.equal(width.capital.length,2);
 });
 
 test("one dataset owns one normalization and reuses each track projection",()=>{

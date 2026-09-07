@@ -1,7 +1,7 @@
 import type {AnalysisDataset} from "../research-analysis.ts";
 import {observedPercentiles} from "../underlying-resolution/statistics.ts";
 import {cohortOf,resolutionSpeedBoundaries,type ResolutionSpeedBoundaries,type ResolutionSpeedCohort} from "../duration-dte/resolution-speed.ts";
-import {datasetForAnalyticsTrack} from "../research-analytics-model.ts";
+import {datasetForAnalyticsCohort,datasetForAnalyticsTrack} from "../research-analytics-model.ts";
 import {normalizeWidthStructures,type ExecutionScenario,type WidthStructure} from "./normalize.ts";
 
 /**
@@ -27,6 +27,8 @@ import {normalizeWidthStructures,type ExecutionScenario,type WidthStructure} fro
 export interface WidthBandRow {
  readonly actualWidthUsd:number;
  readonly n:number;
+ readonly eventN:number;
+ readonly metricN:Readonly<Record<string,number>>;
  readonly substitutedN:number;
  readonly medianGrossCreditUsd:number|null;
  readonly medianNetCreditUsd:number|null;
@@ -44,6 +46,8 @@ export interface WidthBandRow {
 export interface ProtectionRow {
  readonly actualWidthUsd:number;
  readonly n:number;
+ readonly eventN:number;
+ readonly metricN:Readonly<Record<string,number>>;
  readonly medianProtectionCostUsd:number|null;
  readonly medianBenefitAtLongStrikeUsd:number|null;
  readonly medianBenefitAtDeepTailUsd:number|null;
@@ -53,6 +57,8 @@ export interface ProtectionRow {
 export interface PathRiskRow {
  readonly actualWidthUsd:number;
  readonly n:number;
+ readonly eventN:number;
+ readonly metricN:Readonly<Record<string,number>>;
  readonly medianPnlAtVpocUsd:number|null;
  readonly medianPnlAtInvalidationUsd:number|null;
  readonly medianWorstAdverseUsd:number|null;
@@ -67,6 +73,8 @@ export interface PathRiskRow {
 export interface CapitalRow {
  readonly actualWidthUsd:number;
  readonly n:number;
+ readonly eventN:number;
+ readonly metricN:Readonly<Record<string,number>>;
  readonly medianStructuralLossUsd:number|null;
  readonly openingMarginAvailableN:number;
  readonly peakMarginAvailableN:number;
@@ -82,6 +90,9 @@ export interface CapitalRow {
 export interface SlowResolutionCell {
  readonly cohort:ResolutionSpeedCohort;
  readonly n:number;
+ readonly eventN:number;
+ readonly realizedN:number;
+ readonly adverseN:number;
  readonly medianRealizedPnlUsd:number|null;
  readonly medianWorstAdverseUsd:number|null;
 }
@@ -158,8 +169,10 @@ const diff=(a:number|null,b:number|null):number|null=>a===null||b===null?null:a-
 const COHORTS:readonly ResolutionSpeedCohort[]=["fast","normal","slow","unresolved"];
 
 function bandRow(width:number,rows:readonly WidthStructure[]):WidthBandRow{
+ const count=(f:(r:WidthStructure)=>unknown)=>rows.filter(r=>f(r)!==null).length;
  return {
-  actualWidthUsd:width,n:rows.length,
+  actualWidthUsd:width,n:rows.length,eventN:new Set(rows.map(r=>r.eventId)).size,
+  metricN:{grossCredit:count(r=>r.entry.grossCreditUsd),netCredit:count(r=>r.entry.netCreditUsd),creditActual:count(r=>r.entry.creditPerActualWidth),creditRequested:count(r=>r.entry.creditPerRequestedWidth),creditStructural:count(r=>r.entry.creditPerStructuralLoss),structuralLoss:count(r=>r.payoff.maximumStructuralLossUsd.value),feeDragOpening:count(r=>r.entry.feeDragOnOpening),feeDrag:count(r=>r.entry.feeDragRoundTrip),breakeven:count(r=>r.payoff.breakEvenIndex.value),longLegCost:count(r=>r.protection.longLegPremiumUsd),longShare:count(r=>r.entry.longLegCostShareOfShortPremium)},
   substitutedN:rows.filter(r=>r.identity.widthSubstituted).length,
   medianGrossCreditUsd:median(defined(rows.map(r=>r.entry.grossCreditUsd))),
   medianNetCreditUsd:median(defined(rows.map(r=>r.entry.netCreditUsd))),
@@ -176,8 +189,10 @@ function bandRow(width:number,rows:readonly WidthStructure[]):WidthBandRow{
 }
 
 function protectionRow(width:number,rows:readonly WidthStructure[]):ProtectionRow{
+ const count=(f:(r:WidthStructure)=>unknown)=>rows.filter(r=>f(r)!==null).length;
  return {
-  actualWidthUsd:width,n:rows.length,
+  actualWidthUsd:width,n:rows.length,eventN:new Set(rows.map(r=>r.eventId)).size,
+  metricN:{protectionCost:count(r=>r.protection.totalProtectionCostUsd),grossBenefit:count(r=>r.protection.benefitAtDeepTailUsd.value),netProtection:count(r=>r.protection.netProtectionValueUsd)},
   medianProtectionCostUsd:median(defined(rows.map(r=>r.protection.totalProtectionCostUsd))),
   medianBenefitAtLongStrikeUsd:median(defined(rows.map(r=>r.protection.benefitAtLongStrikeUsd.value))),
   medianBenefitAtDeepTailUsd:median(defined(rows.map(r=>r.protection.benefitAtDeepTailUsd.value))),
@@ -188,7 +203,8 @@ function protectionRow(width:number,rows:readonly WidthStructure[]):ProtectionRo
 function pathRiskRow(width:number,rows:readonly WidthStructure[]):PathRiskRow{
  const touched=rows.filter(r=>r.challenge.touched===true),breached=rows.filter(r=>r.challenge.breached===true);
  return {
-  actualWidthUsd:width,n:rows.length,
+  actualWidthUsd:width,n:rows.length,eventN:new Set(rows.map(r=>r.eventId)).size,
+  metricN:{vpoc:defined(rows.map(r=>r.pnlAtVpocUsd)).length,invalidation:defined(rows.map(r=>r.pnlAtInvalidationUsd)).length,worstAdverse:defined(rows.map(r=>r.worstAdverseUsd)).length,mae:defined(rows.map(r=>r.maeUsd)).length,settlement:defined(rows.map(r=>r.pnlAtSettlementUsd)).length,touched:defined(touched.map(r=>r.realizedPnlUsd)).length,breached:defined(breached.map(r=>r.realizedPnlUsd)).length},
   medianPnlAtVpocUsd:median(defined(rows.map(r=>r.pnlAtVpocUsd))),
   medianPnlAtInvalidationUsd:median(defined(rows.map(r=>r.pnlAtInvalidationUsd))),
   medianWorstAdverseUsd:median(defined(rows.map(r=>r.worstAdverseUsd))),
@@ -204,7 +220,8 @@ function capitalRow(width:number,rows:readonly WidthStructure[]):CapitalRow{
  const opening=rows.filter(r=>r.capital.incrementalInitialMarginUsd.value!==null);
  const peak=rows.filter(r=>r.capital.peakMarginUsd.value!==null);
  return {
-  actualWidthUsd:width,n:rows.length,
+  actualWidthUsd:width,n:rows.length,eventN:new Set(rows.map(r=>r.eventId)).size,
+  metricN:{structuralLoss:defined(rows.map(r=>r.capital.maximumStructuralLossUsd.value)).length,openingMargin:opening.length,peakMargin:peak.length,returnStructural:defined(rows.map(r=>r.capital.returnOnStructuralLoss.value)).length,returnOpening:defined(rows.map(r=>r.capital.returnOnOpeningMargin.value)).length,returnPeak:defined(rows.map(r=>r.capital.returnOnPeakCapital.value)).length},
   medianStructuralLossUsd:median(defined(rows.map(r=>r.capital.maximumStructuralLossUsd.value))),
   openingMarginAvailableN:opening.length,peakMarginAvailableN:peak.length,
   medianOpeningMarginUsd:median(defined(opening.map(r=>r.capital.incrementalInitialMarginUsd.value))),
@@ -238,9 +255,15 @@ function stepOf(narrower:WidthStructure,wider:WidthStructure):AdjacentWidthStep{
 }
 
 export function buildSpreadWidthReport(dataset:AnalysisDataset,scenario?:ExecutionScenario):SpreadWidthReport{
- const primary=scenario===undefined, selectedScenario=scenario??"maker";
- const all=normalizeWidthStructures(primary?datasetForAnalyticsTrack(dataset,"reference"):dataset);
- const structures=all.filter(s=>s.executionScenario===selectedScenario);
+ const primary=scenario===undefined;
+ const selected=datasetForAnalyticsCohort(dataset,"selected");
+ const track=primary?"reference":scenario==="maker"?"immediate_maker":"immediate_taker";
+ // Legacy tabular fixtures/bundles can already be scenario-projected but carry
+ // no analytics_track column. Preserve that compatibility only for explicit
+ // robustness calls; current bundles always use the canonical projector.
+ const canonical=primary||selected.tables.candidates.some(r=>typeof r.analytics_track==="string");
+ const all=normalizeWidthStructures(canonical?datasetForAnalyticsTrack(selected,track):selected);
+ const structures=all.filter(s=>primary?s.analyticsTrack==="reference":s.executionScenario===scenario&&(canonical?s.analyticsTrack===track:true));
  const boundaries=resolutionSpeedBoundaries(dataset);
 
  const byKey=new Map<string,WidthStructure[]>();
@@ -253,7 +276,8 @@ export function buildSpreadWidthReport(dataset:AnalysisDataset,scenario?:Executi
    .sort((a,b)=>a.identity.actualWidthUsd!-b.identity.actualWidthUsd!);
   for(const s of group.filter(s=>s.identity.actualWidthUsd===null))
    unmatched.push({structure:s,reason:"The canonical candidate has no actual strike width, so it cannot be placed on the width ladder."});
-  if(ordered.length<2){
+  const distinctWidths=new Set(ordered.map(s=>s.identity.actualWidthUsd));
+  if(distinctWidths.size<2){
    for(const s of ordered)unmatched.push({structure:s,reason:"No other width shares this event, expiry, DTE, short strike and exit policy, so there is nothing to compare it against."});
    continue;
   }
@@ -274,7 +298,7 @@ export function buildSpreadWidthReport(dataset:AnalysisDataset,scenario?:Executi
  const atWidth=(w:number)=>matched.filter(s=>s.identity.actualWidthUsd===w);
 
  const report:SpreadWidthReport={
-  scenario:primary?"reference":selectedScenario,structures,groups,
+  scenario:primary?"reference":scenario!,structures,groups,
   summary:{
    structures:structures.length,
    matchedGroups:groups.length,
@@ -295,7 +319,7 @@ export function buildSpreadWidthReport(dataset:AnalysisDataset,scenario?:Executi
   capital:widths.map(w=>capitalRow(w,atWidth(w))),
   slowResolution:widths.map(w=>({actualWidthUsd:w,cells:COHORTS.map(cohort=>{
    const rows=atWidth(w).filter(s=>cohortOf(s.timeToResolutionDays,boundaries)===cohort);
-   return {cohort,n:rows.length,
+   return {cohort,n:rows.length,eventN:new Set(rows.map(s=>s.eventId)).size,realizedN:defined(rows.map(s=>s.realizedPnlUsd)).length,adverseN:defined(rows.map(s=>s.worstAdverseUsd)).length,
     medianRealizedPnlUsd:median(defined(rows.map(s=>s.realizedPnlUsd))),
     medianWorstAdverseUsd:median(defined(rows.map(s=>s.worstAdverseUsd)))};
   })})),
@@ -303,18 +327,18 @@ export function buildSpreadWidthReport(dataset:AnalysisDataset,scenario?:Executi
   unmatched,
   methodology:[
    "Scope. This report analyses PROTECTIVE WIDTH only. The short strike is held constant inside every comparison and is never re-optimized here: the short strike decides where risk begins, width decides how much tail exposure is retained and how much protection is purchased. Short-strike placement is a separate report.",
-   `Comparison unit. A matched width group holds the same MR event, actual expiry and DTE, SHORT STRIKE, option/structure and exit policy; only the protective long differs. Execution scenario is absent from the primary key. This report is scoped to the ${primary?"reference":selectedScenario} track; explicit observed robustness layers are filtered before grouping, so maker and taker never share a statistic.`,
+   `Comparison unit. A matched width group requires at least two DISTINCT actual widths and holds the same MR event, actual expiry and DTE, SHORT STRIKE, option/structure and thesis_exit_v1 policy; only the protective long differs. The report is scoped to the selected strategy cohort and ${primary?"Reference fair-value":scenario} track; controlled-research candidates and other analytical tracks are excluded before grouping.`,
    "Requested versus actual width. Historical strike availability frequently forces the protective long onto a strike other than the one requested. Every economic figure -- payoff, credit ratio, maximum loss, capital return -- is computed from the ACTUAL contracts, and structures are ordered on the ladder by actual width. The requested width is retained beside it for audit and is reported as substituted where the two differ, but it is never fed into a calculation.",
    "Structural risk is consumed, not recomputed. The canonical risk figure is the bounded MAXIMUM STRUCTURAL LOSS already exported by the research bundle: structure_economics is the primary source and margin_scenarios is read as reconciliation. Where both are present and materially disagree, the figure is reported Unavailable as an integrity failure rather than resolved by preferring one. This report no longer derives its own fee-inclusive maximum from a payoff extremum sampled at an unbounded settlement index.",
    "Settlement fees remain real and remain separate. A delivery fee is a fixed BTC amount per leg, so its USD value grows without bound as the settlement index grows; for a bear call, where both legs finish deep in the money, no finite GLOBAL fee-inclusive maximum exists at all. Delivery fees are therefore reported at an explicitly named settlement scenario and are never folded into the bounded structural loss.",
    "Inverse-option payoff. The authoritative expiry-payoff utility still supplies the scenario quantities it legitimately answers -- breakeven, maximum profit, the settlement payoff and the protective-long counterfactual -- so this report cannot disagree with the payoff shown elsewhere in the app. It no longer defines the report's canonical structural risk.",
-   "Entry economics use canonical per-leg premiums and the canonical fee schedule, per execution scenario: maker and taker each price their own legs and their own fees. Credit is reported against requested width, actual width and the canonical maximum structural loss, since the last of those is the only denominator that reflects the structure's genuinely bounded risk.",
-   "Fees. Opening fees are canonical. The four-leg round trip adds an estimated closing pair computed with the SAME canonical fee schedule applied to the entry premiums; it is labelled an estimate and never presented as a recorded fee. Fee drag is reported both on the opening alone and on the estimated round trip.",
-   "Protective long as insurance. The counterfactual removes ONLY the long leg: the same event, the same short option, the same entry timing, the same execution scenario and the same settlement index, priced through the same canonical premiums, fee schedule and inverse-intrinsic primitives. It is not a separate naked backtest with its own assumptions. Benefit is reported at the long strike, where protection first bites, and at a stated deep-tail reference index; the unprotected inverse short has no finite worst case, which is the point of carrying the leg.",
-   "Path risk uses only evidence from inside the structure's life. PnL at invalidation is used only when the invalidation genuinely occurred between entry and expiry. Worst adverse and MAE come from the shared adverse-path primitive: this scenario's raw-VWAP track only, never a modelled mark. Touch and breach come from the shared strike-challenge primitive and depend on the short strike and the path alone -- which is why every width in a matched group shares the same challenge state.",
+   "Entry economics use each analytical track's canonical per-leg premiums. Reference remains fair-value evidence; Maker and Taker retain their own scenario-local premiums. Credit is reported against requested width, actual width and the canonical maximum structural loss, since the last of those is the only denominator that reflects the structure's genuinely bounded risk.",
+   "Fees. Opening fees are canonical. The four-leg round trip adds an estimated closing pair computed with the SAME canonical, execution-mode-invariant option fee schedule applied to that track's entry premiums; the Reference calculation is not fill evidence. It is labelled an entry-price estimate and never presented as a recorded closing fee.",
+   "Protection accounting. Protection cost is long premium plus its incremental opening fee. Gross tail benefit is the long's terminal intrinsic loss reduction net only of its settlement delivery fee, before entry cost; net protection value subtracts entry cost exactly once. The deterministic diagnostic stress index is 50% of K_long for puts and 200% for calls; it is not a BTC forecast. At exactly K_long gross intrinsic protection is zero.",
+   `Thesis Exit. Width is frozen to ${"thesis_exit_v1"}: first causally identifiable VPOC, otherwise invalidation, otherwise priced settlement fallback. Equal-precision VPOC/invalidation is ambiguous and has no realized PnL. Touch, breach and marks stop at that same causal boundary. Reference adverse metrics use fair-value valuation paths; Maker/Taker robustness uses only strict scenario-local raw-VWAP evidence, never modeled substitutions.`,
    "Slow-resolution behaviour reuses the canonical Duration & DTE cohorts (fast < P25, normal P25-P75, slow > P75, with unresolved kept explicit), cut from the observed first-resolution distribution. No hypothetical path is fabricated, and DTE is held constant inside each matched group.",
    "Capital. Three concepts are kept apart and never collapsed. Maximum STRUCTURAL loss is an economic property of the structure and is consumed from the canonical export; it is not Initial Margin and not Maintenance Margin. Incremental initial margin and peak margin are properties of the ACCOUNT -- they depend on Deribit's margin model, standard versus portfolio margin and segregated versus cross collateral -- so where the canonical margin scenario does not report them they stay Unavailable. The protective-leg cost, the width and the structural loss are never substituted for a margin figure, and a return whose denominator is Unavailable is itself Unavailable rather than zero.",
-   "Stability, not selection. Adjacent-width steps are reported pairwise inside each matched group so a plateau -- a region where neighbouring widths behave similarly -- can be seen rather than inferred from aggregate totals. No width is chosen, and no width is preferred merely for having produced the highest historical PnL.",
+   "Evidence hierarchy. Width-level medians can contain different event compositions and are descriptive support only. Adjacent-width steps are the primary controlled evidence because they are paired inside the same matched ladder. They expose a plateau without comparing aggregate totals. No width is chosen, and none is preferred for having the highest historical PnL.",
   ],
  };
  return primary?{...report,robustness:{maker:buildSpreadWidthReport(dataset,"maker"),taker:buildSpreadWidthReport(dataset,"taker")}}:report;

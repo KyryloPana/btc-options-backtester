@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
 import type {AnalysisDataset} from "../app/lib/research-analysis.ts";
 import {normalizeWidthStructures} from "../app/lib/spread-width/normalize.ts";
 import {buildSpreadWidthReport} from "../app/lib/spread-width/report.ts";
 import {expiryPayoff,payoffExtrema} from "../app/lib/expiry-payoff.ts";
 import {canonicalStructuralLoss,STRUCTURAL_LOSS_METHOD_VERSION} from "../app/lib/maximum-economic-loss.ts";
+import {cohortOf,resolutionSpeedBoundaries} from "../app/lib/duration-dte/resolution-speed.ts";
 
 const H=36e5;
 const D=(day:number,hour=0)=>new Date(Date.UTC(2026,0,day,hour)).toISOString();
@@ -258,7 +260,15 @@ test("PROTECTION: the counterfactual removes only the long leg, keeping everythi
  // worth far more, because the unprotected short has no floor.
  assert.notEqual(s.protection.benefitAtLongStrikeUsd.value,null);
  assert.ok(s.protection.benefitAtDeepTailUsd.value!>s.protection.benefitAtLongStrikeUsd.value!);
- assert.equal(s.protection.nakedTailUnbounded,true);
+ assert.equal(s.protection.nakedUsdTailUnbounded,false,"a naked short put has finite terminal USD loss");
+});
+
+test("PROTECTION: naked USD tail classification distinguishes short calls from short puts",()=>{
+ const call={...candidate("e1",39000,"maker"),candidate_id:"call",option_type:"C",structure_type:"bear_call_credit",
+  actual_strikes:{short:44000,long:45000,width:1000},requested_strikes:{short:44000,long:45000,width:1000}};
+ const c=normalizeWidthStructures({...dataset,tables:{...dataset.tables,candidates:[call]}} as unknown as AnalysisDataset)[0]!;
+ assert.equal(c.protection.nakedUsdTailUnbounded,true,"short-call terminal USD loss is unbounded as BTC rises");
+ assert.equal(pick("e1-w1000").protection.nakedUsdTailUnbounded,false);
 });
 
 test("PROTECTION: a wider spread buys less tail protection for less premium",()=>{
@@ -391,6 +401,113 @@ test("MISSING DATA: a single-width group is excluded from pairwise comparison",(
  const r=buildSpreadWidthReport(single,"maker");
  assert.equal(r.groups.some(g=>g.eventId==="e2"),false,"e2 no longer has an adjacent width");
  assert.ok(r.unmatched.some(u=>u.structure.eventId==="e2"),"and is reported rather than dropped");
+});
+
+test("MATCHING: duplicate requested variants at one actual width do not fabricate a ladder",()=>{
+ const duplicate={...candidate("e1",39000,"maker"),candidate_id:"duplicate-request",requested_strikes:{short:40000,long:38000,width:2000}};
+ const onlyDuplicates={...dataset,tables:{...dataset.tables,candidates:[candidate("e1",39000,"maker"),duplicate]}} as unknown as AnalysisDataset;
+ const r=buildSpreadWidthReport(onlyDuplicates,"maker");
+ assert.equal(r.groups.length,0);
+ assert.equal(r.summary.adjacentSteps,0);
+ assert.equal(r.unmatched.length,2);
+});
+
+test("SAMPLE SIZE: each partial statistic reports its effective observation count",()=>{
+ const row=report.pathRisk.find(r=>r.actualWidthUsd===1000)!;
+ assert.equal(row.metricN.worstAdverse,report.groups.flatMap(g=>g.structures).filter(s=>s.identity.actualWidthUsd===1000&&s.worstAdverseUsd!==null).length);
+ assert.equal(row.metricN.vpoc,report.groups.flatMap(g=>g.structures).filter(s=>s.identity.actualWidthUsd===1000&&s.pnlAtVpocUsd!==null).length);
+ assert.ok(row.eventN<=row.n);
+});
+
+function referenceFixture(over:{vpocDay?:number|null;invalidationDay?:number|null;vpocStatus?:string;vpocUsd?:number|null;nativeOnly?:boolean}={}):AnalysisDataset{
+ const vpocDay=over.vpocDay===undefined?3:over.vpocDay,invalidationDay=over.invalidationDay===undefined?6:over.invalidationDay;
+ const base={...candidate("e1",39000,"maker"),candidate_id:"ref",structure_execution_id:"ref~reference",
+  analytics_track:"reference",execution_scenario:null,execution_scenario_status:"evaluated"};
+ const outcome=(kind:string,day:number|null,status="priced",usd:number|null=10)=>({candidate_id:"ref",analytics_track:"reference",execution_scenario:null,outcome_type:kind,
+  trigger_status:day===null?"not_reached":"reached",status,decision_available_timestamp_utc:day===null?null:D(day),net_pnl_usd:usd,
+  net_pnl_native:over.nativeOnly?.002:null,conversion_index:over.nativeOnly?42000:null});
+ const eventsRef=[{...events[0],vpoc_trigger_timestamp_utc:vpocDay===null?null:D(vpocDay),vpoc_decision_timestamp_utc:vpocDay===null?null:D(vpocDay),invalidation_decision_timestamp_utc:invalidationDay===null?null:D(invalidationDay)}];
+ return {...dataset,tables:{...dataset.tables,events:eventsRef,candidates:[base],outcomes:[
+  outcome("vpoc",vpocDay,over.vpocStatus??"priced",over.nativeOnly?null:over.vpocUsd??100),outcome("invalidation",invalidationDay,"priced",-200),outcome("settlement",8,"priced",300),
+  {candidate_id:"ref",analytics_track:"immediate_maker",execution_scenario:"maker",outcome_type:"vpoc",trigger_status:"reached",status:"priced",decision_available_timestamp_utc:D(2),net_pnl_usd:9999}],
+  valuations:[{candidate_id:"ref",pricing_track:"reference",timestamp_utc:D(2),valuation_status:"priced",net_pnl_usd:-50},{candidate_id:"ref",pricing_track:"reference",timestamp_utc:D(5),valuation_status:"priced",net_pnl_usd:-500}],
+  underlying_path:[{event_id:"e1",timestamp_utc:D(2),high:42000,low:41000,close:41500},{event_id:"e1",timestamp_utc:D(5),high:42000,low:39000,close:39000}]}} as unknown as AnalysisDataset;
+}
+
+test("REFERENCE: null-scenario outcomes, fees, and causal VPOC boundary remain Reference-only",()=>{
+ const s=normalizeWidthStructures(referenceFixture())[0]!;
+ assert.equal(s.analyticsTrack,"reference");assert.equal(s.executionScenario,null);
+ assert.equal(s.realizedPnlUsd,100,"Reference does not borrow the maker outcome");
+ assert.equal(s.pnlAtInvalidationUsd,null,"post-VPOC invalidation is not an operational outcome");
+ assert.notEqual(s.entry.estimatedRoundTripFeesBtc,null);assert.notEqual(s.entry.feeDragRoundTrip,null);
+ assert.equal(s.worstAdverseUsd,-50,"post-exit Reference marks are excluded");
+ assert.equal(s.challenge.touched,false,"post-exit challenge is excluded");
+});
+
+test("STRICT PATHS: Maker and Taker admit only their own raw scenario marks",()=>{
+ const base=candidate("e1",39000,"maker"),taker=candidate("e1",39000,"taker");
+ const valuations=[
+  {candidate_id:base.candidate_id,execution_scenario:"maker",pricing_track:"raw_vwap",timestamp_utc:D(2),valuation_status:"priced",net_pnl_usd:-10},
+  {candidate_id:base.candidate_id,execution_scenario:"taker",pricing_track:"raw_vwap",timestamp_utc:D(2),valuation_status:"priced",net_pnl_usd:-20},
+  {candidate_id:base.candidate_id,execution_scenario:"maker",pricing_track:"iv_normalized",timestamp_utc:D(2),valuation_status:"priced",net_pnl_usd:-900},
+  {candidate_id:base.candidate_id,execution_scenario:null,pricing_track:"reference",timestamp_utc:D(2),valuation_status:"priced",net_pnl_usd:-999},
+ ];
+ const normalized=normalizeWidthStructures({...dataset,tables:{...dataset.tables,candidates:[base,taker],valuations}} as unknown as AnalysisDataset);
+ assert.equal(normalized.find(s=>s.executionScenario==="maker")!.worstAdverseUsd,-10);
+ assert.equal(normalized.find(s=>s.executionScenario==="taker")!.worstAdverseUsd,-20);
+});
+
+test("THESIS EXIT: invalidation first beats settlement and no endpoint falls back to settlement",()=>{
+ const invalidation=normalizeWidthStructures(referenceFixture({vpocDay:7,invalidationDay:4}))[0]!;
+ assert.equal(invalidation.resolution,"invalidation");assert.equal(invalidation.pnlAtInvalidationUsd,-200);assert.equal(invalidation.pnlAtVpocUsd,null);assert.equal(invalidation.realizedPnlUsd,-200);
+ const settlement=normalizeWidthStructures(referenceFixture({vpocDay:null,invalidationDay:null}))[0]!;
+ assert.equal(settlement.resolution,"settlement");assert.equal(settlement.realizedPnlUsd,300);
+});
+
+test("THESIS EXIT: equal timestamps and unpriced first endpoints never fall through",()=>{
+ const ambiguousDataset=referenceFixture({vpocDay:4,invalidationDay:4});
+ const ambiguous=normalizeWidthStructures(ambiguousDataset)[0]!;
+ assert.equal(ambiguous.resolution,"ambiguous_resolution_order");assert.equal(ambiguous.realizedPnlUsd,null);
+ assert.equal(ambiguous.pnlAtVpocUsd,null);assert.equal(ambiguous.pnlAtInvalidationUsd,null);
+ assert.equal(ambiguous.timeToResolutionDays,3,"known resolution time survives unknown endpoint ordering");
+ assert.equal(cohortOf(ambiguous.timeToResolutionDays,resolutionSpeedBoundaries(ambiguousDataset)),"normal","timing ambiguity is not classified as unresolved");
+ const unpriced=normalizeWidthStructures(referenceFixture({vpocDay:3,invalidationDay:6,vpocStatus:"unavailable"}))[0]!;
+ assert.equal(unpriced.resolution,"vpoc");assert.equal(unpriced.realizedPnlUsd,null);assert.equal(unpriced.pnlAtVpocUsd,null);assert.equal(unpriced.pnlAtInvalidationUsd,null);
+});
+
+test("THESIS EXIT: ambiguous identity without a timestamp does not fabricate resolution timing",()=>{
+ const original=referenceFixture({vpocDay:null,invalidationDay:null});
+ const outcomes=original.tables.outcomes.map(o=>o.outcome_type==="vpoc"||o.outcome_type==="invalidation"
+  ?{...o,trigger_status:"ambiguous",decision_available_timestamp_utc:null,trigger_timestamp_utc:null,valuation_timestamp_utc:null}:o);
+ const s=normalizeWidthStructures({...original,tables:{...original.tables,outcomes}} as AnalysisDataset)[0]!;
+ assert.equal(s.resolution,"ambiguous_resolution_order");assert.equal(s.realizedPnlUsd,null);
+ assert.equal(s.timeToResolutionDays,null);
+ assert.equal(cohortOf(s.timeToResolutionDays,resolutionSpeedBoundaries(original)),"unresolved");
+});
+
+test("REFERENCE: native PnL requires a canonical conversion index and missing premiums keep fee drag unavailable",()=>{
+ const converted=normalizeWidthStructures(referenceFixture({nativeOnly:true,vpocUsd:null}))[0]!;
+ assert.equal(converted.pnlAtVpocUsd,84);
+ const noIndex=referenceFixture({nativeOnly:true,vpocUsd:null});
+ const outcomes=noIndex.tables.outcomes.map(o=>o.outcome_type==="vpoc"?{...o,conversion_index:null}:o);
+ assert.equal(normalizeWidthStructures({...noIndex,tables:{...noIndex.tables,outcomes}} as AnalysisDataset)[0]!.pnlAtVpocUsd,null);
+ const missingPremium=referenceFixture();
+ const rows=missingPremium.tables.candidates.map(c=>({...c,entry_legs:{short:{price_native:null},long:{price_native:null}}}));
+ const s=normalizeWidthStructures({...missingPremium,tables:{...missingPremium.tables,candidates:rows}} as AnalysisDataset)[0]!;
+ assert.equal(s.entry.estimatedRoundTripFeesBtc,null);assert.equal(s.entry.feeDragRoundTrip,null);
+ assert.notEqual(pick("e1-w1000","maker").entry.feeDragRoundTrip,null);
+ assert.notEqual(pick("e1-w1000","taker").entry.feeDragRoundTrip,null);
+});
+
+test("PRESENTATION: every descriptive table wires model-owned effective Ns",()=>{
+ const source=readFileSync(new URL("../app/components/spread-width-report.tsx",import.meta.url),"utf8");
+ for(const token of ["metricN.grossCredit","metricN.grossBenefit","metricN.worstAdverse","realizedN","adverseN","metricN.returnPeak"])
+  assert.match(source,new RegExp(token.replace(".","\\.")));
+ assert.match(source,/structures · \{r\.eventN\} events/);
+ assert.match(source,/Primary paired stability across adjacent widths/);
+ assert.doesNotMatch(source,/Gross contribution at K-long/);
+ assert.match(source,/naked short call has unbounded terminal USD loss/);
+ assert.match(source,/naked short put has a finite strike-related terminal USD bound/);
 });
 
 test("MISSING DATA: no raw valuation path leaves adverse figures Unavailable, not zero",()=>{
