@@ -393,6 +393,22 @@ test("MISSING DATA: a single-width group is excluded from pairwise comparison",(
  assert.ok(r.unmatched.some(u=>u.structure.eventId==="e2"),"and is reported rather than dropped");
 });
 
+test("MATCHING: duplicate requested variants at one actual width do not fabricate a ladder",()=>{
+ const duplicate={...candidate("e1",39000,"maker"),candidate_id:"duplicate-request",requested_strikes:{short:40000,long:38000,width:2000}};
+ const onlyDuplicates={...dataset,tables:{...dataset.tables,candidates:[candidate("e1",39000,"maker"),duplicate]}} as unknown as AnalysisDataset;
+ const r=buildSpreadWidthReport(onlyDuplicates,"maker");
+ assert.equal(r.groups.length,0);
+ assert.equal(r.summary.adjacentSteps,0);
+ assert.equal(r.unmatched.length,2);
+});
+
+test("SAMPLE SIZE: each partial statistic reports its effective observation count",()=>{
+ const row=report.pathRisk.find(r=>r.actualWidthUsd===1000)!;
+ assert.equal(row.metricN.worstAdverse,report.groups.flatMap(g=>g.structures).filter(s=>s.identity.actualWidthUsd===1000&&s.worstAdverseUsd!==null).length);
+ assert.equal(row.metricN.vpoc,report.groups.flatMap(g=>g.structures).filter(s=>s.identity.actualWidthUsd===1000&&s.pnlAtVpocUsd!==null).length);
+ assert.ok(row.eventN<=row.n);
+});
+
 test("MISSING DATA: no raw valuation path leaves adverse figures Unavailable, not zero",()=>{
  const noRaw={...dataset,tables:{...dataset.tables,valuations:[]}} as unknown as AnalysisDataset;
  const r=buildSpreadWidthReport(noRaw,"maker");

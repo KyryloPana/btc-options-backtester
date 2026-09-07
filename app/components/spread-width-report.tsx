@@ -6,7 +6,6 @@ import {EmbeddedVolatilityContext} from "./volatility-report";
 import type {WidthStructure} from "../lib/spread-width/normalize";
 import {ChartMarker,ChartReadout,useChartCursor} from "./chart-cursor";
 import {nearestInPlot,type PlotGeometry} from "../lib/chart-interaction";
-import {executionScenarioStatusLabel} from "../lib/execution-scenario";
 
 /**
  * Presentation only. Every number comes from the prebuilt Spread-Width view
@@ -26,6 +25,7 @@ const usd=(x:number|null)=>x===null?UNAVAILABLE:`${x<0?"−":""}$${Math.abs(x).t
 const signedUsd=(x:number|null)=>x===null?UNAVAILABLE:`${x<0?"−":"+"}$${Math.abs(x).toLocaleString(undefined,{maximumFractionDigits:0})}`;
 const pct=(x:number|null)=>x===null?NOT_ESTIMABLE:`${(x*100).toFixed(1)}%`;
 const ratio=(x:number|null)=>x===null?UNAVAILABLE:x.toFixed(3);
+const withN=(value:string,n:number,total:number)=>`${value} · n=${n}/${total}`;
 const money=(x:number|null)=>x===null?UNAVAILABLE:`$${x.toLocaleString(undefined,{maximumFractionDigits:0})}`;
 const widthLabel=(x:number)=>`$${x.toLocaleString()}`;
 
@@ -101,7 +101,7 @@ export function SpreadWidthReportView({report,volatility,view="maker",onViewChan
  const current=Math.min(page,pages-1);
  const rows=audit.slice(current*pageSize,(current+1)*pageSize);
  const steps=report.groups.flatMap(g=>g.steps);
- const scenarioLabel=report.scenario==="reference"?"reference economics":report.scenario==="maker"?"maker opportunity":"taker";
+ const scenarioLabel=report.scenario==="reference"?"Reference fair value":report.scenario==="maker"?"Immediate Maker opportunity":"Immediate Taker execution";
 
  return <section className="workspace-section dd-report" data-testid="spread-width-report">
   <header className="dd-header">
@@ -121,7 +121,7 @@ export function SpreadWidthReportView({report,volatility,view="maker",onViewChan
   <div className="dd-cards">
    <Card label="Matched observations" value={String(s.matchedObservations)} detail={`${s.matchedGroups} ladder(s), ${s.adjacentSteps} step(s)`}/>
    <Card label="Actual widths" value={s.distinctActualWidths.length?s.distinctActualWidths.map(widthLabel).join(" · "):NOT_ESTIMABLE}/>
-   <Card label="Width substituted" value={String(s.substitutedWidthN)} detail="requested ≠ actual" title="Historical strike availability forced the protective long onto a different strike. Economics use the actual contracts."/>
+   <Card label="Width substituted" value={s.structures?String(s.substitutedWidthN):"Not evaluated"} detail={s.structures?"requested ≠ actual":undefined} title="Historical strike availability forced the protective long onto a different strike. Economics use the actual contracts."/>
    <Card label="Median net credit" value={usd(s.medianNetCreditUsd)}/>
    <Card label="Median max structural loss" value={usd(s.medianStructuralLossUsd)} detail="canonical bounded structural risk"/>
    <Card label="Median fee drag" value={pct(s.medianFeeDragRoundTrip)} detail="estimated round trip"/>
@@ -130,13 +130,13 @@ export function SpreadWidthReportView({report,volatility,view="maker",onViewChan
   {report.robustness&&<section className="dd-block"><h3>Execution Robustness</h3><p className="dd-note">Observed adjacent steps remain strict and separate. Matched N: Maker {report.robustness.maker.groups.flatMap(g=>g.steps).filter(s=>s.economicsComparable).length}; Taker {report.robustness.taker.groups.flatMap(g=>g.steps).filter(s=>s.economicsComparable).length}. Reference and modeled values are never relabeled as fills.</p></section>}
 
   {/* 2 · Entry economics */}
-  <section className="dd-block"><h3>1 · Entry economics by actual width</h3>
+  <section className="dd-block"><h3>1 · Descriptive entry economics by actual width</h3>
    <div className="table-scroll"><table className="dd-table dd-compact">
     <thead><tr><th>Actual width</th><th>N</th><th>Gross credit</th><th>Net credit</th><th>Credit / actual width</th><th>Credit / requested</th><th>Credit / structural loss</th><th>Long-leg cost</th><th>Long share of short</th><th>Fee drag (open)</th><th>Fee drag (round trip)</th><th>Breakeven index</th><th>Max structural loss</th></tr></thead>
     <tbody>{report.entryEconomics.map(r=><tr key={r.actualWidthUsd}>
      <td>{widthLabel(r.actualWidthUsd)}{r.substitutedN>0&&<small className="dd-muted"> · {r.substitutedN} substituted</small>}</td>
-     <td>{r.n}</td>
-     <td>{usd(r.medianGrossCreditUsd)}</td><td>{usd(r.medianNetCreditUsd)}</td>
+     <td>{r.n} structures · {r.eventN} events</td>
+     <td>{withN(usd(r.medianGrossCreditUsd),r.metricN.grossCredit!,r.n)}</td><td>{withN(usd(r.medianNetCreditUsd),r.metricN.netCredit!,r.n)}</td>
      <td>{ratio(r.medianCreditPerActualWidth)}</td>
      <td className="dd-muted">{ratio(r.medianCreditPerRequestedWidth)}</td>
      <td>{ratio(r.medianCreditPerStructuralLoss)}</td>
@@ -152,10 +152,10 @@ export function SpreadWidthReportView({report,volatility,view="maker",onViewChan
   {/* 3 · Protection vs cost */}
   <section className="dd-block dd-centerpiece"><h3>2 · Protection purchased vs its cost</h3><ProtectionVsCost report={report}/>
    <div className="table-scroll"><table className="dd-table dd-compact">
-    <thead><tr><th>Actual width</th><th>N</th><th>Protection cost</th><th>Benefit at long strike</th><th>Benefit deep in the tail</th><th>Net</th></tr></thead>
+    <thead><tr><th>Actual width</th><th>N / event N</th><th>Protection cost</th><th>Gross contribution at K-long</th><th>Gross tail benefit at diagnostic stress</th><th>Net tail protection value</th></tr></thead>
     <tbody>{report.protection.map(r=><tr key={r.actualWidthUsd}>
-     <td>{widthLabel(r.actualWidthUsd)}</td><td>{r.n}</td>
-     <td className="negative">{usd(r.medianProtectionCostUsd)}</td>
+     <td>{widthLabel(r.actualWidthUsd)}</td><td>{r.n} / {r.eventN}</td>
+     <td className="negative">{withN(usd(r.medianProtectionCostUsd),r.metricN.protectionCost!,r.n)}</td>
      <td>{usd(r.medianBenefitAtLongStrikeUsd)}</td>
      <td className="positive">{usd(r.medianBenefitAtDeepTailUsd)}</td>
      <td className={r.medianNetProtectionValueUsd===null?"dd-muted":r.medianNetProtectionValueUsd>=0?"positive":"negative"}>{signedUsd(r.medianNetProtectionValueUsd)}</td>
@@ -215,7 +215,7 @@ export function SpreadWidthReportView({report,volatility,view="maker",onViewChan
   </section>
 
   {/* 6 · Stability across width */}
-  <section className="dd-block"><h3>6 · Stability across adjacent widths</h3>
+  <section className="dd-block"><h3>6 · Primary paired stability across adjacent widths</h3>
    {steps.length===0
     ?<p className="dd-empty-inline">{UNAVAILABLE} — no matched ladder contains two different actual widths, so no adjacent step can be formed.</p>
     :<><div className="table-scroll"><table className="dd-table dd-compact">
@@ -239,21 +239,21 @@ export function SpreadWidthReportView({report,volatility,view="maker",onViewChan
   {/* 7 · Audit */}
   <section className="dd-block"><h3>7 · Matched structures</h3>
    <div className="table-scroll"><table className="dd-table">
-    <thead><tr><th>Event</th><th>DTE</th><th>Short K</th><th>Requested</th><th>Actual</th><th>Scenario</th><th>Gross</th><th>Net</th><th>Long-leg cost</th><th>Fees</th><th>Max structural loss</th><th>PnL VPOC</th><th>PnL inval.</th><th>Worst adverse</th><th>Settlement</th><th>Protection benefit</th><th>Return on structural loss</th></tr></thead>
+    <thead><tr><th>Event</th><th>Candidate</th><th>DTE</th><th>Short / long K</th><th>Requested</th><th>Actual</th><th>Analytical layer</th><th>Gross</th><th>Net</th><th>Long-leg cost</th><th>Fees</th><th>Max structural loss</th><th>Resolution</th><th>PnL VPOC</th><th>PnL inval.</th><th>Worst adverse</th><th>Settlement</th><th>Realized thesis exit</th><th>Gross protection</th><th>Net protection</th><th>Return on structural loss</th></tr></thead>
     <tbody>{rows.map((r:WidthStructure)=><tr key={r.structureExecutionId}>
-     <td>{r.eventId}</td><td>{r.actualDteDays===null?"—":d1(r.actualDteDays)}</td>
-     <td>{money(r.identity.shortStrike)}</td>
+     <td>{r.eventId}</td><td>{r.candidateId}</td><td>{r.actualDteDays===null?"—":d1(r.actualDteDays)}</td>
+     <td>{money(r.identity.shortStrike)} / {money(r.identity.longStrike)}</td>
      <td className={r.identity.widthSubstituted?"dd-muted":undefined} title={r.identity.widthSubstituted?"Historical availability forced a different protective long; economics use the actual width.":undefined}>{r.identity.requestedWidthUsd===null?"—":widthLabel(r.identity.requestedWidthUsd)}</td>
      <td>{r.identity.actualWidthUsd===null?"—":widthLabel(r.identity.actualWidthUsd)}{r.identity.widthSubstituted&&<small className="dd-muted"> ⓘ</small>}</td>
-     <td className="dd-muted" title={r.executionScenarioReason??undefined}>{r.executionScenario??"—"} · {executionScenarioStatusLabel(r.executionScenarioStatus)}{r.executionScenarioLegacyUndifferentiated?" · legacy undifferentiated":""}</td>
+     <td className="dd-muted" title={r.executionScenarioReason??undefined}>{r.analyticsTrack==="reference"?"Reference fair value":r.executionScenario==="maker"?"Immediate Maker opportunity":"Immediate Taker execution"}{r.executionScenarioLegacyUndifferentiated?" · legacy undifferentiated":""}</td>
      <td>{usd(r.entry.grossCreditUsd)}</td><td>{usd(r.entry.netCreditUsd)}</td>
      <td>{usd(r.protection.longLegPremiumUsd)}</td>
      <td>{r.entry.openingFeesBtc===null?UNAVAILABLE:`${r.entry.openingFeesBtc.toFixed(5)} BTC`}</td>
-     <td className="negative">{usd(r.payoff.maximumStructuralLossUsd.value)}</td>
+     <td className="negative">{usd(r.payoff.maximumStructuralLossUsd.value)}</td><td title={r.resolutionReason??undefined}>{r.resolution}</td>
      <td>{usd(r.pnlAtVpocUsd)}</td><td>{usd(r.pnlAtInvalidationUsd)}</td>
      <td className={r.worstAdverseUsd===null?"dd-muted":"negative"} title={r.adverse.reason??undefined}>{usd(r.worstAdverseUsd)}</td>
-     <td>{usd(r.pnlAtSettlementUsd)}</td>
-     <td>{usd(r.protection.benefitAtDeepTailUsd.value)}</td>
+     <td>{usd(r.pnlAtSettlementUsd)}</td><td title={r.resolutionReason??undefined}>{usd(r.realizedPnlUsd)}</td>
+     <td>{usd(r.protection.benefitAtDeepTailUsd.value)}</td><td>{signedUsd(r.protection.netProtectionValueUsd)}</td>
      <td className={r.capital.returnOnStructuralLoss.value===null?"dd-muted":undefined} title={r.capital.returnOnStructuralLoss.reason??undefined}>{ratio(r.capital.returnOnStructuralLoss.value)}</td>
     </tr>)}</tbody>
    </table></div>

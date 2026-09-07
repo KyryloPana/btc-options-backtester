@@ -85,11 +85,20 @@ test("ROUTING: Reference is the Short Strike primary layer, with maker and taker
 test("ROUTING: Reference is the Spread Width primary layer, with maker and taker as robustness",()=>{
  const report=buildSpreadWidthReport(fixture());
  assert.equal(report.scenario,"reference");
+ assert.ok(report.groups.length>0,"Reference structures with execution_scenario=null form the primary ladder");
+ assert.ok(report.groups.flatMap(g=>g.structures).every(s=>s.executionScenario===null&&s.analyticsTrack==="reference"));
  assert.equal(report.robustness!.maker.scenario,"maker");
  assert.equal(report.robustness!.taker.scenario,"taker");
  const route=REPORT_TRACK_ROUTES.find(r=>r.report==="Spread Width")!;
  assert.equal(route.primaryLayer,"reference");
  assert.deepEqual([...route.robustnessLayers],["immediate_maker","immediate_taker"]);
+});
+
+test("ROUTING: unavailable strict execution does not delete the Reference width ladder",()=>{
+ const report=buildSpreadWidthReport(fixture({takerCoverage:false}));
+ assert.equal(report.scenario,"reference");
+ assert.ok(report.summary.matchedObservations>=2);
+ assert.ok(report.groups.some(g=>new Set(g.structures.map(s=>s.identity.actualWidthUsd)).size>=2));
 });
 
 test("ROUTING: Economics uses Q50 central, Reference counterfactual, and Q90 conservative",()=>{
