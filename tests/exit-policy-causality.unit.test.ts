@@ -108,7 +108,7 @@ test("Exit presentation scopes overflow, fixed cards, identities, IV units and n
  assert.match(view,/report\.policies\.map/);
  assert.match(view,/\(x\*100\)\.toFixed\(1\).*vol pts/);
  assert.match(view,/shortDeltaN/); assert.match(view,/longDeltaN/); assert.match(view,/bothDeltaN/);
- assert.match(view,/Completely unavailable/); assert.match(view,/Partial evidence/); assert.match(view,/Not applicable/);
+ assert.match(view,/Not evaluated/); assert.match(view,/Completely unavailable/); assert.match(view,/Partial endpoint evidence/); assert.match(view,/Endpoint observed/); assert.match(view,/Not applicable/);
  assert.match(view,/Showing first 200 of/);
  assert.match(volatilityView,/<tr><td>Settlement<\/td><td colSpan=\{6\}>Not applicable/);
  assert.match(volatilityView,/className="exit-table-scroll"/);
@@ -118,5 +118,6 @@ test("Exit presentation scopes overflow, fixed cards, identities, IV units and n
  assert.match(view,/Policies with determinate exits/);
  assert.match(view,/policiesWithDeterminateExits=report\.policies\.filter\(x=>x\.stats\.denominators\.triggerDeterminate\.n>0\)\.length/);
  assert.doesNotMatch(view,/Policies evaluated/);
- assert.match(view,/\{value!==null&&<i className=\{`exit-delta-fill/);
+ assert.match(view,/value!==null&&value!==0&&<i className=\{`exit-delta-fill/,"numeric zero has no directional fill");
+ assert.match(view,/value<0\?"is-negative":"is-positive"/,"only strictly positive values receive the positive fill");
 });
