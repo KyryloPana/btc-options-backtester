@@ -376,7 +376,10 @@ test("E: every canonical fixed-time and capture outcome survives to the rendered
  // The persisted Reference counterfactual remains inspectable, but it is not
  // promoted into central Q50 economics when empirical execution is absent.
  const report=buildExitPolicyReport(fixture(),CONFIG);
- assert.ok(report.policies.every(p=>p.stats.pricedExits.n===0),"Reference does not substitute for Q50");
+ assert.ok(report.policies.some(p=>p.stats.pricedExits.n>0),"Reference fair-value economics remain available without Q50 or execution evidence");
+ assert.equal(report.scope.analyticsTrack,"reference");
+ assert.equal(report.scope.executionScenario,null);
+ assert.equal(report.scope.pricingTrack,null);
  assert.ok(report.observed.maker&&report.observed.taker,"observed robustness stays separate");
 });
 
