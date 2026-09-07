@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
 import type {AnalysisDataset} from "../app/lib/research-analysis.ts";
 import {datasetForAnalyticsTrack} from "../app/lib/research-analytics-model.ts";
 import {normalizeExitPolicies} from "../app/lib/exit-policy/normalize.ts";
@@ -55,3 +56,45 @@ test("exact but IV-empty winning endpoint is completely unavailable and settleme
 test("strict-track availability denominators remain distinct",()=>{const rows=[thesis(dataset([outcome("settlement",9)])),thesis(dataset([], [candidate({candidate_id:"u1",execution_scenario_status:"unavailable"})])),thesis(dataset([], [candidate({candidate_id:"u2",execution_scenario_status:"unavailable"})]))],stats=policyStatistics(rows);assert.equal(stats.denominators.selectedEligible.n,3);assert.equal(stats.denominators.trackAvailable.n,1);assert.equal(stats.denominators.trackUnavailable.n,2);assert.equal(stats.denominators.notEvaluated.n,0)});
 
 test("missing capital evidence is unavailable, not mathematically not estimable",()=>{const row=normalizeExitPolicies(dataset([outcome("settlement",6)]),{capitalBasis:"peak_required_capital"}).find(x=>x.policyId==="thesis")!,stats=policyStatistics([row]);assert.equal(stats.capitalDaysAmongPricedExits.status,"unavailable");assert.equal(stats.capitalDaysAmongPricedExits.n,0)});
+
+test("winning-exit IV separates observed endpoints from usable delta pairs",()=>{
+ const observed=(iv:number)=>({status:"available",observation:"observed",source:"deribit_trade_iv",iv_decimal:iv});
+ const structures=Array.from({length:5},(_,i)=>({candidate_id:`iv-${i}`,legs:[{leg:"short",...(i<2?observed(.5):{status:"unavailable"})}],same_expiry_reference:{status:"unavailable"},differentials:[],post_entry_market_iv:[{endpoint_id:"vpoc",target_timestamp_utc:D(4),short:i<3?observed(i<2?.45:.4):{status:"unavailable"},long:{status:"unavailable"}}],market_iv_path:[]}));
+ const d={...dataset([]),tables:{...dataset([]).tables,structure_volatility_state:structures}} as AnalysisDataset;
+ const vol=buildVolatilityReport(d),base=thesis(dataset([outcome("vpoc",4)]));
+ const observations=structures.map((_,i)=>({...base,candidateId:`iv-${i}`,matchKey:`iv-${i}`,winningTrigger:"vpoc" as const,valuationTimestamp:D(4)}));
+ const result=winningExitVolatility(vol,[{policyId:"thesis",observations}],new Set(observations.map(x=>x.candidateId)))[0]!;
+ assert.equal(result.exactEndpointN,5);
+ assert.equal(result.shortObservedN,3);
+ assert.equal(result.shortDeltaN,2);
+ assert.equal(result.longDeltaN,0);
+ assert.equal(result.bothDeltaN,0);
+ assert.equal(result.medianEntryShortIv,.5);
+ assert.equal(result.medianExitShortIv,.45);
+ assert.ok(Math.abs(result.medianDeltaShortIv!+.05)<1e-12);
+});
+
+test("winning-exit IV absence is unavailable evidence while measured zero remains numeric",()=>{
+ const observed=(iv:number)=>({status:"available",observation:"observed",source:"deribit_trade_iv",iv_decimal:iv});
+ const structures=[{candidate_id:"no-entry",legs:[{leg:"short",status:"unavailable"}],same_expiry_reference:{status:"unavailable"},differentials:[],post_entry_market_iv:[{endpoint_id:"vpoc",target_timestamp_utc:D(4),short:observed(.45),long:{status:"unavailable"}}],market_iv_path:[]},{candidate_id:"zero",legs:[{leg:"short",...observed(.5)}],same_expiry_reference:{status:"unavailable"},differentials:[],post_entry_market_iv:[{endpoint_id:"vpoc",target_timestamp_utc:D(4),short:observed(.5),long:{status:"unavailable"}}],market_iv_path:[]}];
+ const vol=buildVolatilityReport({...dataset([]),tables:{...dataset([]).tables,structure_volatility_state:structures}} as AnalysisDataset),base=thesis(dataset([outcome("vpoc",4)]));
+ const rows=structures.map((x,i)=>({...base,candidateId:x.candidate_id,matchKey:x.candidate_id,winningTrigger:"vpoc" as const,valuationTimestamp:D(4),policyId:i?"capture_50" as const:"thesis" as const}));
+ const results=winningExitVolatility(vol,rows.map(x=>({policyId:x.policyId,observations:[x]})),new Set(rows.map(x=>x.candidateId)));
+ assert.equal(results[0]!.shortDeltaN,0); assert.equal(results[0]!.medianDeltaShortIv,null);
+ assert.equal(results[1]!.shortDeltaN,1); assert.equal(results[1]!.shortCompressionShare,0); assert.equal(results[1]!.shortExpansionShare,0);
+});
+
+test("Exit presentation scopes overflow, fixed cards, identities, IV units and null language",()=>{
+ const view=readFileSync(new URL("../app/components/exit-policy-report.tsx",import.meta.url),"utf8"),volatilityView=readFileSync(new URL("../app/components/volatility-report.tsx",import.meta.url),"utf8"),css=readFileSync(new URL("../app/globals.css",import.meta.url),"utf8");
+ assert.match(view,/className="exit-table-scroll"/);
+ assert.doesNotMatch(view,/className="count-grid"/);
+ assert.match(view,/report\.policies\.map/);
+ assert.match(view,/\(x\*100\)\.toFixed\(1\).*vol pts/);
+ assert.match(view,/shortDeltaN/); assert.match(view,/longDeltaN/); assert.match(view,/bothDeltaN/);
+ assert.match(view,/Completely unavailable/); assert.match(view,/Partial evidence/); assert.match(view,/Not applicable/);
+ assert.match(view,/Showing first 200 of/);
+ assert.match(volatilityView,/<tr><td>Settlement<\/td><td colSpan=\{6\}>Not applicable/);
+ assert.match(volatilityView,/className="exit-table-scroll"/);
+ assert.match(css,/\.exit-table-scroll \{ width: 100%; max-width: 100%; min-width: 0; overflow-x: auto/);
+ assert.match(css,/\.exit-fixed-grid \{ display: grid; grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
+});
