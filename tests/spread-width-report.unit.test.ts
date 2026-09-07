@@ -6,6 +6,7 @@ import {normalizeWidthStructures} from "../app/lib/spread-width/normalize.ts";
 import {buildSpreadWidthReport} from "../app/lib/spread-width/report.ts";
 import {expiryPayoff,payoffExtrema} from "../app/lib/expiry-payoff.ts";
 import {canonicalStructuralLoss,STRUCTURAL_LOSS_METHOD_VERSION} from "../app/lib/maximum-economic-loss.ts";
+import {cohortOf,resolutionSpeedBoundaries} from "../app/lib/duration-dte/resolution-speed.ts";
 
 const H=36e5;
 const D=(day:number,hour=0)=>new Date(Date.UTC(2026,0,day,hour)).toISOString();
@@ -458,16 +459,30 @@ test("STRICT PATHS: Maker and Taker admit only their own raw scenario marks",()=
 
 test("THESIS EXIT: invalidation first beats settlement and no endpoint falls back to settlement",()=>{
  const invalidation=normalizeWidthStructures(referenceFixture({vpocDay:7,invalidationDay:4}))[0]!;
- assert.equal(invalidation.resolution,"invalidation");assert.equal(invalidation.pnlAtInvalidationUsd,-200);assert.equal(invalidation.realizedPnlUsd,-200);
+ assert.equal(invalidation.resolution,"invalidation");assert.equal(invalidation.pnlAtInvalidationUsd,-200);assert.equal(invalidation.pnlAtVpocUsd,null);assert.equal(invalidation.realizedPnlUsd,-200);
  const settlement=normalizeWidthStructures(referenceFixture({vpocDay:null,invalidationDay:null}))[0]!;
  assert.equal(settlement.resolution,"settlement");assert.equal(settlement.realizedPnlUsd,300);
 });
 
 test("THESIS EXIT: equal timestamps and unpriced first endpoints never fall through",()=>{
- const ambiguous=normalizeWidthStructures(referenceFixture({vpocDay:4,invalidationDay:4}))[0]!;
+ const ambiguousDataset=referenceFixture({vpocDay:4,invalidationDay:4});
+ const ambiguous=normalizeWidthStructures(ambiguousDataset)[0]!;
  assert.equal(ambiguous.resolution,"ambiguous_resolution_order");assert.equal(ambiguous.realizedPnlUsd,null);
+ assert.equal(ambiguous.pnlAtVpocUsd,null);assert.equal(ambiguous.pnlAtInvalidationUsd,null);
+ assert.equal(ambiguous.timeToResolutionDays,3,"known resolution time survives unknown endpoint ordering");
+ assert.equal(cohortOf(ambiguous.timeToResolutionDays,resolutionSpeedBoundaries(ambiguousDataset)),"normal","timing ambiguity is not classified as unresolved");
  const unpriced=normalizeWidthStructures(referenceFixture({vpocDay:3,invalidationDay:6,vpocStatus:"unavailable"}))[0]!;
- assert.equal(unpriced.resolution,"vpoc");assert.equal(unpriced.realizedPnlUsd,null);assert.equal(unpriced.pnlAtInvalidationUsd,null);
+ assert.equal(unpriced.resolution,"vpoc");assert.equal(unpriced.realizedPnlUsd,null);assert.equal(unpriced.pnlAtVpocUsd,null);assert.equal(unpriced.pnlAtInvalidationUsd,null);
+});
+
+test("THESIS EXIT: ambiguous identity without a timestamp does not fabricate resolution timing",()=>{
+ const original=referenceFixture({vpocDay:null,invalidationDay:null});
+ const outcomes=original.tables.outcomes.map(o=>o.outcome_type==="vpoc"||o.outcome_type==="invalidation"
+  ?{...o,trigger_status:"ambiguous",decision_available_timestamp_utc:null,trigger_timestamp_utc:null,valuation_timestamp_utc:null}:o);
+ const s=normalizeWidthStructures({...original,tables:{...original.tables,outcomes}} as AnalysisDataset)[0]!;
+ assert.equal(s.resolution,"ambiguous_resolution_order");assert.equal(s.realizedPnlUsd,null);
+ assert.equal(s.timeToResolutionDays,null);
+ assert.equal(cohortOf(s.timeToResolutionDays,resolutionSpeedBoundaries(original)),"unresolved");
 });
 
 test("REFERENCE: native PnL requires a canonical conversion index and missing premiums keep fee drag unavailable",()=>{

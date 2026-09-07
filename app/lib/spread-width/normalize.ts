@@ -417,7 +417,10 @@ export function normalizeWidthStructures(dataset:AnalysisDataset):readonly Width
   const ambiguousResolution=vpoc.ambiguous||invalidation.ambiguous||(vpocInWindow&&invalidationInWindow&&vpoc.time===invalidation.time);
   const firstVpoc=vpocInWindow&&(!invalidationInWindow||vpoc.time!<invalidation.time!);
   const firstInvalidation=invalidationInWindow&&(!vpocInWindow||invalidation.time!<vpoc.time!);
-  const pnlAtVpocUsd=vpocInWindow?pnlAt(outcomes,candidateId,scenario,reference,"vpoc"):null;
+  // Operational endpoint metrics are symmetric: only the first causal Thesis
+  // Exit exists for the position. Later canonical outcomes remain in the
+  // bundle but do not populate this operational report.
+  const pnlAtVpocUsd=firstVpoc?pnlAt(outcomes,candidateId,scenario,reference,"vpoc"):null;
   // Operational Thesis Exit only: an invalidation after VPOC belongs to a
   // counterfactual post-exit path and must not enter this report's endpoint.
   const pnlAtInvalidationUsd=firstInvalidation?pnlAt(outcomes,candidateId,scenario,reference,"invalidation"):null;
@@ -427,8 +430,9 @@ export function normalizeWidthStructures(dataset:AnalysisDataset):readonly Width
   const resolutionReason=ambiguousResolution?"VPOC and invalidation share the same available timestamp precision; causal order is ambiguous under thesis_exit_v1, so realized PnL is unavailable.":realizedPnlUsd===null?"The causal thesis_exit_v1 outcome was reached but has no priced canonical USD PnL.":null;
   const resolutionMs=firstVpoc?vpoc.time:firstInvalidation?invalidation.time:null;
   const ambiguousBoundaryMs=ambiguousResolution?[vpoc.time,invalidation.time].filter((x):x is number=>x!==null).sort((a,b)=>a-b)[0]??null:null;
-  const boundaryMs=resolutionMs??ambiguousBoundaryMs??expiryTimestampMs;
-  const challenge=challengeOf(pathByEvent.get(eventId)??[],shortStrike,direction,structureEntryMs,boundaryMs,invalidationMs,resolutionMs??ambiguousBoundaryMs);
+  const firstResolutionMs=resolutionMs??ambiguousBoundaryMs;
+  const boundaryMs=firstResolutionMs??expiryTimestampMs;
+  const challenge=challengeOf(pathByEvent.get(eventId)??[],shortStrike,direction,structureEntryMs,boundaryMs,invalidationMs,firstResolutionMs);
   const adverse=reference?referenceAdversePath(valuations,candidateId,structureEntryMs,boundaryMs):adversePath(valuations,candidateId,scenario,evaluated,structureEntryMs,boundaryMs);
 
   const marginRow=margins.find(m=>m.candidate_id===candidateId);
@@ -436,7 +440,7 @@ export function normalizeWidthStructures(dataset:AnalysisDataset):readonly Width
 
   // First-resolution time, for the canonical slow-resolution cohorts.
   const eventEntry=ms(event?.entry_timestamp_utc);
-  const timeToResolutionDays=resolutionMs===null||eventEntry===null?null:(resolutionMs-eventEntry)/DAY;
+  const timeToResolutionDays=firstResolutionMs===null||eventEntry===null?null:(firstResolutionMs-eventEntry)/DAY;
 
   // The short strike is part of the key: comparing widths across different
   // short strikes would attribute a placement difference to width.
