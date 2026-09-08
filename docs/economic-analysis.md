@@ -39,7 +39,7 @@ The global **Duration capital basis** control scopes Duration & DTE capital-time
 
 ## Configuration-level economics and portfolio selection
 
-A structural configuration is identified canonically at export by `structural_configuration_id` (version `structural-configuration-v1`). Its inputs are only ex-ante choices: target DTE family, strike method, requested width, structure type, and quantity. Actual DTE, substituted strikes/width, PnL, and exits are deliberately excluded. Schema 4.2 persists the identifier, normalized fields, and version; schema 4.1 imports derive it only from those already-persisted ex-ante fields.
+A structural configuration is identified canonically at export by `structural_configuration_id` (version `structural-configuration-v2`). Its inputs are only ex-ante structural choices: target DTE family, strike method, requested width, and direction-neutral structure family. Quantity is a separate sizing input. Direction, actual DTE, substituted strikes/width, PnL, and exits are deliberately excluded. Schema 4.3 persists and validates the identifier and normalized fields; schema 4.2 imports recompute it only from persisted ex-ante fields.
 
 Configuration comparisons use one independent MR event per observation. A configuration/event pair must contain at most one candidate; duplicates are an integrity error naming every conflicting candidate. Trade-conditional statistics use priced events only. Explicit canonical no-trades contribute zero to opportunity-normalized expectancy, while unavailable evidence makes that expectancy unavailable. P10/P5 require at least `max(20, minimumCellEvents)` independent priced events.
 
@@ -59,3 +59,15 @@ At a complete state:
 - `requiredEquity(t) = max(requiredEquityRisk(t), requiredEquityMargin(t))` only when both sides are available.
 
 Peak aggregate IM/MM are maxima of the contemporaneous aggregate series, never sums of per-position opening or individual peak values. Modeled-equity drawdown is peak-to-trough on the complete MTM series. Realized-only equity drawdown is retained under that explicit diagnostic name. USD modeled equity uses the causal index at each state. “Modeled available funds” is an analytical reserve calculation, not a claim about historical authenticated Deribit account balances.
+
+## Corrected matrix, configuration, and portfolio objects (schema 4.3)
+
+The research matrix denominator is the canonical `configuration_opportunities.jsonl`: exactly one row for each qualifying MR event × attempted ex-ante structural configuration. Generation attempts remain represented even when no candidate was entered. Its structured Q50 state is `trade`, `explicit_no_trade`, or `unavailable`; only `empirical_nonpositive_credit_after_fees` is an explicit economic rejection. Pending recompute, insufficient calibration, missing Reference inputs, and every other methodological failure remain unavailable.
+
+A structural configuration is direction-neutral: nominal target-DTE family + short-strike rule + requested width + `credit_vertical` family. Direction, quantity, actual expiry/DTE/strikes/width, exits, and PnL are excluded. Quantity remains position sizing, not structural identity. Identity version v2 is recomputed during validation. Native schema 4.3 bundles with inconsistent normalized fields or hashes fail; schema 4.2 migration can recompute v2 from its persisted ex-ante fields, while its missing structured opportunity decision is explicitly unavailable.
+
+Opportunity expectancy is `sum(priced Q50 PnL + zero for canonical explicit no-trades) / all eligible event × configuration opportunities`, and is unavailable if any eligible opportunity is unavailable. Trade-conditional PnL statistics use priced trades only. Strategy headline KPIs only appear after explicit configuration selection; before selection the header describes the research matrix.
+
+Execution survival uses paired candidate + event + complete-Exit-Policy identities. Reference→Q50 and Q50→Q90 report median within-pair changes; absolute layer cards are secondary.
+
+Portfolio chronology consumes exact selected-policy-window marks. An open constituent requires exact PnL, IM, and MM at the portfolio timestamp. Missing paths or marks invalidate the aggregate state—there is no zero assumption, opening-margin fallback, LOCF, or interpolation. Aggregate bounded risk is named aggregate track maximum net loss and sums gross without directional netting. UTC-crossing state intervals split at midnight; daily IM capital-days reconcile to the global time integral.

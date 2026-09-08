@@ -1,6 +1,6 @@
 "use client";
 import {useState} from "react";
-import {evidenceRowProps,ResearchEvidenceBadge} from "./research-evidence-status";
+import {AuditAttentionControls,evidenceRowProps,ResearchEvidenceBadge} from "./research-evidence-status";
 import type {ConditionalBucket,MatchedPair,ShortStrikeReport} from "../lib/short-strike/report";
 import type {VolatilityReport} from "../lib/volatility/volatility-report";
 import {EmbeddedVolatilityContext} from "./volatility-report";
@@ -187,13 +187,13 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
   </section>
 
   {/* 6 · Matched pair audit */}
-  <details className="dd-block exit-details"><summary>5 · Matched-pair audit · {report.pairs.length} pairs</summary>
-   <div className="table-scroll"><table className="dd-table">
+  <details className="dd-block exit-details analytics-audit" data-filter="attention"><summary>5 · Matched-pair audit · {report.pairs.length} pairs</summary>
+   <AuditAttentionControls partial={report.pairs.filter(x=>!x.economicsComparable||x.technical.challenge.reason!==null||x.buffered.challenge.reason!==null).length} unavailable={report.unpaired.length}/><div className="table-scroll"><table className="dd-table">
     <thead><tr><th>Event</th><th>DTE</th><th>Width</th><th>Scenario</th><th>Technical K</th><th>Buffered K</th><th>Extra distance</th><th>Technical credit</th><th>Buffered credit</th><th>Credit sacrificed</th><th>Challenge (tech → buff)</th><th>Δ worst adverse</th><th>Δ realized PnL</th></tr></thead>
     <tbody>{rows.map((p:MatchedPair)=>{
      const state=(x:MatchedPair["technical"])=>x.challenge.reason!==null?"—":x.challenge.breached?"breach":x.challenge.invalidatedInWindow?"invalidated":x.challenge.touched?"touch":"clean";
      const realized=p.deltas.find(d=>d.label==="Δ realized PnL")?.value??null;
-     const challengeUsable=p.technical.challenge.reason===null&&p.buffered.challenge.reason===null,complete=p.economicsComparable&&challengeUsable,assessment={status:(complete?"VALID":"PARTIAL") as "VALID"|"PARTIAL",reason:complete?null:[!p.economicsComparable?"Focal economics incomplete.":null,!challengeUsable?"Focal challenge evidence unresolved.":null].filter(Boolean).join(" ")};return <tr key={p.matchKey} {...evidenceRowProps(assessment)}>
+     const challengeUsable=p.technical.challenge.reason===null&&p.buffered.challenge.reason===null,complete=p.economicsComparable&&challengeUsable,assessment={status:(complete?"VALID":"PARTIAL") as "VALID"|"PARTIAL",reason:complete?null:[!p.economicsComparable?"Focal economics incomplete.":null,!challengeUsable?"Focal challenge evidence unresolved.":null].filter(Boolean).join(" ")};return <tr key={p.matchKey} data-evidence={assessment.status} {...evidenceRowProps(assessment)}>
       <td><ResearchEvidenceBadge assessment={assessment}/> {p.eventId}</td><td>{p.actualDteDays===null?"—":d1(p.actualDteDays)}</td><td>{money(p.widthUsd)}</td>
       <td className="dd-muted" title={p.technical.executionScenarioReason??p.buffered.executionScenarioReason??undefined}>{report.scenario==="reference"?"Reference fair value":p.executionScenario??"—"} · {executionScenarioStatusLabel(p.technical.executionScenarioStatus)} / {executionScenarioStatusLabel(p.buffered.executionScenarioStatus)}</td>
       <td>{money(p.technical.geometry.shortStrike)}</td><td>{money(p.buffered.geometry.shortStrike)}</td>

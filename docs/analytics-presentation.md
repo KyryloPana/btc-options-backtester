@@ -26,3 +26,5 @@ Every aggregate metric displays its effective `n / denominator` (or the exact in
 Audit tables are keyboard-accessible disclosure widgets. Where attention filters exist, flagged rows are shown first and “Attention only” is the initial filter when flags exist. Filtering changes presentation only, never the analytical cohort or formulas.
 
 Future reports must reuse the shared evidence badge, attention badge, panel, KPI, and assessment vocabulary rather than introducing report-specific red/yellow/green meanings.
+
+Evidence invalidity is code-driven. Economics uses structured exit diagnostic codes for impossible/ambiguous causal ordering; prose is explanatory only. Ordinary states such as an endpoint after expiry remain unavailable/not reached rather than becoming invalid because of their wording. Configuration tail metrics below their declared minimum receive LOW N with observed N and minimum.

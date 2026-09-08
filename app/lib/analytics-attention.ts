@@ -7,15 +7,15 @@ export interface AnalyticsAssessment {evidence:AnalyticsEvidenceStatus;evidenceR
 
 /** Descriptive tails are presentation only: never exclusions or strategy selection. */
 export const ECONOMICS_TAIL_ATTENTION_MIN_N=20;
-const invalidReason=(reason:string)=>/(?:integrity|semantic|causal violation|pre[_ -]?entry|after[_ -]?expiry|invalid timestamp)/i.test(reason);
+const INVALID_EXIT_CODES=new Set(["ambiguous_timing","pre_entry_outcome"]);
 
 export function assessEconomicPositions(positions:readonly PositionEconomics[]):ReadonlyMap<string,AnalyticsAssessment>{
  const priced=positions.filter(p=>p.status==="priced"&&p.pnlBtc!==null),pnls=priced.map(p=>p.pnlBtc!).sort((a,b)=>a-b),tails=pnls.length>=ECONOMICS_TAIL_ATTENTION_MIN_N;let low:number|null=null,high:number|null=null;
  if(tails){low=pnls[Math.floor((pnls.length-1)*.1)]!;high=pnls[Math.ceil((pnls.length-1)*.9)]!}
  return new Map(positions.map(p=>{const reason=p.missingReason??"Canonical economic evidence is complete.";let evidence:AnalyticsEvidenceStatus;
-  if(invalidReason(reason))evidence="INVALID";
+  if(typeof p.diagnosticCode==="string"&&INVALID_EXIT_CODES.has(p.diagnosticCode))evidence="INVALID";
   else if(p.status!=="priced")evidence="UNAVAILABLE";
-  else if([p.trackMaximumNetLossBtc,p.incrementalInitialMarginBtc,p.peakInitialMarginBtc,p.capitalDaysBtc].some(x=>x.value===null))evidence="PARTIAL";
+  else if(p.pnlUsd===null||[p.maximumStructuralLossBtc,p.maximumStructuralLossUsd,p.trackMaximumNetLossBtc,p.trackMaximumNetLossUsd,p.incrementalInitialMarginBtc,p.incrementalMaintenanceMarginBtc,p.peakInitialMarginBtc,p.peakMaintenanceMarginBtc,p.capitalDaysBtc].some(x=>x.value===null))evidence="PARTIAL";
   else evidence="VALID";
   const attention:AnalyticsAttention[]=[];
   if(tails&&p.pnlBtc!==null&&p.pnlBtc<=low!)attention.push({kind:"UNUSUAL",reason:`Descriptive lower PnL decile (N=${pnls.length}); retained as a valid observation.`},{kind:"ADVERSE",reason:"Economically adverse tail observation; evidence validity is assessed separately."},{kind:"TAIL",reason:"PnL is at or below the cohort P10."});

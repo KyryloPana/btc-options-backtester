@@ -1,0 +1,12 @@
+import type {AnalysisDataset} from "../research-analysis.ts";
+import type {PositionEconomics} from "./position.ts";
+export type EconomicOpportunityStatus="trade"|"explicit_no_trade"|"unavailable";
+export interface ConfigurationOpportunity {eventId:string;structuralConfigurationId:string|null;structuralConfiguration:Readonly<Record<string,unknown>>|null;status:EconomicOpportunityStatus;candidateId:string|null;pnlBtc:number|null;reasonCode:string|null;reason:string|null}
+type Row=Readonly<Record<string,unknown>>;
+const rec=(x:unknown):Row=>x&&typeof x==="object"&&!Array.isArray(x)?x as Row:{};
+const str=(x:unknown)=>typeof x==="string"&&x?x:null;
+const num=(x:unknown)=>typeof x==="number"&&Number.isFinite(x)?x:null;
+export const EXPLICIT_NO_TRADE_CODES=new Set(["empirical_nonpositive_credit_after_fees"]);
+export function classifyEconomicOpportunity(value:unknown):Pick<ConfigurationOpportunity,"status"|"reasonCode"|"reason">{const x=rec(value),code=str(x.reason_code)??str(x.reasonCode),declared=str(x.status),reason=str(x.reason);if(declared==="trade")return{status:"trade",reasonCode:code,reason};if(declared==="explicit_no_trade"||EXPLICIT_NO_TRADE_CODES.has(code??""))return{status:"explicit_no_trade",reasonCode:code,reason};return{status:"unavailable",reasonCode:code??"economic_opportunity_unavailable",reason};}
+/** Generation availability is authoritative: selected PositionEconomics only enriches its matching opportunity. */
+export function projectConfigurationOpportunities(dataset:AnalysisDataset,positions:readonly PositionEconomics[]):readonly ConfigurationOpportunity[]{const byCandidate=new Map(positions.map(p=>[`${p.eventId}|${p.candidateId}`,p]));return (dataset.tables.configuration_opportunities??dataset.tables.availability??[]).map(row=>{const eventId=str(row.event_id)??"",candidateId=str(row.candidate_id),position=candidateId?byCandidate.get(`${eventId}|${candidateId}`):undefined,declared=classifyEconomicOpportunity(row.economic_opportunity);const status=position?.status==="priced"&&position.pnlBtc!==null?"trade":declared.status;return{eventId,structuralConfigurationId:str(row.structural_configuration_id),structuralConfiguration:row.structural_configuration&&typeof row.structural_configuration==="object"?row.structural_configuration as Row:null,status,candidateId,pnlBtc:status==="trade"?position?.pnlBtc??num(rec(row.economic_opportunity).pnl_btc):status==="explicit_no_trade"?0:null,reasonCode:status==="trade"?null:declared.reasonCode,reason:status==="trade"?null:declared.reason};});}
