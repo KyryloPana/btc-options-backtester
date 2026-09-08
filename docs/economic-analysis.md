@@ -37,6 +37,25 @@ For one position:
 
 The global **Duration capital basis** control scopes Duration & DTE capital-time analysis. Economics reports its canonical structural-risk and policy-window margin denominators independently; that control does not switch or hide Economics denominators.
 
-## Phase boundary
+## Configuration-level economics and portfolio selection
 
-Portfolio aggregation and presentation redesign are handled separately. In this phase, portfolio reconstruction is only prevented when Complete Exit Policy is not configured; no strategy optimization or portfolio approximation is introduced.
+A structural configuration is identified canonically at export by `structural_configuration_id` (version `structural-configuration-v1`). Its inputs are only ex-ante choices: target DTE family, strike method, requested width, structure type, and quantity. Actual DTE, substituted strikes/width, PnL, and exits are deliberately excluded. Schema 4.2 persists the identifier, normalized fields, and version; schema 4.1 imports derive it only from those already-persisted ex-ante fields.
+
+Configuration comparisons use one independent MR event per observation. A configuration/event pair must contain at most one candidate; duplicates are an integrity error naming every conflicting candidate. Trade-conditional statistics use priced events only. Explicit canonical no-trades contribute zero to opportunity-normalized expectancy, while unavailable evidence makes that expectancy unavailable. P10/P5 require at least `max(20, minimumCellEvents)` independent priced events.
+
+No configuration is selected from historical performance. Configuration-level economics are always comparable, but account chronology is built only for `selectedStructuralConfigurationId`; otherwise the report says to select a configuration.
+
+## Time-indexed strategy portfolio
+
+For the explicitly selected configuration, timestamps are the union of entry, exit, canonical valuation, and canonical policy-window margin points. Exits occur before entries at an exact timestamp. Every open position needs an exact canonical net-PnL mark and exact margin state at that timestamp; there is no forward-fill.
+
+At a complete state:
+
+- `modeledEquityBtc(t) = startingAccountEquity + realizedClosedPnl(t) + sum(openPositionNetPnl(t))`;
+- `aggregateIM(t) = sum(openPositionIM(t))` and likewise for MM;
+- `modeledAvailableFundsBtc(t) = modeledEquityBtc(t) - aggregateIM(t)` under segregated Standard Margin only;
+- `requiredEquityRisk(t) = sum(gross trackMaximumNetLoss) / maximumRiskFraction`;
+- `requiredEquityMargin(t) = aggregateIM(t) / maximumMarginUtilization`;
+- `requiredEquity(t) = max(requiredEquityRisk(t), requiredEquityMargin(t))` only when both sides are available.
+
+Peak aggregate IM/MM are maxima of the contemporaneous aggregate series, never sums of per-position opening or individual peak values. Modeled-equity drawdown is peak-to-trough on the complete MTM series. Realized-only equity drawdown is retained under that explicit diagnostic name. USD modeled equity uses the causal index at each state. “Modeled available funds” is an analytical reserve calculation, not a claim about historical authenticated Deribit account balances.

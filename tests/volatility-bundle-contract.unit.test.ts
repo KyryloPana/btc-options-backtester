@@ -94,8 +94,8 @@ void CANDIDATES; void candidateIdOf;
 
 /* ---------------- schema contract ---------------- */
 
-test("SCHEMA: 4.1.0 retains volatility and adds controlled-research candidates", () => {
-  assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION, "4.1.0");
+test("SCHEMA: 4.2.0 retains volatility and adds controlled-research candidates", () => {
+  assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION, "4.2.0");
   assert.ok(RESEARCH_BUNDLE_FILES.includes("event_volatility_state.jsonl"));
   assert.ok(RESEARCH_BUNDLE_FILES.includes("structure_volatility_state.jsonl"));
   assert.ok(RESEARCH_BUNDLE_FILES.includes("entry_delay_sensitivity.jsonl"));
@@ -105,7 +105,7 @@ test("SCHEMA: 4.1.0 retains volatility and adds controlled-research candidates",
 
 test("LEGACY: schema 4.0 preserves compatible selected-only Reference state without inventing roles",()=>{
  const bundle=buildResearchBundle(referenceOnlyFixture(),now),run=JSON.parse(bundle.files["run.json"]);run.schema_version="4.0.0";const files={...bundle.files,"run.json":JSON.stringify(run)+"\n","candidates.jsonl":bundle.files["candidates.jsonl"].trim().split("\n").map(line=>{const row=JSON.parse(line);delete row.research_role;return JSON.stringify(row)}).join("\n")+"\n"};
- const result=importResearchBundle(new Uint8Array(createResearchBundleZip(files)),"schema-4.0.zip");if(result.status==="invalid")assert.fail(result.errors.join("\n"));assert.equal(result.dataset.schemaVersion,"4.1.0");assert.equal(result.dataset.migratedFrom,"4.0.0");assert.ok(result.dataset.tables.candidates.every(row=>row.is_selected===true&&row.research_role===null));assert.ok(result.dataset.tables.candidates.every(row=>(row.reference_valuation as Record<string,unknown>)?.status==="valued"));assert.equal(new Set(result.dataset.tables.candidates.map(row=>row.candidate_id)).size,1);
+ const result=importResearchBundle(new Uint8Array(createResearchBundleZip(files)),"schema-4.0.zip");if(result.status==="invalid")assert.fail(result.errors.join("\n"));assert.equal(result.dataset.schemaVersion,"4.2.0");assert.equal(result.dataset.migratedFrom,"4.0.0");assert.ok(result.dataset.tables.candidates.every(row=>row.is_selected===true&&row.research_role===null));assert.ok(result.dataset.tables.candidates.every(row=>(row.reference_valuation as Record<string,unknown>)?.status==="valued"));assert.equal(new Set(result.dataset.tables.candidates.map(row=>row.candidate_id)).size,1);
 });
 
 test("LEGACY: schema 3.8 volatility rows import with new market collections explicitly empty",()=>{

@@ -1,12 +1,16 @@
 # Research Bundle Schema
 
-Schema **4.1.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and the JSONL tables declared by the exporter. Empty tables remain empty files and availability is stated in `run.json`.
+Schema **4.2.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and the JSONL tables declared by the exporter. Empty tables remain empty files and availability is stated in `run.json`.
 
 **`candidates.jsonl` = selected candidates plus declared controlled-research candidates; `availability.jsonl` = complete generated denominator.** `is_selected` records manual portfolio selection while `research_role` records a controlled analytical role; these fields are orthogonal. Selected-strategy reports filter `is_selected`, while Short-Strike Reference explicitly requests the controlled-research cohort. Reports calculate coverage from generation/availability provenance and recompute extrema from valuations, never UI summaries.
 
 ### Analytics cohort routing
 
 The shared analytics boundary exposes `selected`, `controlled-research`, and `all` cohorts. Economics (including Q50/Q90), Duration/DTE, Spread Width, Exit Policy, futures comparison, execution summaries, portfolio/capital reconstruction, and margin use `selected`. Short-Strike uses `controlled-research` for its primary Reference comparison and `selected` for Maker/Taker robustness. `all` is reserved for diagnostics and low-level tooling; it is not a report default.
+
+### Structural strategy configuration identity (4.2.0)
+
+Every candidate carries `structural_configuration_id`, `structural_configuration_version`, and normalized `structural_configuration`. The identity hashes only ex-ante target DTE family, strike method, requested width, structure type, and quantity. Realized expiry/DTE, substituted strikes/width, PnL, and exit outcomes are excluded. Schema 4.1 migration derives the identity from its persisted ex-ante fields; a row without enough evidence is rejected rather than assigned an invented configuration.
 
 ## Keys and join semantics
 

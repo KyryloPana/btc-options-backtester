@@ -248,10 +248,10 @@ export function createResearchAnalyticsContext(d: AnalysisDataset): ResearchAnal
 }
 
 const CONTROLLED_RESEARCH_ROLES=new Set(["short_strike_technical","short_strike_buffered"]);
-const isNativeControlledResearchDataset=(d:AnalysisDataset)=>d.schemaVersion==="4.1.0"&&d.migratedFrom===null;
+const isNativeControlledResearchDataset=(d:AnalysisDataset)=>d.schemaVersion==="4.2.0"&&(d.migratedFrom===null||d.migratedFrom==="4.1.0");
 const usesLegacyControlledResearchCompatibility=(d:AnalysisDataset)=>!isNativeControlledResearchDataset(d);
 /**
- * Cohort selection is centralized here because schema 4.1 candidates.jsonl is
+ * Cohort selection is centralized here because schema 4.1+ candidates.jsonl is
  * no longer synonymous with the manually selected portfolio. Missing
  * is_selected is treated as selected only for in-memory legacy test/tooling
  * fixtures; every validated 4.1 bundle carries the explicit boolean.
