@@ -425,7 +425,7 @@ function DteHistogram({report}:{report:DurationDteReport}){
 
 /* ---------- 16. event-level audit ---------- */
 
-function EventRow({c}:{c:DteCandidate}){const evidence=c.executionScenarioStatus!=="evaluated"?"UNAVAILABLE":c.outcomeBeforeExpiry==="no_resolution_before_expiry"||c.capture50===null||c.worstAdverseUsd===null?"PARTIAL":"VALID",reason=evidence==="UNAVAILABLE"?c.executionScenarioReason:evidence==="PARTIAL"?"Resolution, capture timing, or adverse-path evidence is incomplete.":null;
+function EventRow({c}:{c:DteCandidate}){const evidence=c.executionScenarioStatus!=="evaluated"?"UNAVAILABLE":c.capture50===null||c.worstAdverseUsd===null?"PARTIAL":"VALID",reason=evidence==="UNAVAILABLE"?c.executionScenarioReason:evidence==="PARTIAL"?"Capture timing or adverse-path evidence is incomplete.":null;
  return <tr data-evidence={evidence}>
   <td><ResearchEvidenceBadge assessment={{status:evidence,reason}}/> {c.eventId}</td>
   <td>{c.horizonNominalDays===null?"—":`~${c.horizonNominalDays}D`}</td>
@@ -536,7 +536,7 @@ export function DurationDteReportView({report,volatility,view="maker",onViewChan
 
   <details className="dd-block exit-details analytics-audit" data-filter="attention">
    <summary>Event-level observations · {report.candidates.length} structures</summary>
-   <p className="dd-sub">Expandable audit of individual {scenarioLabel} rows underlying this report.</p><AuditAttentionControls unavailable={report.candidates.filter(x=>x.executionScenarioStatus!=="evaluated").length} partial={report.candidates.filter(x=>x.executionScenarioStatus==="evaluated"&&(x.outcomeBeforeExpiry==="no_resolution_before_expiry"||x.capture50===null||x.worstAdverseUsd===null)).length}/>
+   <p className="dd-sub">Expandable audit of individual {scenarioLabel} rows underlying this report.</p><AuditAttentionControls unavailable={report.candidates.filter(x=>x.executionScenarioStatus!=="evaluated").length} partial={report.candidates.filter(x=>x.executionScenarioStatus==="evaluated"&&(x.capture50===null||x.worstAdverseUsd===null)).length}/>
    <div className="table-scroll"><table className="dd-table">
     <thead><tr><th>Event</th><th>Horizon</th><th>Actual DTE</th><th>Width</th><th>Quality</th><th>{report.scenario==="maker"?"Maker":"Taker"} status</th><th>T_res (post-entry)</th><th>Outcome before expiry</th><th>DTE buffer</th><th>T_survival</th><th>T50%</th><th>PnL@VPOC</th><th>PnL@Inv.</th><th>Worst adverse</th></tr></thead>
     <tbody>{rows.map(c=><EventRow key={c.structureExecutionId} c={c}/>)}</tbody>

@@ -28,3 +28,5 @@ Audit tables are keyboard-accessible disclosure widgets. Where attention filters
 Future reports must reuse the shared evidence badge, attention badge, panel, KPI, and assessment vocabulary rather than introducing report-specific red/yellow/green meanings.
 
 Evidence invalidity is code-driven. Economics uses structured exit diagnostic codes for impossible/ambiguous causal ordering; prose is explanatory only. Ordinary states such as an endpoint after expiry remain unavailable/not reached rather than becoming invalid because of their wording. Configuration tail metrics below their declared minimum receive LOW N with observed N and minimum.
+
+A fully observed `no_resolution_before_expiry` is a valid DTE outcome, not partial evidence. PARTIAL is reserved for genuinely missing capture, adverse-path, observation-window, or timestamp evidence. This classification affects badges and filters only; DTE populations and formulas are unchanged.

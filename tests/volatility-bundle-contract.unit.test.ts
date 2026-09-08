@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
 import {
   LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS, RESEARCH_BUNDLE_FILES, RESEARCH_BUNDLE_SCHEMA_VERSION,
   buildResearchBundle, validateResearchBundle,
@@ -151,6 +152,8 @@ test("SCHEMA: injected volatility state exports, validates and carries series id
     assert.ok(row.venue, "every row carries a venue");
   }
 });
+
+test("PRODUCTION WIRING: local export materializes upstream volatility and passes it synchronously to the bundle",()=>{const source=readFileSync(new URL("../scripts/research-bundle-service.ts",import.meta.url),"utf8"),bundle=withVolatility(),structures=bundle.files["structure_volatility_state.jsonl"].trim().split("\n").map(JSON.parse);assert.match(source,/materializeLocalResearchBundleVolatility\(store,diagnostics\)/);assert.match(source,/buildResearchBundle\(store,generated,undefined,\{tradeDatasetMrEventCount,volatility\}\)/);assert.equal(new Set(structures.map(x=>x.candidate_id)).size,structures.length,"one structure-volatility row per selected candidate, without execution multiplication");assert.ok(bundle.files["event_volatility_state.jsonl"].trim());assert.ok(bundle.files["structure_volatility_state.jsonl"].trim())});
 
 /* ---------------- validator invariants ---------------- */
 

@@ -119,24 +119,36 @@ test("PATH: peak IM/MM come from causal path points, and the timestamp is the po
  for(const p of path)assert.ok(p.timestamp>=ts&&p.timestamp<=ts+7*864e5);
 });
 
-test("PATH: a missing mark is never forward-filled; the reconstruction reports unavailable",()=>{
+test("PATH: a missing protective-long mark does not gate segregated short-option SM",()=>{
  const row=marginRow(reference=>{
   // Drop the protective-long mark on the middle point.
   const points=reference.valuationPathSnapshot as Record<string,unknown>[];
   (points[1]!.modelEstimate as Record<string,unknown>).bought={};
  });
- assert.equal(row.margin_status,"unavailable");
- assert.deepEqual(row.reason_codes,["margin_missing_long_mark"]);
- assert.equal(row.incremental_initial_margin,null,"no value is carried forward from the previous point");
- assert.equal(row.peak_initial_margin,null);
- // The same property at the engine level: one missing mark invalidates the run
- // rather than being interpolated.
+ assert.equal(row.margin_status,"available");
+ assert.notEqual(row.incremental_initial_margin,null);
+ assert.notEqual(row.peak_initial_margin,null);
+ assert.deepEqual((row.margin_inputs as {protective_long_mark_coverage:unknown}).protective_long_mark_coverage,{available:2,total:3});
+ // The engine retains missing long-mark evidence without fabricating a price;
+ // the verified segregated formula still uses the causal short mark.
  const reconstruction=reconstructStandardVerticalMargin({optionType:"P",amount:1,shortStrike:SHORT,longStrike:LONG,
   expiryTimestamp:ts+7*864e5,theoreticalMaximumSpreadLossBtc:1,entryTimestamp:ts,terminalTimestamp:ts+7*864e5,
   points:[{timestamp:ts,indexPrice:INDEX,shortMarkPriceBtc:.02,longMarkPriceBtc:.01},
    {timestamp:ts+36e5,indexPrice:INDEX,shortMarkPriceBtc:.03}]});
- assert.equal(reconstruction.status,"unavailable");
- assert.deepEqual(reconstruction.path,[]);
+ assert.equal(reconstruction.status,"available");
+ assert.equal(reconstruction.path[1]!.shortMarkPriceBtc,.03);
+ assert.equal(reconstruction.path[1]!.longMarkPriceBtc,undefined);
+ assert.deepEqual(reconstruction.protectiveLongMarkCoverage,{available:1,total:2});
+});
+
+test("PATH: short mark, index, and canonical protective geometry remain required",()=>{
+ const base={optionType:"P" as const,amount:1,shortStrike:SHORT,longStrike:LONG,expiryTimestamp:ts+7*864e5,theoreticalMaximumSpreadLossBtc:1,entryTimestamp:ts,terminalTimestamp:ts+7*864e5};
+ const short=reconstructStandardVerticalMargin({...base,points:[{timestamp:ts,indexPrice:INDEX,longMarkPriceBtc:.01}]});
+ assert.equal(short.status,"unavailable");assert.match(short.reason,/option mark/i);
+ const index=reconstructStandardVerticalMargin({...base,points:[{timestamp:ts,shortMarkPriceBtc:.02,longMarkPriceBtc:.01}]});
+ assert.equal(index.status,"unavailable");assert.match(index.reason,/index price/i);
+ const geometry=reconstructStandardVerticalMargin({...base,longStrike:SHORT+1000,points:[{timestamp:ts,indexPrice:INDEX,shortMarkPriceBtc:.02}]});
+ assert.equal(geometry.status,"unavailable");assert.match(geometry.reason,/protective-long vertical geometry/i);
 });
 
 test("MAX LOSS: the BTC figure carries its reference index, method and assumption",()=>{
