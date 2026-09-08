@@ -134,7 +134,7 @@ function fixture(over:{futures?:Record<string,unknown>[];optionOutcome?:string;f
 
 /* ================= economics layers ================= */
 
-const economics=()=>buildEconomicReport(fixture(),DEFAULT_ANALYSIS_CONFIGURATION);
+const economics=()=>buildEconomicReport(fixture(),{...DEFAULT_ANALYSIS_CONFIGURATION,exitPolicy:"settlement_benchmark"});
 
 test("ECONOMICS: Q50 is central and Reference is counterfactual",()=>{
  const report=economics(),layers=economicLayerSummaries(report);
@@ -171,7 +171,7 @@ test("ECONOMICS: expected modelled execution stays unavailable when uncalibrated
 test("ECONOMICS: missing margin stays unavailable rather than becoming a return of zero",()=>{
  const data=fixture();
  (data.tables as Record<string,unknown>).margin_scenarios=[];
- const report=buildEconomicReport(data,DEFAULT_ANALYSIS_CONFIGURATION);
+ const report=buildEconomicReport(data,{...DEFAULT_ANALYSIS_CONFIGURATION,exitPolicy:"settlement_benchmark"});
  for(const position of report.positions){
   assert.equal(position.incrementalInitialMarginBtc.value,null);
   assert.equal(position.returnOnOpeningMargin.value,null);

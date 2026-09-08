@@ -1,21 +1,42 @@
 # Economic Analysis methodology
 
-Economic observations are keyed by `candidate_id × execution_scenario × pricing_track × exit_policy`. The report consumes the winning observation from Complete Exit-Policy Analysis; it does not independently reorder triggers.
+Economics is a **selected-cohort, one-policy** report. It is not evaluated until a Complete Exit Policy is configured. Once configured, every economic observation is keyed by `candidate_id × analytical_track × exit_policy`, and the winning endpoint is consumed from Complete Exit-Policy Analysis without independently reordering triggers.
 
-## Reused accounting primitives
+## Analytical tracks and denominator
 
-- Entry gross credit, opening fees, and net opening cash flow are canonical candidate fields produced by the entry ledger.
-- Closing and delivery fees and BTC/USD PnL are canonical selected outcome fields. A settlement outcome's closing fee is the authoritative delivery fee.
-- Maximum economic loss calls `payoffExtrema` from `expiry-payoff`, which in turn uses inverse intrinsic BTC settlement and `calculateDeliveryFee`. The reported loss is the absolute value of the worst canonical net payoff. Requested width is never an input.
-- The versioned option execution schedule remains in `accounting.ts`: since 2019-07-01 each leg is `min(0.0003 BTC, 12.5% × option premium) × amount`. Research Analytics does not install another fee schedule.
-- IM, MM, peak IM and peak MM are read only from canonical margin scenarios. Peak values are never replaced by opening values or maximum loss.
+Central Economics is empirical expected-taker Q50 (`modeled_expected`). Reference is the execution-independent fair-value counterfactual, Q90 (`modeled_conservative`) is conservative execution, and Maker/Taker/delayed layers remain diagnostics. Each layer's opportunity denominator is the unique candidate identities in the selected cohort after canonical cohort projection. Controlled Short-Strike research is excluded; unavailable and rejected/no-trade observations remain distinct from priced positions.
 
-Returns are `realized BTC PnL / positive BTC denominator`. Capital-days use verified peak IM multiplied by actual holding hours divided by 24. Missing and zero denominators remain unavailable.
+## Entry, fees, and risk
 
-## Portfolio chronology and account sizing
+Entry gross credit, opening fees, and net opening cash flow are canonical track candidate fields produced by the routed entry ledger. Closing execution fees, delivery fees, and BTC/USD PnL come from the selected canonical outcome. Total realized fees are opening execution + closing execution + delivery, with settlement delivery never relabelled as closing execution. Execution adjustment is executed/modelled credit minus unslipped credit and is not charged a second time.
 
-The path contains every selected entry and Exit-Policy valuation timestamp. Exact timestamp ties close first and open second; `candidate_id` sorts events inside each phase. This models no overlap at a boundary where one position exits exactly as another enters. States are steps and are never interpolated. Aggregate maximum loss is a gross sum with no bullish/bearish offset.
+Two risk quantities are intentionally separate:
 
-`maximumRiskFraction` and `maximumMarginUtilization` are locked configuration inputs in `(0, 1)`, not outputs fitted to history. For each state, the risk requirement is aggregate maximum loss divided by the former and the margin requirement is aggregate verified IM divided by the latter. A complete required account size exists only when both constraints exist; it is the maximum over time of their pointwise maximum.
+1. **Canonical Reference structural loss** is the candidate-level, execution-independent quantity shared with Spread Width and other structural reports. Economics consumes that export unchanged.
+2. **Track maximum net loss** is evaluated by the same authoritative inverse-vertical structural-payoff primitive using that analytical track's executed/modelled leg premiums, quantity, opening fees, and entry reference index.
 
-Standard Margin is supported only to the extent that canonical scenarios contain verified values. Portfolio Margin is explicitly unsupported without a verified portfolio-state simulation and is never approximated by summing Standard Margin. Native BTC collateral changes on realized exits. Its USD equivalent uses the canonical index at that event, keeping BTC trading PnL distinct from BTC/USD movement. Available funds require both configured starting BTC collateral and verified margin.
+Return on canonical structural loss is a cross-track diagnostic. Return on track maximum net loss is the execution-dependent efficiency measure, and risk-based position equity uses track maximum net loss.
+
+## Policy-window Standard Margin
+
+Historical account quantities are supported only for **Standard Margin + segregated/dedicated account**. Cross Standard Margin and every historical Portfolio Margin configuration are unsupported. Structural economics remain available in those modes, but opening/peak margin, margin returns, margin capital-days, and complete minimum equity are unavailable with a reason. Segregated Standard Margin is never relabelled as Cross or Portfolio Margin.
+
+The bundle already serializes the canonical Standard Margin path under `margin_scenarios.margin_inputs.path`, including timestamp, IM, MM, index and the row-level model/deployment provenance. Economics clips that path from the track's actual entry through the selected policy's actual valuation terminal. The path must begin at entry. Opening IM/MM are its first point; policy-window peak IM/MM and their timestamps are maxima only inside that window.
+
+Margin capital-days are the piecewise-constant time integral of IM over the selected-policy window, with the final in-window point held to the policy terminal. They are **not** peak IM multiplied by holding time and never use an expiry-window summary after an earlier exit. An absent or incomplete path makes both policy-window peak margin and margin capital-days unavailable.
+
+## Returns and sizing
+
+Every return requires a positive, available denominator. Missing and zero denominators remain unavailable.
+
+For one position:
+
+- risk-side required equity = track maximum net loss / configured maximum risk fraction;
+- margin-side required equity = policy-window peak IM / configured maximum margin utilization;
+- complete minimum equity = maximum of the two, only when both are available.
+
+The global **Duration capital basis** control scopes Duration & DTE capital-time analysis. Economics reports its canonical structural-risk and policy-window margin denominators independently; that control does not switch or hide Economics denominators.
+
+## Phase boundary
+
+Portfolio aggregation and presentation redesign are handled separately. In this phase, portfolio reconstruction is only prevented when Complete Exit Policy is not configured; no strategy optimization or portfolio approximation is introduced.

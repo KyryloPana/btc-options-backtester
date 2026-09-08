@@ -541,14 +541,21 @@ function economics(
   };
 }
 
-const snapshotRow = (base: Row, entry: Row): Row => ({
-  ...base,
-  gross_credit_debit_native: n(entry.grossSpreadBtc),
-  opening_fees_native: n(entry.openingFeesBtc),
-  net_opening_cash_flow_native: n(entry.netOpeningCashFlowBtc),
-  entry_index_price: n(entry.entryTargetIndex) ?? n(entry.targetIndex),
-  entry_quality: entry.estimateQuality,
-});
+const snapshotRow = (base: Row, entry: Row): Row => {
+  const sold=rec(entry.sold),bought=rec(entry.bought),shortPrice=n(sold.priceBtcPerContract),longPrice=n(bought.priceBtcPerContract);
+  return {
+    ...base,
+    // Analytical-track entry legs must never leak from the base/Reference row.
+    // A track without its own leg decomposition can retain aggregate cash flow,
+    // but its execution-specific inverse-payoff loss is intentionally unavailable.
+    entry_legs:shortPrice!==null&&longPrice!==null?{short:{price_native:shortPrice},long:{price_native:longPrice}}:null,
+    gross_credit_debit_native: n(entry.grossSpreadBtc),
+    opening_fees_native: n(entry.openingFeesBtc),
+    net_opening_cash_flow_native: n(entry.netOpeningCashFlowBtc),
+    entry_index_price: n(entry.entryTargetIndex) ?? n(entry.targetIndex),
+    entry_quality: entry.estimateQuality,
+  };
+};
 function canonicalSnapshotTrack(
   id: string,
   track: AnalyticsTrack,
