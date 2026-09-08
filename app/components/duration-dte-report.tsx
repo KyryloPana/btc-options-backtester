@@ -534,9 +534,9 @@ export function DurationDteReportView({report,volatility,view="maker",onViewChan
    <section className="dd-block"><h3>15 · Actual DTE distribution</h3><DteHistogram report={report}/></section>
   </div>
 
-  <section className="dd-block">
-   <h3>Event-level observations</h3>
-   <p className="dd-sub">Individual {scenarioLabel} rows underlying this report.</p>
+  <details className="dd-block exit-details">
+   <summary>Event-level observations · {report.candidates.length} structures</summary>
+   <p className="dd-sub">Expandable audit of individual {scenarioLabel} rows underlying this report.</p>
    <div className="table-scroll"><table className="dd-table">
     <thead><tr><th>Event</th><th>Horizon</th><th>Actual DTE</th><th>Width</th><th>Quality</th><th>{report.scenario==="maker"?"Maker":"Taker"} status</th><th>T_res (post-entry)</th><th>Outcome before expiry</th><th>DTE buffer</th><th>T_survival</th><th>T50%</th><th>PnL@VPOC</th><th>PnL@Inv.</th><th>Worst adverse</th></tr></thead>
     <tbody>{rows.map(c=><EventRow key={c.structureExecutionId} c={c}/>)}</tbody>
@@ -545,7 +545,7 @@ export function DurationDteReportView({report,volatility,view="maker",onViewChan
     <small>Showing {report.candidates.length?current*PAGE_SIZE+1:0}–{Math.min((current+1)*PAGE_SIZE,report.candidates.length)} of {report.candidates.length}. Paging never changes the statistics above.</small>
     <div><button disabled={current<=0} onClick={()=>setPage(current-1)}>Previous</button><span>{current+1} / {pages}</span><button disabled={current>=pages-1} onClick={()=>setPage(current+1)}>Next</button></div>
    </div>
-  </section>
+  </details>
 
   <details className="ur-methodology"><summary>Methodology, availability and missing data</summary>
    {report.methodology.map((line,i)=><p className="fine-print" key={i}>{line}</p>)}

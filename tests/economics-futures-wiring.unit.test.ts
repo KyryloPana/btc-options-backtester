@@ -184,8 +184,8 @@ test("ECONOMICS: missing margin stays unavailable rather than becoming a return 
 test("ECONOMICS: the visible wording is structural loss, and margin is not renamed",()=>{
  const view=readFileSync(new URL("../app/components/economic-analysis-report.tsx",import.meta.url),"utf8");
  assert.doesNotMatch(view,/Max loss|Aggregate max loss|Maximum economic loss/i);
- assert.match(view,/<th>Structural loss<\/th>/);
- assert.match(view,/Return \/ structural loss/);
+ assert.match(view,/Reference structural loss/);
+ assert.match(view,/Return \/ (?:Q50 )?track loss/);
  assert.match(view,/Capital &amp; margin diagnostics/);
 });
 

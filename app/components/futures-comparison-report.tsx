@@ -43,8 +43,8 @@ export function FuturesComparisonReportView({report}:{report:FuturesComparisonRe
   </div>
   <small className="dd-note">The equal-risk futures quantity is an ANALYTICAL sizing figure, not an executable order amount: it is unrounded and is not stepped to the contract size or minimum trade amount, so it is never a guaranteed executable size. These are two different denominators and are never mixed. One perpetual observation exists per MR event, however many option structures were selected for it; a futures median computed over structure rows would reweight the futures population by option selection density. The paired difference uses matched event and endpoint observations only — unmatched aggregate means are never differenced and called an options advantage. No strategy is recommended.</small>
 
-  {report.events.map(({baseline,options})=><div key={baseline.eventId} className="dd-event-block">
-   <h3>{baseline.eventId} · {baseline.instrument??UNAVAILABLE} · {baseline.direction??UNAVAILABLE}</h3>
+  {report.events.map(({baseline,options})=><details key={baseline.eventId} className="dd-event-block exit-details">
+   <summary>{baseline.eventId} · {baseline.instrument??UNAVAILABLE} · {baseline.direction??UNAVAILABLE}</summary>
    {baseline.unavailableReason&&<p className="preflight-warning">{baseline.unavailableReason}</p>}
    <div className="table-wrap"><table>
     <thead><tr><th>Causal entry</th><th>Entry price</th><th>Selected endpoint</th><th>Endpoint time / price</th><th>Holding</th><th>Gross / unit</th><th>Fees + slippage / unit</th><th>Funding / unit</th><th>Funding status</th><th>Net / unit</th><th>Risk to invalidation / unit</th></tr></thead>
@@ -92,7 +92,7 @@ export function FuturesComparisonReportView({report}:{report:FuturesComparisonRe
      <td className={o.equalRisk.differenceUsd===null?"dd-muted":undefined} title={o.equalRisk.reason??undefined}>{usd(o.equalRisk.differenceUsd)}</td>
     </tr>)}</tbody>
    </table></div>
-  </div>)}
+  </details>)}
 
   {report.diagnostics.length>0&&<details><summary>Diagnostics ({report.diagnostics.length})</summary><ul>{report.diagnostics.slice(0,50).map((x,i)=><li key={`${x.eventId}-${x.candidateId??"event"}-${i}`}><b>{x.eventId}{x.candidateId?` · ${x.candidateId}`:""}:</b> {x.reason}</li>)}</ul></details>}
   <details><summary>Methodology</summary><p><b>Equal-risk sizing:</b> <code>{report.equalRiskSizingMethod}</code></p>{report.methodology.map(x=><p key={x}>{x}</p>)}</details>

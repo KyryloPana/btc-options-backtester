@@ -236,7 +236,7 @@ export function SpreadWidthReportView({report,volatility,view="maker",onViewChan
   </section>
 
   {/* 7 · Audit */}
-  <section className="dd-block"><h3>7 · Matched structures audit</h3>
+  <details className="dd-block exit-details"><summary>7 · Matched-structures audit · {audit.length} structures</summary>
    <div className="table-scroll"><table className="dd-table">
     <thead><tr><th>Event</th><th>Candidate</th><th>DTE</th><th>Short / long K</th><th>Requested</th><th>Actual</th><th>Analytical layer</th><th>Gross</th><th>Net</th><th>Long-leg cost</th><th>Fees</th><th>Max structural loss</th><th>Resolution</th><th>PnL VPOC</th><th>PnL inval.</th><th>Worst adverse</th><th>Settlement</th><th>Realized thesis exit</th><th>Gross protection</th><th>Net protection</th><th>Return on structural loss</th></tr></thead>
     <tbody>{rows.map((r:WidthStructure)=><tr key={r.structureExecutionId}>
@@ -261,7 +261,7 @@ export function SpreadWidthReportView({report,volatility,view="maker",onViewChan
     <div><button disabled={current<=0} onClick={()=>setPage(current-1)}>Previous</button><span>{current+1} / {pages}</span><button disabled={current>=pages-1} onClick={()=>setPage(current+1)}>Next</button></div>
    </div>
    {report.unmatched.length>0&&<p className="dd-notice">{report.unmatched.length} structure(s) have no adjacent width sharing their event, expiry, short strike and scenario, so they contribute to no pairwise figure. They are listed here rather than silently dropped.</p>}
-  </section>
+  </details>
 
   <details className="ur-methodology"><summary>Methodology, availability and missing data</summary>
    {report.methodology.map((line,i)=><p className="fine-print" key={i}>{line}</p>)}

@@ -187,7 +187,7 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
   </section>
 
   {/* 6 · Matched pair audit */}
-  <section className="dd-block"><h3>5 · Matched pairs</h3>
+  <details className="dd-block exit-details"><summary>5 · Matched-pair audit · {report.pairs.length} pairs</summary>
    <div className="table-scroll"><table className="dd-table">
     <thead><tr><th>Event</th><th>DTE</th><th>Width</th><th>Scenario</th><th>Technical K</th><th>Buffered K</th><th>Extra distance</th><th>Technical credit</th><th>Buffered credit</th><th>Credit sacrificed</th><th>Challenge (tech → buff)</th><th>Δ worst adverse</th><th>Δ realized PnL</th></tr></thead>
     <tbody>{rows.map((p:MatchedPair)=>{
@@ -211,7 +211,7 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
     <div><button disabled={current<=0} onClick={()=>setPage(current-1)}>Previous</button><span>{current+1} / {pages}</span><button disabled={current>=pages-1} onClick={()=>setPage(current+1)}>Next</button></div>
    </div>
    {report.unpaired.length>0&&<p className="dd-notice">{report.unpaired.length} structure(s) could not be paired and are excluded from every pairwise figure. A counterfactual is requested only when technical distance is less than $500; a valid pair must shift both legs exactly $1,000 farther OTM and preserve width. Unmatched candidates are never compared with unrelated alternatives.</p>}
-  </section>
+  </details>
 
   <details className="ur-methodology"><summary>Methodology, availability and missing data</summary>
    {report.methodology.map((line,i)=><p className="fine-print" key={i}>{line}</p>)}

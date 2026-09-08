@@ -299,9 +299,9 @@ export function UnderlyingResolutionReportView({report}:{report:UnderlyingResolu
     :<p className="ur-empty-inline">{UNAVAILABLE} — no eligible event has a stored hourly underlying path.</p>}
   </section>
 
-  <section className="ur-block">
-   <h3>Event-level observations</h3>
-   <p className="ur-sub">Inspect the individual MR events underlying this report.</p>
+  <details className="ur-block exit-details">
+   <summary>Event-level observations · {report.events.length} MR events</summary>
+   <p className="ur-sub">Expandable audit of the individual MR events underlying this report.</p>
    <div className="table-scroll"><table className="ur-table">
     <thead><tr><th>Event ID</th><th>Date</th><th>Direction</th><th>Entry</th><th>Range width</th><th>Rem. dist.</th><th>T_VPOC</th><th>T_Inv</th><th>T_Res</th><th>Resolved by</th><th>MFE</th><th>MAE</th><th>Outcome</th></tr></thead>
     <tbody>{rows.map(event=><EventRow key={event.eventId} event={event}/>)}</tbody>
@@ -310,7 +310,7 @@ export function UnderlyingResolutionReportView({report}:{report:UnderlyingResolu
     <small>Showing {report.events.length?current*PAGE_SIZE+1:0}–{Math.min((current+1)*PAGE_SIZE,report.events.length)} of {report.events.length}. Paging never changes the statistics above.</small>
     <div><button disabled={current<=0} onClick={()=>setPage(current-1)}>Previous</button><span>{current+1} / {pages}</span><button disabled={current>=pages-1} onClick={()=>setPage(current+1)}>Next</button></div>
    </div>
-  </section>
+  </details>
 
   <details className="ur-methodology"><summary>Methodology, censoring and missing data</summary>
    {report.methodology.map((line,i)=><p className="fine-print" key={i}>{line}</p>)}
