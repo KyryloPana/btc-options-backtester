@@ -1,6 +1,6 @@
 # Research Bundle Schema
 
-Schema **4.3.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and the JSONL tables declared by the exporter. Empty tables remain empty files and availability is stated in `run.json`.
+Schema **4.4.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and the JSONL tables declared by the exporter. Empty tables remain empty files and availability is stated in `run.json`.
 
 **`candidates.jsonl` = selected candidates plus declared controlled-research candidates; `availability.jsonl` = complete generated denominator.** `is_selected` records manual portfolio selection while `research_role` records a controlled analytical role; these fields are orthogonal. Selected-strategy reports filter `is_selected`, while Short-Strike Reference explicitly requests the controlled-research cohort. Reports calculate coverage from generation/availability provenance and recompute extrema from valuations, never UI summaries.
 
@@ -131,4 +131,8 @@ future evidence, or unreconciled reference economics cannot satisfy the referenc
 
 Structural identity `structural-configuration-v2` hashes only target DTE family, strike method, requested width, and direction-neutral structure family. Validation recomputes the normalized fields and hash for candidate, availability-attempt, and opportunity rows. Schema 4.2 migrates ex-ante identity fields deterministically but marks its unrecorded opportunity decision unavailable; it never infers no-trades from narrative text.
 
-`margin_scenarios.margin_inputs.protective_long_mark_coverage` records optional long-leg price coverage. Segregated Standard Margin still requires canonical vertical geometry, but the contemporaneous long mark does not gate IM/MM because the verified formula charges only the marked short option and grants no long offset. Legacy `margin_missing_long_mark` rows remain readable; regenerated schema 4.3 rows do not emit that reason solely for absent optional long-mark evidence.
+`margin_scenarios.margin_inputs.protective_long_mark_coverage` records optional long-leg price coverage. Segregated Standard Margin still requires canonical vertical geometry, but the contemporaneous long mark does not gate IM/MM because the verified formula charges only the marked short option and grants no long offset. Legacy `margin_missing_long_mark` rows remain readable; regenerated schema 4.4 rows do not emit that reason solely for absent optional long-mark evidence.
+
+### Schema 4.4.0 effective pricing provenance
+
+`run.generation_assumptions` is the authoritative effective Reference-pricing contract and must equal the current causal Reference/expiry-forward methodology. Original persisted generation metadata is retained unchanged under `source_generation_assumptions_raw`; it is audit provenance, not an active pricing claim. Schema 4.3 migration moves its former `generation_assumptions` value to that raw field and installs the current effective contract. Arbitrary historical metadata is preserved verbatim rather than rewritten.

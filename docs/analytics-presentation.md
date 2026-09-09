@@ -30,3 +30,5 @@ Future reports must reuse the shared evidence badge, attention badge, panel, KPI
 Evidence invalidity is code-driven. Economics uses structured exit diagnostic codes for impossible/ambiguous causal ordering; prose is explanatory only. Ordinary states such as an endpoint after expiry remain unavailable/not reached rather than becoming invalid because of their wording. Configuration tail metrics below their declared minimum receive LOW N with observed N and minimum.
 
 A fully observed `no_resolution_before_expiry` is a valid DTE outcome, not partial evidence. PARTIAL is reserved for genuinely missing capture, adverse-path, observation-window, or timestamp evidence. This classification affects badges and filters only; DTE populations and formulas are unchanged.
+
+Economics configuration integrity includes contradictory structured opportunity states. In particular, canonical explicit no-trade plus a genuinely priced selected-policy position is INVALID rather than a zero-PnL opportunity. A reconstructed chronology with missing exact PnL, IM, or MM is visibly PARTIAL and cannot populate definitive account KPIs.
