@@ -248,8 +248,9 @@ export function createResearchAnalyticsContext(d: AnalysisDataset): ResearchAnal
 }
 
 const CONTROLLED_RESEARCH_ROLES=new Set(["short_strike_technical","short_strike_buffered"]);
-const isNativeControlledResearchDataset=(d:AnalysisDataset)=>d.schemaVersion==="4.4.0"&&(d.migratedFrom===null||d.migratedFrom==="4.1.0");
-const usesLegacyControlledResearchCompatibility=(d:AnalysisDataset)=>!isNativeControlledResearchDataset(d);
+const CONTROLLED_RESEARCH_AWARE_SCHEMAS=new Set(["4.1.0","4.2.0","4.3.0","4.4.0"]);
+const sourceSchemaVersion=(d:AnalysisDataset)=>d.migratedFrom??d.schemaVersion;
+const usesLegacyControlledResearchCompatibility=(d:AnalysisDataset)=>!CONTROLLED_RESEARCH_AWARE_SCHEMAS.has(sourceSchemaVersion(d));
 /**
  * Cohort selection is centralized here because schema 4.1+ candidates.jsonl is
  * no longer synonymous with the manually selected portfolio. Missing

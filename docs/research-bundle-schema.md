@@ -4,6 +4,8 @@ Schema **4.4.0** is a versioned, venue-aware interchange format. Every ZIP conta
 
 **`candidates.jsonl` = selected candidates plus declared controlled-research candidates; `availability.jsonl` = complete generated denominator.** `is_selected` records manual portfolio selection while `research_role` records a controlled analytical role; these fields are orthogonal. Selected-strategy reports filter `is_selected`, while Short-Strike Reference explicitly requests the controlled-research cohort. Reports calculate coverage from generation/availability provenance and recompute extrema from valuations, never UI summaries.
 
+Schemas 4.1–4.4 are controlled-research-aware. After migration from 4.1, 4.2, or 4.3, an empty controlled cohort remains empty; it must never fall back to unrelated `is_selected` candidates. The selected-candidate compatibility fallback is restricted to source schemas that predate the `research_role` distinction.
+
 ### Analytics cohort routing
 
 The shared analytics boundary exposes `selected`, `controlled-research`, and `all` cohorts. Economics (including Q50/Q90), Duration/DTE, Spread Width, Exit Policy, futures comparison, execution summaries, portfolio/capital reconstruction, and margin use `selected`. Short-Strike uses `controlled-research` for its primary Reference comparison and `selected` for Maker/Taker robustness. `all` is reserved for diagnostics and low-level tooling; it is not a report default.
