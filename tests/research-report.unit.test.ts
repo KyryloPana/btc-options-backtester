@@ -30,7 +30,8 @@ test("research analytics exposes only the retained sections plus Underlying Reso
  for(const gone of ["StructurePolicyEconomicsReport","PortfolioStrategyReport","createResearchPdf","report-nav"])
   assert.doesNotMatch(component,new RegExp(gone),`${gone} must not be referenced`);
  assert.match(component,/Executive Summary/);
- assert.match(component,/AnalysisConfigurationForm/);
+ assert.match(component,/ResearchControls/);
+ assert.doesNotMatch(component,/AnalysisConfigurationForm/);
  assert.match(component,/UnderlyingResolutionReportView/);
  assert.match(component,/DurationDteReportView/);
 });
@@ -45,4 +46,4 @@ test("research ZIP import is delegated to a module worker with immediate loading
  assert.match(client,/new Worker\(new URL\("\.\.\/workers\/research-import\.worker\.ts",import\.meta\.url\),\{type:"module"\}\)/);
 });
 
-test("track audit UI is collapsed and confidence is deterministic configuration",async()=>{const workbench=await readTextFile(new URL("../app/components/research-analytics-workbench.tsx",import.meta.url),"utf8"),form=await readTextFile(new URL("../app/components/analysis-configuration-form.tsx",import.meta.url),"utf8"),shell=await readTextFile(new URL("../app/components/shell/research-analytics.tsx",import.meta.url),"utf8");assert.match(workbench,/<details[\s\S]*className="analytics-workbench workspace-section"/);assert.doesNotMatch(workbench,/<details[^>]* open/);assert.doesNotMatch(workbench,/Valuation \/ execution track|Exclude lowest-confidence tier/);assert.match(form,/Minimum valuation confidence/);assert.match(form,/includedQualityLevels/);assert.match(shell,/data-sufficiency-counts/);const research=shell.slice(shell.indexOf('workspaceMode==="research"'),shell.indexOf('workspaceMode==="strategy"'));assert.match(research,/<ResearchAnalyticsWorkbench/);assert.doesNotMatch(research,/EconomicAnalysisReportView/) });
+test("track audit UI is collapsed and confidence is deterministic configuration",async()=>{const workbench=await readTextFile(new URL("../app/components/research-analytics-workbench.tsx",import.meta.url),"utf8"),controls=await readTextFile(new URL("../app/components/research-controls.tsx",import.meta.url),"utf8"),shell=await readTextFile(new URL("../app/components/shell/research-analytics.tsx",import.meta.url),"utf8");assert.match(workbench,/<details[\s\S]*className="analytics-workbench workspace-section"/);assert.doesNotMatch(workbench,/<details[^>]* open/);assert.doesNotMatch(workbench,/Valuation \/ execution track|Exclude lowest-confidence tier/);assert.match(controls,/Minimum valuation confidence/);assert.match(controls,/includedQualityLevels/);assert.match(shell,/data-sufficiency-counts/);const research=shell.slice(shell.indexOf('workspaceMode==="research"'),shell.indexOf('workspaceMode==="strategy"'));assert.match(research,/<ResearchAnalyticsWorkbench/);assert.doesNotMatch(research,/EconomicAnalysisReportView/) });

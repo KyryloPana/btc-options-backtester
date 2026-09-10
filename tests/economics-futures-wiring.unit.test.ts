@@ -5,6 +5,7 @@ import type {AnalysisDataset} from "../app/lib/research-analysis.ts";
 import {buildEconomicReport,economicLayerSummaries} from "../app/lib/economics/report.ts";
 import {DEFAULT_ANALYSIS_CONFIGURATION} from "../app/lib/analysis-configuration.ts";
 import {buildFuturesComparisonReport} from "../app/lib/futures-comparison/report.ts";
+import {scopeFuturesEvents} from "../app/components/futures-presentation-scope.ts";
 import {EQUAL_RISK_SIZING_METHOD,equalRiskFuturesQuantity} from "../app/lib/futures-baseline.ts";
 import {canonicalStructuralLoss} from "../app/lib/maximum-economic-loss.ts";
 
@@ -327,4 +328,16 @@ test("FUTURES: the workspace exposes both existing reports under Strategy Evalua
  assert.ok(strategyAt>0&&economicsAt>strategyAt&&futuresAt>economicsAt,"both reports remain in the Strategy Evaluation branch");
  assert.match(shell,/evaluationMode==="economics"/);
  assert.match(shell,/evaluationMode==="futures"/);
+});
+
+test("FUTURES PRESENTATION: candidate scope filters rows without changing report values or summary",()=>{
+ const report=futures(),summary=report.summary,events=report.events,chosen=report.events[0]!.options[0]!.candidateId;
+ const scoped=scopeFuturesEvents(report,[chosen]);
+ assert.equal(scoped.reduce((n,event)=>n+event.options.length,0),1);
+ assert.equal(scoped[0]!.options[0]!.candidateId,chosen);
+ assert.strictEqual(report.summary,summary,"the full analytical summary is untouched");
+ assert.strictEqual(report.events,events,"the source report event collection is untouched");
+ const source=readFileSync(new URL("../app/components/futures-comparison-report.tsx",import.meta.url),"utf8");
+ assert.match(source,/Full exported benchmark context/);
+ assert.match(source,/Unmapped diagnostic/);
 });

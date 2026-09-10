@@ -158,7 +158,7 @@ test("ROUTING: the canonical Economics projection is empirical Q50",()=>{
 // The visible control surface is asserted from component source, which is this
 // repository's established pattern for component-level checks.
 const read=(path:string)=>readFileSync(new URL(path,import.meta.url),"utf8");
-const form=read("../app/components/analysis-configuration-form.tsx");
+const form=read("../app/components/research-controls.tsx");
 const legend=read("../app/components/analytical-track-legend.tsx");
 const shell=read("../app/components/shell/research-analytics.tsx");
 
@@ -168,8 +168,8 @@ test("CONTROLS: no workspace label claims one maker/taker selector governs every
  // A pricing-track control that remains must state the scope it actually has.
  assert.doesNotMatch(form,/>Pricing track</,"it is no longer presented as a workspace-wide pricing selector");
  assert.match(form,/Holding-period valuation track/);
- assert.match(form,/Duration &amp; DTE operational holding subsection only/);
- assert.match(form,/None of them selects an analytical track for the workspace/);
+ assert.match(form,/Duration &amp; DTE operational holding only/);
+ assert.match(form,/do not define a completed strategy/);
  // And the legend states there is no such selector at all.
  assert.match(legend,/no workspace-wide execution selector/i);
  // The root component no longer hard-codes a scenario literal at the call site.

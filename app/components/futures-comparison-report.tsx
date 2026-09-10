@@ -1,6 +1,7 @@
 "use client";
 import {AuditAttentionControls,ResearchEvidenceBadge} from "./research-evidence-status";
 import type {FuturesComparisonReport} from "../lib/futures-comparison/report";
+import {scopeFuturesEvents} from "./futures-presentation-scope";
 
 const UNAVAILABLE="Unavailable";
 const usd=(x:number|null)=>x===null?UNAVAILABLE:`$${x.toLocaleString("en-US",{maximumFractionDigits:2})}`;
@@ -13,12 +14,13 @@ const hours=(x:number|null)=>x===null?UNAVAILABLE:`${x.toFixed(1)}h`;
  * Read-only. Every figure is consumed from the exported canonical futures
  * tables; nothing here re-runs the perpetual engine or contacts an exchange.
  */
-export function FuturesComparisonReportView({report}:{report:FuturesComparisonReport}){
- const s=report.summary;
+export function FuturesComparisonReportView({report,selectedCandidateIds=null,unmappedCandidateCount=0}:{report:FuturesComparisonReport;selectedCandidateIds?:readonly string[]|null;unmappedCandidateCount?:number}){
+ const s=report.summary,selected=selectedCandidateIds===null?null:selectedCandidateIds,events=scopeFuturesEvents(report,selectedCandidateIds),displayedRows=events.reduce((count,event)=>count+event.options.length,0);
  return <section className="workspace-section" data-testid="futures-comparison-report" aria-labelledby="futures-comparison-title">
   <div className="section-heading"><div><p className="eyebrow">Canonical BTC-PERPETUAL baseline · read-only</p><h2 id="futures-comparison-title">Options vs BTC Perpetual</h2></div><em className={`report-state ${report.availability}`}>{report.availability}</em></div>
   <p className="resolution-banner">For the same MR event, under identical causal event timing. {report.unavailableReason??"Every futures figure is read from the exported canonical futures tables; no exchange request is made and the perpetual engine is not re-run here."}</p>
 
+  {selected&&<><p className="resolution-banner" data-testid="futures-candidate-scope"><b>{displayedRows}</b> option rows displayed for the selected Candidate Configuration. Corresponding event-level futures baselines are retained without changing the source report or its summary.</p>{unmappedCandidateCount>0&&<p className="preflight-warning">Unmapped diagnostic: {unmappedCandidateCount} option candidate{unmappedCandidateCount===1?"":"s"} cannot enter this selected scope because the canonical structural-configuration identity is incomplete.</p>}<h3>Full exported benchmark context</h3></>}
   <h3>Event-level futures population</h3>
   <div className="count-grid" data-testid="futures-event-denominator">
    <span><b>{s.eventsWithBaseline}</b>Events with a valid BTC-PERP baseline</span>
@@ -44,7 +46,7 @@ export function FuturesComparisonReportView({report}:{report:FuturesComparisonRe
   </div>
   <small className="dd-note">The equal-risk futures quantity is an ANALYTICAL sizing figure, not an executable order amount: it is unrounded and is not stepped to the contract size or minimum trade amount, so it is never a guaranteed executable size. These are two different denominators and are never mixed. One perpetual observation exists per MR event, however many option structures were selected for it; a futures median computed over structure rows would reweight the futures population by option selection density. The paired difference uses matched event and endpoint observations only — unmatched aggregate means are never differenced and called an options advantage. No strategy is recommended.</small>
 
-  {report.events.map(({baseline,options})=><details key={baseline.eventId} className="dd-event-block exit-details analytics-audit" data-filter="attention">
+  {events.map(({baseline,options})=><details key={baseline.eventId} className="dd-event-block exit-details analytics-audit" data-filter="attention">
    <summary>{baseline.eventId} · {baseline.instrument??UNAVAILABLE} · {baseline.direction??UNAVAILABLE}</summary><AuditAttentionControls unavailable={baseline.unavailableReason?1:0} partial={baseline.fundingStatus==="available"?0:1+options.filter(x=>x.comparability!=="paired").length}/>
    {baseline.unavailableReason&&<p className="preflight-warning">{baseline.unavailableReason}</p>}
    <div className="table-wrap"><table>

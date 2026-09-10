@@ -36,4 +36,19 @@ test("PRESENTATION: Research Analytics has one shared import boundary and nested
  assert.match(strategy,/FuturesComparisonReportView report=/);
 });
 
+test("PRESENTATION: scoped configuration controls edit only genuine report inputs",()=>{
+ const research=readFileSync(new URL("../app/components/research-controls.tsx",import.meta.url),"utf8"),economics=readFileSync(new URL("../app/components/economics-policy-controls.tsx",import.meta.url),"utf8"),candidate=readFileSync(new URL("../app/components/candidate-configuration.tsx",import.meta.url),"utf8"),shell=readFileSync(new URL("../app/components/shell/research-analytics.tsx",import.meta.url),"utf8"),benchmark=readFileSync(new URL("../app/components/futures-benchmark-scope.tsx",import.meta.url),"utf8");
+ for(const field of ["pricingTrack","includedQualityLevels","capitalBasis","exitPolicy","nearFullLossFraction"])assert.match(research,new RegExp(field));
+ for(const field of ["marginModel","collateralMode","accountEquity","maximumRiskFraction","maximumMarginUtilization","maximumDrawdown"])assert.doesNotMatch(research,new RegExp(field));
+ for(const field of ["marginModel","collateralMode","accountEquity","maximumRiskFraction","maximumMarginUtilization","maximumDrawdown"])assert.match(economics,new RegExp(field));
+ assert.doesNotMatch(economics,/executionAssumption|capitalBasis/);
+ assert.match(candidate,/set\("selectedStructuralConfigurationId"/);
+ assert.match(candidate,/structuralConfigurationIdentity/);
+ assert.match(candidate,/structuralConfigurationLabel/);
+ assert.match(shell,/onSelectConfiguration=\{id=>setConfiguration\(current=>\(\{\.\.\.current,selectedStructuralConfigurationId:id\}\)\)\}/,"Economics cards update the same parent state");
+ assert.equal(shell.match(/useState<AnalysisConfiguration>/g)?.length,1,"one shared configuration state survives all inner tabs");
+ assert.doesNotMatch(benchmark,/<select|<input|<button/,"Futures benchmark scope is read-only");
+ assert.match(benchmark,/candidate policy does not rewrite it/i);
+});
+
 test("PRESENTATION: partial portfolio chronology is explicit and cannot present a required account",()=>{const source=readFileSync(new URL("../app/components/economic-analysis-report.tsx",import.meta.url),"utf8");assert.match(source,/Partial diagnostic chronology — account conclusions unavailable/);assert.match(source,/selectedPortfolio\.status==="partial"/)});
