@@ -16,4 +16,24 @@ test("PRESENTATION: large report audit datasets default collapsed while Exit Pol
 test("PRESENTATION: outcome-after-expiry is unavailable, not invalid by prose",()=>{const p={...position("late",null,"unavailable","after expiry wording"),diagnosticCode:"outcome_after_expiry"} as PositionEconomics;assert.equal(assessEconomicPositions([p]).get("late|thesis")!.evidence,"UNAVAILABLE")});
 test("PRESENTATION: a fully observed no-resolution-before-expiry row is not partial solely for its outcome",()=>{const source=readFileSync(new URL("../app/components/duration-dte-report.tsx",import.meta.url),"utf8");const eventRow=source.slice(source.indexOf("function EventRow"),source.indexOf("function EventAudit"));assert.doesNotMatch(eventRow,/outcomeBeforeExpiry===\"no_resolution_before_expiry\"/);assert.match(eventRow,/capture50===null\|\|c\.worstAdverseUsd===null/)});
 
+test("PRESENTATION: Research Analytics has one shared import boundary and nested evaluation tabs",()=>{
+ const source=readFileSync(new URL("../app/components/shell/research-analytics.tsx",import.meta.url),"utf8");
+ assert.equal(source.match(/accept="\.zip,application\/zip"/g)?.length,1,"one research-bundle ZIP input");
+ assert.equal(source.match(/createResearchImportWorker\(\)/g)?.length,1,"one worker pipeline");
+ assert.match(source,/useState<WorkspaceMode>\("research"\)/,"Research is the default mode");
+ assert.match(source,/useState<EvaluationMode>\("economics"\)/,"Economics is the default evaluation");
+ assert.match(source,/role="tablist"/);
+ assert.match(source,/role="tab"/);
+ assert.match(source,/aria-selected=/);
+ assert.match(source,/Research Analytics mode/);
+ assert.match(source,/Strategy evaluation report/);
+ const tabs=source.slice(source.indexOf("function SegmentedTabs"),source.indexOf("const WORKSPACE_TABS"));
+ assert.doesNotMatch(tabs,/\bload\s*\(/,"tab interaction never invokes bundle import");
+ const research=source.slice(source.indexOf('workspaceMode==="research"'),source.indexOf('workspaceMode==="strategy"'));
+ assert.doesNotMatch(research,/EconomicAnalysisReportView|FuturesComparisonReportView/);
+ const strategy=source.slice(source.indexOf('workspaceMode==="strategy"'));
+ assert.match(strategy,/EconomicAnalysisReportView report=/);
+ assert.match(strategy,/FuturesComparisonReportView report=/);
+});
+
 test("PRESENTATION: partial portfolio chronology is explicit and cannot present a required account",()=>{const source=readFileSync(new URL("../app/components/economic-analysis-report.tsx",import.meta.url),"utf8");assert.match(source,/Partial diagnostic chronology — account conclusions unavailable/);assert.match(source,/selectedPortfolio\.status==="partial"/)});

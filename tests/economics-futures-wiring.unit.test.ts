@@ -319,11 +319,12 @@ test("FUTURES: no exported futures table leaves the report explicitly unavailabl
  assert.equal(report.summary.eventsWithBaseline,0);
 });
 
-test("FUTURES: the workspace renders the report after Economics",()=>{
+test("FUTURES: the workspace exposes both existing reports under Strategy Evaluation",()=>{
  const shell=readFileSync(new URL("../app/components/shell/research-analytics.tsx",import.meta.url),"utf8");
  const economicsAt=shell.indexOf("EconomicAnalysisReportView report=");
  const futuresAt=shell.indexOf("FuturesComparisonReportView report=");
- const workbenchAt=shell.indexOf("<ResearchAnalyticsWorkbench");
- assert.ok(economicsAt>0&&futuresAt>economicsAt,"Options vs BTC Perpetual sits after Economics");
- assert.ok(workbenchAt>futuresAt,"and before Diagnostics & Audit");
+ const strategyAt=shell.indexOf('workspaceMode==="strategy"');
+ assert.ok(strategyAt>0&&economicsAt>strategyAt&&futuresAt>economicsAt,"both reports remain in the Strategy Evaluation branch");
+ assert.match(shell,/evaluationMode==="economics"/);
+ assert.match(shell,/evaluationMode==="futures"/);
 });
