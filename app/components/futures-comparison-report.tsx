@@ -2,6 +2,7 @@
 import {AuditAttentionControls,ResearchEvidenceBadge} from "./research-evidence-status";
 import type {FuturesComparisonReport} from "../lib/futures-comparison/report";
 import {scopeFuturesEvents} from "./futures-presentation-scope";
+import {NativeCurrencyNotice} from "./display-currency";
 
 const UNAVAILABLE="Unavailable";
 const usd=(x:number|null)=>x===null?UNAVAILABLE:`$${x.toLocaleString("en-US",{maximumFractionDigits:2})}`;
@@ -17,6 +18,7 @@ const hours=(x:number|null)=>x===null?UNAVAILABLE:`${x.toFixed(1)}h`;
 export function FuturesComparisonReportView({report,selectedCandidateIds=null,unmappedCandidateCount=0}:{report:FuturesComparisonReport;selectedCandidateIds?:readonly string[]|null;unmappedCandidateCount?:number}){
  const s=report.summary,selected=selectedCandidateIds===null?null:selectedCandidateIds,events=scopeFuturesEvents(report,selectedCandidateIds),displayedRows=events.reduce((count,event)=>count+event.options.length,0);
  return <section className="workspace-section" data-testid="futures-comparison-report" aria-labelledby="futures-comparison-title">
+  <NativeCurrencyNotice currency="usd" reason="Canonical perpetual and equal-risk comparison economics are exported in USD per unit; no timestamp-correct BTC counterpart is available."/>
   <div className="section-heading"><div><p className="eyebrow">Canonical BTC-PERPETUAL baseline · read-only</p><h2 id="futures-comparison-title">Options vs BTC Perpetual</h2></div><em className={`report-state ${report.availability}`}>{report.availability}</em></div>
   <p className="resolution-banner">For the same MR event, under identical causal event timing. {report.unavailableReason??"Every futures figure is read from the exported canonical futures tables; no exchange request is made and the perpetual engine is not re-run here."}</p>
 

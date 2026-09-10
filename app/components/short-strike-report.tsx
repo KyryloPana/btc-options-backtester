@@ -8,6 +8,7 @@ import type {ExecutionScenario} from "../lib/short-strike/normalize";
 import {executionScenarioStatusLabel} from "../lib/execution-scenario";
 import {ChartMarker,ChartReadout,useChartCursor} from "./chart-cursor";
 import {nearestInPlot,type PlotGeometry} from "../lib/chart-interaction";
+import {NativeCurrencyNotice} from "./display-currency";
 
 /**
  * Presentation only. Every number comes from the prebuilt Short-Strike view
@@ -102,7 +103,7 @@ export function ShortStrikeReportView({report,takerReport,volatility,view="maker
  const compare=view==="compare";
  const scenarioLabel=report.scenario==="reference"?"Reference fair-value economics":report.scenario==="maker"?"maker opportunity":"taker";
 
- return <section className="workspace-section dd-report" data-testid="short-strike-report">
+ return <section className="workspace-section dd-report" data-testid="short-strike-report"><NativeCurrencyNotice currency="usd" reason="Credit, adverse-path, and PnL aggregates are exported only in USD; strike and underlying quote values remain USD."/>
   <header className="dd-header">
    <div>
     <p className="eyebrow">Options structure analysis · short-strike placement</p>

@@ -12,6 +12,7 @@ import {executionScenarioStatusLabel} from "../lib/execution-scenario";
 import type {VolatilityReport} from "../lib/volatility/volatility-report";
 import {EmbeddedVolatilityContext} from "./volatility-report";
 import {formatUsdValue} from "../lib/duration-dte/format";
+import {NativeCurrencyNotice} from "./display-currency";
 
 /**
  * Presentation only. Every number comes from the prebuilt Duration & DTE view
@@ -462,7 +463,7 @@ export function DurationDteReportView({report,volatility,view="maker",onViewChan
  const compare=view==="compare";
  const scenarioLabel=report.scenario==="maker"?"maker opportunity":"taker";
 
- return <section className="workspace-section dd-report" data-testid="duration-dte-report">
+ return <section className="workspace-section dd-report" data-testid="duration-dte-report"><NativeCurrencyNotice currency="usd" reason="USD-only cross-event aggregates remain in their canonical report unit; no aggregate is converted from a BTC median."/>
   <header className="dd-header">
    <div>
     <p className="eyebrow">Options structure analysis · after underlying resolution</p>

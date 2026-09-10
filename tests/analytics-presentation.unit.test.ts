@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {assessEconomicPositions,matchesAttentionFilter,summarizeAttention,ECONOMICS_TAIL_ATTENTION_MIN_N} from "../app/lib/analytics-attention.ts";
 import type {PositionEconomics} from "../app/lib/economics/position.ts";
+import {formatDisplayMoney,selectDisplayMoney} from "../app/components/monetary-format.ts";
 
 const position=(id:string,pnl:number|null,status:PositionEconomics["status"]="priced",reason:string|null=null)=>({candidateId:id,eventId:`event-${id}`,structureExecutionId:id,exitPolicy:"thesis",status,pnlBtc:pnl,missingReason:reason,trackMaximumNetLossBtc:{value:.1,reason:null},incrementalInitialMarginBtc:{value:.1,reason:null},peakInitialMarginBtc:{value:.1,reason:null},capitalDaysBtc:{value:.1,reason:null},maximumStructuralLossBtc:{value:.1,reason:null},maximumStructuralLossUsd:{value:5000,reason:null},trackMaximumNetLossUsd:{value:5000,reason:null},incrementalMaintenanceMarginBtc:{value:.05,reason:null},peakMaintenanceMarginBtc:{value:.05,reason:null},pnlUsd:pnl===null?null:pnl*50000,diagnosticCode:null} as PositionEconomics);
 
@@ -74,6 +75,20 @@ test("PRESENTATION: loaded workspaces expose ordered, responsive section navigat
  assert.match(shell,/summary&&workspaceMode/,"navigation is mounted only with loaded summary content");
  assert.doesNotMatch(nav,/\bload\s*\(|arrayBuffer|createResearchImportWorker|setResult/);
  assert.match(css,/grid-template-columns:190px minmax\(0,1fr\)/);assert.match(css,/\.analytics-section-content\{[^}]*min-width:0/);assert.match(css,/@media\(max-width:1180px\)/);assert.match(css,/overflow-x:auto/);
+});
+
+test("PRESENTATION: display currency is parent-owned representation state with canonical-pair fallback",()=>{
+ const shell=readFileSync(new URL("../app/components/shell/research-analytics.tsx",import.meta.url),"utf8"),configuration=readFileSync(new URL("../app/lib/analysis-configuration.ts",import.meta.url),"utf8"),control=readFileSync(new URL("../app/components/research-section-nav.tsx",import.meta.url),"utf8"),money=readFileSync(new URL("../app/components/display-currency.tsx",import.meta.url),"utf8");
+ assert.match(shell,/useState<DisplayCurrency>\("usd"\)/,"USD is the fresh-session default");
+ assert.doesNotMatch(configuration,/DisplayCurrency|displayCurrency/);
+ assert.doesNotMatch(control,/\bload\s*\(|arrayBuffer|createResearchImportWorker|setResult|setConfiguration/);
+ assert.match(control,/aria-pressed=\{currency===option\}/);
+ assert.deepEqual(selectDisplayMoney("usd",{btc:.01,usd:500}),{currency:"usd",value:500,fallback:false});
+ assert.deepEqual(selectDisplayMoney("btc",{btc:.01,usd:500}),{currency:"btc",value:.01,fallback:false});
+ assert.deepEqual(selectDisplayMoney("usd",{btc:.01,usd:null}),{currency:"btc",value:.01,fallback:true});
+ assert.equal(formatDisplayMoney(-0,"usd"),"$0.00");assert.equal(formatDisplayMoney(-0,"btc"),"0 BTC");
+ assert.doesNotMatch(money,/currentBTCPrice|btcValue\s*\*|usdValue\s*\//,"no generic spot conversion exists");
+ for(const file of ["duration-dte-report.tsx","short-strike-report.tsx","spread-width-report.tsx","exit-policy-report.tsx","economic-analysis-report.tsx","futures-comparison-report.tsx"])assert.match(readFileSync(new URL(`../app/components/${file}`,import.meta.url),"utf8"),/NativeCurrencyNotice|MonetaryValue/,`${file} declares its supported display behavior`);
 });
 
 test("PRESENTATION: partial portfolio chronology is explicit and cannot present a required account",()=>{const source=readFileSync(new URL("../app/components/economic-analysis-report.tsx",import.meta.url),"utf8");assert.match(source,/Partial diagnostic chronology — account conclusions unavailable/);assert.match(source,/selectedPortfolio\.status==="partial"/)});
