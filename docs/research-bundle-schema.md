@@ -1,6 +1,6 @@
 # Research Bundle Schema
 
-Schema **4.4.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and the JSONL tables declared by the exporter. Empty tables remain empty files and availability is stated in `run.json`.
+Schema **4.5.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and the JSONL tables declared by the exporter. Empty tables remain empty files and availability is stated in `run.json`.
 
 **`candidates.jsonl` = selected candidates plus declared controlled-research candidates; `availability.jsonl` = complete generated denominator.** `is_selected` records manual portfolio selection while `research_role` records a controlled analytical role; these fields are orthogonal. Selected-strategy reports filter `is_selected`, while Short-Strike Reference explicitly requests the controlled-research cohort. Reports calculate coverage from generation/availability provenance and recompute extrema from valuations, never UI summaries.
 
@@ -138,3 +138,9 @@ Structural identity `structural-configuration-v2` hashes only target DTE family,
 ### Schema 4.4.0 effective pricing provenance
 
 `run.generation_assumptions` is the authoritative effective Reference-pricing contract and must equal the current causal Reference/expiry-forward methodology. Original persisted generation metadata is retained unchanged under `source_generation_assumptions_raw`; it is audit provenance, not an active pricing claim. Schema 4.3 migration moves its former `generation_assumptions` value to that raw field and installs the current effective contract. Arbitrary historical metadata is preserved verbatim rather than rewritten.
+
+## Schema 4.5.0 canonical USD economics
+
+Schema 4.5 makes USD the primary strategy-economic representation while retaining BTC as Deribit's native settlement and accounting audit currency. `candidates.jsonl` pairs opening gross, fees, and net cash flow with USD at the exact entry observation. `valuations.jsonl` pairs closing cash flow and execution fees with USD at that valuation's index. `outcomes.jsonl` separates closing-execution and delivery fees and converts each only at its own execution or settlement index. `margin_scenarios.jsonl` carries BTC, USD, index, and timestamp at every margin state; BTC and USD margin peaks are independent extrema, and USD capital-days integrate the USD state series.
+
+No missing index is forward-filled, interpolated, or replaced by an entry/current index. A missing exact index produces a missing USD field with native BTC retained. Schema 4.4 bundles remain importable and their absent USD companions remain unavailable rather than being synthesized during migration. Futures tables remain USD-native because futures economics and equal-risk comparison already have USD economic meaning; no artificial BTC counterpart is introduced.

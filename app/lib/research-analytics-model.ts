@@ -248,7 +248,7 @@ export function createResearchAnalyticsContext(d: AnalysisDataset): ResearchAnal
 }
 
 const CONTROLLED_RESEARCH_ROLES=new Set(["short_strike_technical","short_strike_buffered"]);
-const CONTROLLED_RESEARCH_AWARE_SCHEMAS=new Set(["4.1.0","4.2.0","4.3.0","4.4.0"]);
+const CONTROLLED_RESEARCH_AWARE_SCHEMAS=new Set(["4.1.0","4.2.0","4.3.0","4.4.0","4.5.0"]);
 const sourceSchemaVersion=(d:AnalysisDataset)=>d.migratedFrom??d.schemaVersion;
 const usesLegacyControlledResearchCompatibility=(d:AnalysisDataset)=>!CONTROLLED_RESEARCH_AWARE_SCHEMAS.has(sourceSchemaVersion(d));
 /**
