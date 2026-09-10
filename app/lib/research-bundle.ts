@@ -528,6 +528,28 @@ export function validateResearchBundle(files:Partial<Record<string,string>>):{ok
  // ---------------------------------------------------------------------------
  const economicsByCandidate=new Map(rows("structure_economics.jsonl").map(r=>[String(r.candidate_id),r]));
  const nearlyEqual=(a:number,b:number)=>Math.abs(a-b)<=1e-9*Math.max(1,Math.abs(a),Math.abs(b));
+ const reconcileUsd=(label:string,native:JsonValue,index:JsonValue,usd:JsonValue)=>{const n=num(native),i=num(index),u=num(usd);if(n!==null&&i!==null&&u!==null&&!nearlyEqual(u,n*i))errors.push(`${label} does not reconcile to its canonical BTC/index evidence.`)};
+ if(!migratedFrom){
+  for(const c of rows("candidates.jsonl")){
+   const label=`Candidate ${String(c.candidate_id)} (${String(c.execution_scenario)})`;
+   reconcileUsd(`${label} gross opening USD`,c.gross_credit_debit_native,c.entry_index_price,c.gross_credit_debit_usd);
+   reconcileUsd(`${label} opening fee USD`,c.opening_fees_native,c.entry_index_price,c.opening_fees_usd);
+   reconcileUsd(`${label} net opening USD`,c.net_opening_cash_flow_native,c.entry_index_price,c.net_opening_cash_flow_usd);
+   const gross=num(c.gross_credit_debit_usd),fee=num(c.opening_fees_usd),net=num(c.net_opening_cash_flow_usd);
+   if(gross!==null&&fee!==null&&net!==null&&!nearlyEqual(net,gross-fee))errors.push(`${label} net opening USD is not gross opening USD minus opening fees USD.`);
+  }
+  for(const v of rows("valuations.jsonl")){
+   const label=`Valuation ${String(v.valuation_id)}`;
+   reconcileUsd(`${label} scaled closing cash flow USD`,v.scaled_closing_cash_flow_native,v.target_underlying_index,v.scaled_closing_cash_flow_usd);
+   reconcileUsd(`${label} closing fee USD`,v.closing_fees_native,v.target_underlying_index,v.closing_fees_usd);
+  }
+  for(const m of rows("margin_scenarios.jsonl")){
+   const path=Array.isArray(obj(m.margin_inputs as JsonValue).path)?obj(m.margin_inputs as JsonValue).path as JsonValue[]:[];
+   for(const [i,raw] of path.entries()){const point=obj(raw);reconcileUsd(`Margin ${String(m.margin_scenario_id)} path[${i}] initial margin USD`,point.initial_margin_btc,point.index_price,point.initial_margin_usd);reconcileUsd(`Margin ${String(m.margin_scenario_id)} path[${i}] maintenance margin USD`,point.maintenance_margin_btc,point.index_price,point.maintenance_margin_usd)}
+   const extrema=(key:string)=>path.map(raw=>obj(raw)).filter(point=>num(point[key])!==null).sort((a,b)=>num(b[key])!-num(a[key])!)[0];
+   for(const [pathKey,valueKey,timeKey] of [["initial_margin_btc","peak_initial_margin","peak_initial_margin_timestamp_utc"],["maintenance_margin_btc","peak_maintenance_margin","peak_maintenance_margin_timestamp_utc"],["initial_margin_usd","peak_initial_margin_usd","peak_initial_margin_usd_timestamp_utc"],["maintenance_margin_usd","peak_maintenance_margin_usd","peak_maintenance_margin_usd_timestamp_utc"]] as const){const peak=extrema(pathKey),expected=num(peak?.[pathKey]),actual=num(m[valueKey]),expectedTime=peak?(peak.timestamp_utc??iso(num(peak.timestamp))):null;if(expected!==null&&actual!==null&&!nearlyEqual(actual,expected))errors.push(`Margin ${String(m.margin_scenario_id)} ${valueKey} is not the canonical path extremum.`);if(peak&&m[timeKey]!==expectedTime)errors.push(`Margin ${String(m.margin_scenario_id)} ${timeKey} does not identify its canonical path extremum.`)}
+  }
+ }
  for(const r of rows("structure_economics.jsonl")){
   const id=String(r.candidate_id);
   // Requested-vs-actual provenance and the actual horizon must survive export.
@@ -589,6 +611,11 @@ export function validateResearchBundle(files:Partial<Record<string,string>>):{ok
  // its canonical policy and compared against the row that claims to carry it.
  const outcomeRows=new Map<string,Row>();
  for(const r of [...rows("outcomes.jsonl")])outcomeRows.set(`${String(r.candidate_id)}~${String(r.analytics_track)}~${String(r.outcome_type)}`,r);
+ if(!migratedFrom)for(const [key,descriptor] of trackRows)for(const raw of (Array.isArray(descriptor.source_outcomes)?descriptor.source_outcomes:[])){
+  const source=obj(raw as JsonValue),outcome=source.outcome;if(outcome==null)continue;const exported=outcomeRows.get(`${key}~${String(outcome)}`);if(!exported)continue;
+  reconcileUsd(`${key} ${String(outcome)} closing fee USD`,exported.closing_fees_native,source.conversion_index,exported.closing_fees_usd);
+  if(outcome==="settlement")reconcileUsd(`${key} settlement delivery fee USD`,exported.delivery_fees_native,source.conversion_index,exported.delivery_fees_usd);
+ }
  for(const [key,descriptor] of trackRows){
   for(const raw of (Array.isArray(descriptor.source_outcomes)?descriptor.source_outcomes:[])){
    const source=obj(raw as JsonValue),outcome=source.outcome;
