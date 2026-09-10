@@ -7,6 +7,7 @@ import {EmbeddedVolatilityContext} from "./volatility-report";
 import type {WidthStructure} from "../lib/spread-width/normalize";
 import {ChartMarker,ChartReadout,useChartCursor} from "./chart-cursor";
 import {nearestInPlot,type PlotGeometry} from "../lib/chart-interaction";
+import {NativeCurrencyNotice} from "./display-currency";
 
 /**
  * Presentation only. Every number comes from the prebuilt Spread-Width view
@@ -103,7 +104,7 @@ export function SpreadWidthReportView({report,volatility,view="maker",onViewChan
  const steps=report.groups.flatMap(g=>g.steps);
  const scenarioLabel=report.scenario==="reference"?"Reference fair value":report.scenario==="maker"?"Immediate Maker opportunity":"Immediate Taker execution";
 
- return <section className="workspace-section dd-report" data-testid="spread-width-report">
+ return <section className="workspace-section dd-report" data-testid="spread-width-report"><NativeCurrencyNotice currency="usd" reason="Aggregates are USD-native. Strike and width remain USD quote geometry; BTC fees stay native when exact multi-time USD totals are unavailable."/>
   <header className="dd-header">
    <div>
     <p className="eyebrow">Options structure analysis · protective width</p>

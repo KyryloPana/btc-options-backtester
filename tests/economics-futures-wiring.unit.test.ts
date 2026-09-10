@@ -5,6 +5,7 @@ import type {AnalysisDataset} from "../app/lib/research-analysis.ts";
 import {buildEconomicReport,economicLayerSummaries} from "../app/lib/economics/report.ts";
 import {DEFAULT_ANALYSIS_CONFIGURATION} from "../app/lib/analysis-configuration.ts";
 import {buildFuturesComparisonReport} from "../app/lib/futures-comparison/report.ts";
+import {resolveCandidateSelection,scopeFuturesEvents} from "../app/components/futures-presentation-scope.ts";
 import {EQUAL_RISK_SIZING_METHOD,equalRiskFuturesQuantity} from "../app/lib/futures-baseline.ts";
 import {canonicalStructuralLoss} from "../app/lib/maximum-economic-loss.ts";
 
@@ -319,11 +320,31 @@ test("FUTURES: no exported futures table leaves the report explicitly unavailabl
  assert.equal(report.summary.eventsWithBaseline,0);
 });
 
-test("FUTURES: the workspace renders the report after Economics",()=>{
+test("FUTURES: the workspace exposes both existing reports under Strategy Evaluation",()=>{
  const shell=readFileSync(new URL("../app/components/shell/research-analytics.tsx",import.meta.url),"utf8");
  const economicsAt=shell.indexOf("EconomicAnalysisReportView report=");
  const futuresAt=shell.indexOf("FuturesComparisonReportView report=");
- const workbenchAt=shell.indexOf("<ResearchAnalyticsWorkbench");
- assert.ok(economicsAt>0&&futuresAt>economicsAt,"Options vs BTC Perpetual sits after Economics");
- assert.ok(workbenchAt>futuresAt,"and before Diagnostics & Audit");
+ const strategyAt=shell.indexOf('workspaceMode==="strategy"');
+ assert.ok(strategyAt>0&&economicsAt>strategyAt&&futuresAt>economicsAt,"both reports remain in the Strategy Evaluation branch");
+ assert.match(shell,/evaluationMode==="economics"/);
+ assert.match(shell,/evaluationMode==="futures"/);
+});
+
+test("FUTURES PRESENTATION: candidate scope filters rows without changing report values or summary",()=>{
+ const report=futures(),summary=report.summary,events=report.events,chosen=report.events[0]!.options[0]!.candidateId;
+ const scoped=scopeFuturesEvents(report,[chosen]);
+ assert.equal(scoped.reduce((n,event)=>n+event.options.length,0),1);
+ assert.equal(scoped[0]!.options[0]!.candidateId,chosen);
+ assert.strictEqual(report.summary,summary,"the full analytical summary is untouched");
+ assert.strictEqual(report.events,events,"the source report event collection is untouched");
+ const source=readFileSync(new URL("../app/components/futures-comparison-report.tsx",import.meta.url),"utf8");
+ assert.match(source,/Full exported benchmark context/);
+ assert.match(source,/Unmapped diagnostic/);
+});
+
+test("FUTURES PRESENTATION: a stale configuration is not a valid empty candidate scope",()=>{
+ const catalogA=[{id:"configuration-a",candidateIds:["c1"]}],catalogB=[{id:"configuration-b",candidateIds:[]}];
+ assert.deepEqual(resolveCandidateSelection(catalogA,"configuration-a"),catalogA[0]);
+ assert.equal(resolveCandidateSelection(catalogB,"configuration-a"),null,"an ID absent from the new catalog is stale");
+ assert.deepEqual(resolveCandidateSelection(catalogB,"configuration-b"),catalogB[0],"a valid configuration with zero candidates remains selected and distinguishable");
 });

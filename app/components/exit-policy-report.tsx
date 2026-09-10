@@ -4,6 +4,7 @@ import type {VolatilityReport} from "../lib/volatility/volatility-report";
 import {winningExitVolatility} from "../lib/volatility/volatility-report";
 import {AuditAttentionControls,ResearchEvidenceBadge} from "./research-evidence-status";
 import {EmbeddedVolatilityContext} from "./volatility-report";
+import {MonetaryValue,NativeCurrencyNotice} from "./display-currency";
 
 const metric=(x:Metric,d=5)=>x.value!==null?`${x.value.toFixed(d)} · N=${x.n}`:x.status==="not_estimable"?(x.reason?.includes("minimum 10")?`Not estimable · N=${x.n} · minimum 10`:`Not estimable · N=${x.n}`):`Unavailable · N=${x.n}`;
 const coverage=(x:{value:number|null;numerator:number;denominator:number})=>x.denominator===0?"Not evaluated":`${(x.value!*100).toFixed(1)}% · ${x.numerator}/${x.denominator}`;
@@ -29,12 +30,13 @@ export function ExitPolicyReportView({report,volatility}:{report:ExitPolicyRepor
  const groups=Object.entries(audit.reduce<Record<string,number>>((a,x)=>{const key=x.reason.split(":")[0]??"unavailable";a[key]=(a[key]??0)+1;return a},{}));
  if(report.integrity.status==="error")return <section className="workspace-section exit-report" data-testid="exit-policy-report"><h2>Exit-Policy Analysis</h2><p className="preflight invalid" role="alert">{report.integrity.message}</p></section>;
  return <section className="workspace-section exit-report" data-testid="exit-policy-report">
+  <NativeCurrencyNotice currency="btc" reason="Paired policy deltas, MAE, fees, and capital-day aggregates have no independently exported USD aggregate and remain BTC-native."/>
   <header className="exit-header"><p className="eyebrow">Same-structure policy decision</p><h2>Exit-Policy Analysis</h2><p className="exit-subtitle">Compare complete chronological exit policies on the same structures. Reference economics are primary; strict Maker/Taker execution evidence is reported separately.</p><div className="exit-scope"><span>Reference fair value</span><span>Execution-independent</span><span>Selected structures</span><span>Canonical pricing</span></div><details className="exit-methodology"><summary>Methodology &amp; definitions</summary><p>{report.methodology} Scope: {report.scope.analyticsTrack} · execution scenario {report.scope.executionScenario??"none"} · pricing representation {report.scope.pricingTrack??"canonical"}. Δ = alternative − Thesis. Positive ΔPnL is better; negative holding, fees, or capital-time means less burden. MAE is signed adverse PnL, so positive ΔMAE means less adverse.</p></details></header>
 
   <div className="exit-kpis">
    <div className="exit-kpi"><span>Selected structures</span><strong>{report.selectedCandidateIds.length}</strong><small>Manual Exit cohort</small></div>
    <div className="exit-kpi"><span>Thesis priced coverage</span><strong>{thesis.stats.pricingCoverage.value===null?"Not evaluated":percent(thesis.stats.pricingCoverage.value)}</strong><small>{thesis.stats.denominators.pricedWinningExits.n} / {thesis.stats.denominators.triggerDeterminate.n} determinate</small></div>
-   <div className="exit-kpi"><span>Thesis median PnL</span><strong>{thesis.stats.pnlAmongPricedExits.btc.median.value===null?"Unavailable":thesis.stats.pnlAmongPricedExits.btc.median.value.toFixed(5)}</strong><small>BTC · priced winners only</small></div>
+   <div className="exit-kpi"><span>Thesis median PnL</span><strong><MonetaryValue btc={thesis.stats.pnlAmongPricedExits.btc.median.value} usd={thesis.stats.pnlAmongPricedExits.usd.median.value}/></strong><small>priced winners only · independently aggregated by currency</small></div>
    <div className="exit-kpi"><span>Thesis median hold</span><strong>{thesis.stats.holdingAmongPricedExits.hours.value===null?"Unavailable":`${thesis.stats.holdingAmongPricedExits.hours.value.toFixed(1)}h`}</strong><small>N={thesis.stats.holdingAmongPricedExits.hours.n}</small></div>
    <div className="exit-kpi"><span>Independent MR events</span><strong>{independentEvents}</strong><small>Represented by Thesis cohort</small></div>
    <div className="exit-kpi"><span>Policies with determinate exits</span><strong>{policiesWithDeterminateExits}</strong><small>of {report.policies.length} defined policies</small></div>
