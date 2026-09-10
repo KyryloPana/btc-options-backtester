@@ -74,7 +74,11 @@ test("PRESENTATION: loaded workspaces expose ordered, responsive section navigat
  for(const id of new Set([...researchIds,...economicsIds,...futuresIds]))assert.equal(shell.match(new RegExp(`id=\"${id}\"`,"g"))?.length,1,`${id} has one real anchor`);
  assert.match(shell,/summary&&workspaceMode/,"navigation is mounted only with loaded summary content");
  assert.doesNotMatch(nav,/\bload\s*\(|arrayBuffer|createResearchImportWorker|setResult/);
- assert.match(css,/grid-template-columns:190px minmax\(0,1fr\)/);assert.match(css,/\.analytics-section-content\{[^}]*min-width:0/);assert.match(css,/@media\(max-width:1180px\)/);assert.match(css,/overflow-x:auto/);
+ assert.doesNotMatch(css,/grid-template-columns:190px minmax\(0,1fr\)/,"navigation must not reserve report width");
+ assert.match(css,/\.analytics-section-content\{[^}]*width:100%[^}]*min-width:0/,"central content retains the full centered report width");
+ assert.match(css,/\.research-section-nav\{position:fixed;[^}]*left:max\([^}]*width:190px/,"desktop rail is placed in the outside page gutter");
+ assert.match(css,/@media\(max-width:1995px\).*?\.research-section-nav\{position:sticky;left:auto;[^}]*width:100%/s,"insufficient gutters use an in-flow sticky horizontal fallback");
+ assert.match(css,/overflow-x:auto/);assert.match(css,/box-sizing:border-box/,"the fallback cannot add width or page overflow");
 });
 
 test("PRESENTATION: display currency is parent-owned representation state with canonical-pair fallback",()=>{
@@ -92,3 +96,5 @@ test("PRESENTATION: display currency is parent-owned representation state with c
 });
 
 test("PRESENTATION: partial portfolio chronology is explicit and cannot present a required account",()=>{const source=readFileSync(new URL("../app/components/economic-analysis-report.tsx",import.meta.url),"utf8");assert.match(source,/Partial diagnostic chronology — account conclusions unavailable/);assert.match(source,/selectedPortfolio\.status==="partial"/)});
+
+test("PRESENTATION: paired execution monetary deltas honor display currency without fallback",()=>{const source=readFileSync(new URL("../app/components/economic-analysis-report.tsx",import.meta.url),"utf8"),panel=source.slice(source.indexOf('title="Paired Reference → Q50 → Q90"'),source.indexOf('title="Configuration-level economics"'));for(const field of ["GrossCredit","NetCredit","OpeningFees","Pnl","TrackMaximumNetLoss"]){assert.match(panel,new RegExp(`btc=\\{x\\.medianDelta${field}Btc\\}`),`${field} supplies canonical BTC`);assert.match(panel,new RegExp(`usd=\\{x\\.medianDelta${field}Usd\\}`),`${field} supplies canonical USD`)}assert.doesNotMatch(panel,/btc\(x\.medianDelta/);assert.equal(panel.match(/allowFallback=\{false\}/g)?.length,5);assert.match(panel,/USD paired n=/);assert.match(panel,/common N=/)});
