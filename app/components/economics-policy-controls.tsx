@@ -1,15 +1,16 @@
 "use client";
+import {useEffect,useState} from "react";
 import type {AnalysisConfiguration} from "../lib/analysis-configuration";
 import {validateEconomicPolicy} from "../lib/analysis-configuration";
 
 export function EconomicsPolicyControls({value,onChange}:{value:AnalysisConfiguration;onChange:(next:AnalysisConfiguration)=>void}){
- const set=<K extends keyof AnalysisConfiguration>(key:K,next:AnalysisConfiguration[K])=>onChange({...value,[key]:next}),errors=validateEconomicPolicy(value);
- return <details className="workspace-section scoped-controls" data-testid="economics-policy-controls"><summary><strong>Account &amp; Margin Policy</strong><small>{value.marginModel} margin · {value.collateralMode} collateral</small></summary><p className="dd-note">Existing Economics portfolio and deployment-policy inputs. Reference, empirical Q50, and conservative Q90 execution layers remain simultaneous read-only report scope.</p><div className="analytics-form-grid">
+ const set=<K extends keyof AnalysisConfiguration>(key:K,next:AnalysisConfiguration[K])=>onChange({...value,[key]:next}),errors=validateEconomicPolicy(value),complete=value.accountEquity!==null&&value.maximumRiskFraction!==null&&value.maximumMarginUtilization!==null&&!errors.length;
+ const [open,setOpen]=useState(!complete);useEffect(()=>setOpen(!complete),[complete]);
+ return <details className="workspace-section scoped-controls" data-testid="economics-policy-controls" open={open} onToggle={event=>setOpen(event.currentTarget.open)}><summary><strong>Account &amp; Margin Policy</strong><small>{value.marginModel} margin · {value.collateralMode} collateral · {complete?"configured":"incomplete"}</small></summary><p className="dd-note">Existing Economics portfolio and deployment-policy inputs. Reference, empirical Q50, and conservative Q90 execution layers remain simultaneous read-only report scope.</p><div className="analytics-form-grid">
   <label>Margin model<select value={value.marginModel} onChange={event=>set("marginModel",event.target.value as AnalysisConfiguration["marginModel"])}><option value="standard">Standard Margin</option><option value="portfolio">Portfolio Margin (capability gated)</option></select></label>
   <label>Collateral mode<select value={value.collateralMode} onChange={event=>set("collateralMode",event.target.value as AnalysisConfiguration["collateralMode"])}><option value="segregated">Segregated</option><option value="cross">Cross</option></select></label>
   <label>Account equity (BTC)<input type="number" min="0" step="0.01" value={value.accountEquity??""} onChange={event=>set("accountEquity",event.target.value===""?null:Number(event.target.value))}/></label>
   <label>Maximum risk fraction<input type="number" min="0" max="1" step="0.001" value={value.maximumRiskFraction??""} onChange={event=>set("maximumRiskFraction",event.target.value===""?null:Number(event.target.value))} placeholder="Not configured"/></label>
   <label>Maximum margin utilization<input type="number" min="0" max="1" step="0.01" value={value.maximumMarginUtilization??""} onChange={event=>set("maximumMarginUtilization",event.target.value===""?null:Number(event.target.value))} placeholder="Not configured"/></label>
-  <label>Maximum modeled drawdown policy (BTC)<input type="number" min="0" step="0.01" value={value.maximumDrawdown??""} onChange={event=>set("maximumDrawdown",event.target.value===""?null:Number(event.target.value))}/></label>
  </div>{errors.length>0&&<ul className="preflight-warning">{errors.map(error=><li key={error}>{error}</li>)}</ul>}</details>;
 }

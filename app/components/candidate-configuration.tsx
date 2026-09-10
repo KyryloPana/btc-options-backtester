@@ -1,4 +1,5 @@
 "use client";
+import {useEffect,useState} from "react";
 import type {AnalysisConfiguration} from "../lib/analysis-configuration";
 import type {AnalysisDataset} from "../lib/research-analysis";
 import {structuralConfigurationIdentity,structuralConfigurationLabel,type StructuralConfigurationFields} from "../lib/economics/strategy-configuration";
@@ -15,11 +16,14 @@ export function candidateConfigurationCatalog(dataset:AnalysisDataset):Candidate
 }
 
 export function CandidateConfiguration({catalog,value,onChange}:{catalog:CandidateConfigurationCatalog;value:AnalysisConfiguration;onChange:(next:AnalysisConfiguration)=>void}){
- const selected=catalog.options.find(option=>option.id===value.selectedStructuralConfigurationId);
+ const selected=catalog.options.find(option=>option.id===value.selectedStructuralConfigurationId),complete=Boolean(selected&&value.exitPolicy);
+ const [open,setOpen]=useState(!complete);useEffect(()=>setOpen(!complete),[complete,selected?.id]);
  const set=<K extends keyof AnalysisConfiguration>(key:K,next:AnalysisConfiguration[K])=>onChange({...value,[key]:next});
- return <details className="candidate-configuration" data-testid="candidate-configuration" key={selected?.id??"unselected"} open={!selected}><summary><span><small>Candidate</small><strong>{selected?structuralConfigurationLabel(selected.fields):"Select a canonical structural configuration"}</strong><small>Exit: {value.exitPolicy??"not configured"}</small></span><span className="edit-configuration">{selected?"Edit configuration":"Configure"}</span></summary><div className="candidate-configuration-editor">
+ return <details className="candidate-configuration" data-testid="candidate-configuration" open={open} onToggle={event=>setOpen(event.currentTarget.open)}><summary><span aria-live="polite"><small>{complete?"Candidate":"Candidate incomplete"}</small><strong>{selected?structuralConfigurationLabel(selected.fields):"Select a canonical structural configuration"}</strong><small>{value.exitPolicy?`${value.exitPolicy.replaceAll("_"," ")} exit`:"Exit policy not configured"}</small></span><span className="edit-configuration">{complete?"Edit":"Configure"}</span></summary><div className="candidate-configuration-editor">
   {catalog.options.length?<label>Structural configuration<select value={value.selectedStructuralConfigurationId??""} onChange={event=>set("selectedStructuralConfigurationId",event.target.value||null)}><option value="">Select a canonical configuration</option>{catalog.options.map(option=><option key={option.id} value={option.id}>{structuralConfigurationLabel(option.fields)}</option>)}</select></label>:<p className="preflight-warning">Unavailable — no complete canonical structural configuration identity is present in this bundle.</p>}
   <label>Complete exit policy<small className="dd-note">Used by Economics. The Futures benchmark retains its exported canonical endpoint.</small><select value={value.exitPolicy??""} onChange={event=>set("exitPolicy",event.target.value as AnalysisConfiguration["exitPolicy"]||null)}><option value="">Required for Economics</option>{EXIT_POLICIES.map(policy=><option key={policy}>{policy}</option>)}</select></label>
+  {!complete&&<p className="configuration-incomplete" role="status">Select {selected?"an exit policy":"a structural configuration and exit policy"} before configured Economics can be evaluated.</p>}
+  {selected&&<small className="mono configuration-id">Configuration ID: {selected.id}</small>}
   {catalog.unmappedCandidateIds.length>0&&<small className="metric-unavailable">Unmapped diagnostic: {catalog.unmappedCandidateIds.length} candidate{catalog.unmappedCandidateIds.length===1?"":"s"} lack a complete canonical structural configuration identity.</small>}
  </div></details>;
 }

@@ -29,6 +29,7 @@ test("PRESENTATION: Research Analytics has one shared import boundary and nested
  assert.match(source,/Strategy evaluation report/);
  const tabs=source.slice(source.indexOf("function SegmentedTabs"),source.indexOf("const WORKSPACE_TABS"));
  assert.doesNotMatch(tabs,/\bload\s*\(/,"tab interaction never invokes bundle import");
+ assert.doesNotMatch(tabs,/arrayBuffer|createResearchImportWorker|setResult/,"tab interaction neither reads nor resets the imported bundle");
  const research=source.slice(source.indexOf('workspaceMode==="research"'),source.indexOf('workspaceMode==="strategy"'));
  assert.doesNotMatch(research,/EconomicAnalysisReportView|FuturesComparisonReportView/);
  const strategy=source.slice(source.indexOf('workspaceMode==="strategy"'));
@@ -40,15 +41,18 @@ test("PRESENTATION: scoped configuration controls edit only genuine report input
  const research=readFileSync(new URL("../app/components/research-controls.tsx",import.meta.url),"utf8"),economics=readFileSync(new URL("../app/components/economics-policy-controls.tsx",import.meta.url),"utf8"),candidate=readFileSync(new URL("../app/components/candidate-configuration.tsx",import.meta.url),"utf8"),shell=readFileSync(new URL("../app/components/shell/research-analytics.tsx",import.meta.url),"utf8"),benchmark=readFileSync(new URL("../app/components/futures-benchmark-scope.tsx",import.meta.url),"utf8");
  for(const field of ["pricingTrack","includedQualityLevels","capitalBasis","exitPolicy","nearFullLossFraction"])assert.match(research,new RegExp(field));
  for(const field of ["marginModel","collateralMode","accountEquity","maximumRiskFraction","maximumMarginUtilization","maximumDrawdown"])assert.doesNotMatch(research,new RegExp(field));
- for(const field of ["marginModel","collateralMode","accountEquity","maximumRiskFraction","maximumMarginUtilization","maximumDrawdown"])assert.match(economics,new RegExp(field));
+ for(const field of ["marginModel","collateralMode","accountEquity","maximumRiskFraction","maximumMarginUtilization"])assert.match(economics,new RegExp(field));
+ assert.doesNotMatch(economics,/maximumDrawdown/,"an output-only configuration echo is not presented as an active policy input");
  assert.doesNotMatch(economics,/executionAssumption|capitalBasis/);
  assert.match(candidate,/set\("selectedStructuralConfigurationId"/);
  assert.match(candidate,/structuralConfigurationIdentity/);
  assert.match(candidate,/structuralConfigurationLabel/);
  assert.match(shell,/onSelectConfiguration=\{id=>setConfiguration\(current=>\(\{\.\.\.current,selectedStructuralConfigurationId:id\}\)\)\}/,"Economics cards update the same parent state");
  assert.equal(shell.match(/useState<AnalysisConfiguration>/g)?.length,1,"one shared configuration state survives all inner tabs");
+ assert.equal(shell.match(/<CandidateConfiguration /g)?.length,1,"Candidate Configuration is persistent above both evaluation subtabs");
  assert.doesNotMatch(benchmark,/<select|<input|<button/,"Futures benchmark scope is read-only");
  assert.match(benchmark,/candidate policy does not rewrite it/i);
+ for(const component of [research,economics,candidate,benchmark,readFileSync(new URL("../app/components/futures-comparison-report.tsx",import.meta.url),"utf8")])assert.doesNotMatch(component,/buildEconomicReport|buildFuturesComparisonReport|buildDurationDteReport/,"presentation components do not duplicate analytical builders");
 });
 
 test("PRESENTATION: partial portfolio chronology is explicit and cannot present a required account",()=>{const source=readFileSync(new URL("../app/components/economic-analysis-report.tsx",import.meta.url),"utf8");assert.match(source,/Partial diagnostic chronology — account conclusions unavailable/);assert.match(source,/selectedPortfolio\.status==="partial"/)});
