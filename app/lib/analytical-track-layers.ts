@@ -112,4 +112,4 @@ export const CAPITAL_BASIS_LABELS:Readonly<Record<string,string>>={
  incremental_opening_margin:"Incremental opening margin",
  peak_required_capital:"Peak required capital",
 };
-export const CAPITAL_BASIS_COMPATIBILITY_NOTE="The capital-basis value `maximum_economic_loss` is retained as a serialized compatibility token; the quantity it selects is the canonical bounded maximum structural loss. Structural loss is not Initial Margin and not Maintenance Margin." as const;
+export const CAPITAL_BASIS_COMPATIBILITY_NOTE="This control scopes Duration & DTE capital-time analysis only. The capital-basis value `maximum_economic_loss` is retained as a serialized compatibility token; the quantity it selects is the canonical bounded maximum structural loss. Structural loss is not Initial Margin and not Maintenance Margin." as const;

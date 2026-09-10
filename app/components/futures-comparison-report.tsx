@@ -1,4 +1,5 @@
 "use client";
+import {AuditAttentionControls,ResearchEvidenceBadge} from "./research-evidence-status";
 import type {FuturesComparisonReport} from "../lib/futures-comparison/report";
 
 const UNAVAILABLE="Unavailable";
@@ -43,8 +44,8 @@ export function FuturesComparisonReportView({report}:{report:FuturesComparisonRe
   </div>
   <small className="dd-note">The equal-risk futures quantity is an ANALYTICAL sizing figure, not an executable order amount: it is unrounded and is not stepped to the contract size or minimum trade amount, so it is never a guaranteed executable size. These are two different denominators and are never mixed. One perpetual observation exists per MR event, however many option structures were selected for it; a futures median computed over structure rows would reweight the futures population by option selection density. The paired difference uses matched event and endpoint observations only — unmatched aggregate means are never differenced and called an options advantage. No strategy is recommended.</small>
 
-  {report.events.map(({baseline,options})=><div key={baseline.eventId} className="dd-event-block">
-   <h3>{baseline.eventId} · {baseline.instrument??UNAVAILABLE} · {baseline.direction??UNAVAILABLE}</h3>
+  {report.events.map(({baseline,options})=><details key={baseline.eventId} className="dd-event-block exit-details analytics-audit" data-filter="attention">
+   <summary>{baseline.eventId} · {baseline.instrument??UNAVAILABLE} · {baseline.direction??UNAVAILABLE}</summary><AuditAttentionControls unavailable={baseline.unavailableReason?1:0} partial={baseline.fundingStatus==="available"?0:1+options.filter(x=>x.comparability!=="paired").length}/>
    {baseline.unavailableReason&&<p className="preflight-warning">{baseline.unavailableReason}</p>}
    <div className="table-wrap"><table>
     <thead><tr><th>Causal entry</th><th>Entry price</th><th>Selected endpoint</th><th>Endpoint time / price</th><th>Holding</th><th>Gross / unit</th><th>Fees + slippage / unit</th><th>Funding / unit</th><th>Funding status</th><th>Net / unit</th><th>Risk to invalidation / unit</th></tr></thead>
@@ -76,8 +77,8 @@ export function FuturesComparisonReportView({report}:{report:FuturesComparisonRe
 
    <div className="table-wrap"><table>
     <thead><tr><th>Candidate</th><th>Actual DTE</th><th>Strikes / width</th><th>Endpoint</th><th>Comparability</th><th>Reference option PnL</th><th>Max structural loss</th><th>Opening IM</th><th>Peak IM</th><th>Risk budget</th><th>Equal-risk futures qty<br/><small>analytical</small></th><th>Equal-risk futures PnL</th><th>Options − Futures</th></tr></thead>
-    <tbody>{options.map(o=><tr key={o.candidateId}>
-     <th>{o.candidateId}</th>
+    <tbody>{options.map(o=>{const evidence=o.optionPnlUsd===null?"UNAVAILABLE":o.comparability!=="paired"?"PARTIAL":"VALID",reason=o.comparabilityReason??(o.optionPnlUsd===null?"Option endpoint unavailable.":null);return <tr key={o.candidateId} data-evidence={evidence}>
+     <th><ResearchEvidenceBadge assessment={{status:evidence,reason}}/> {o.candidateId}</th>
      <td>{days(o.actualDteDays)}</td>
      <td>{o.shortStrike??UNAVAILABLE} / {o.longStrike??UNAVAILABLE}<br/><small>{o.widthUsd===null?UNAVAILABLE:`$${o.widthUsd}`}</small></td>
      <td>{o.endpoint??UNAVAILABLE}</td>
@@ -90,9 +91,9 @@ export function FuturesComparisonReportView({report}:{report:FuturesComparisonRe
      <td>{qty(o.equalRisk.futuresQuantity)}</td>
      <td className={o.equalRisk.futuresPnlUsd===null?"dd-muted":undefined} title={o.equalRisk.reason??undefined}>{usd(o.equalRisk.futuresPnlUsd)}</td>
      <td className={o.equalRisk.differenceUsd===null?"dd-muted":undefined} title={o.equalRisk.reason??undefined}>{usd(o.equalRisk.differenceUsd)}</td>
-    </tr>)}</tbody>
+    </tr>})}</tbody>
    </table></div>
-  </div>)}
+  </details>)}
 
   {report.diagnostics.length>0&&<details><summary>Diagnostics ({report.diagnostics.length})</summary><ul>{report.diagnostics.slice(0,50).map((x,i)=><li key={`${x.eventId}-${x.candidateId??"event"}-${i}`}><b>{x.eventId}{x.candidateId?` · ${x.candidateId}`:""}:</b> {x.reason}</li>)}</ul></details>}
   <details><summary>Methodology</summary><p><b>Equal-risk sizing:</b> <code>{report.equalRiskSizingMethod}</code></p>{report.methodology.map(x=><p key={x}>{x}</p>)}</details>

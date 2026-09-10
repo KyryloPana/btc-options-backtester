@@ -1,12 +1,18 @@
 # Research Bundle Schema
 
-Schema **4.1.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and the JSONL tables declared by the exporter. Empty tables remain empty files and availability is stated in `run.json`.
+Schema **4.4.0** is a versioned, venue-aware interchange format. Every ZIP contains `research_bundle/run.json` and the JSONL tables declared by the exporter. Empty tables remain empty files and availability is stated in `run.json`.
 
 **`candidates.jsonl` = selected candidates plus declared controlled-research candidates; `availability.jsonl` = complete generated denominator.** `is_selected` records manual portfolio selection while `research_role` records a controlled analytical role; these fields are orthogonal. Selected-strategy reports filter `is_selected`, while Short-Strike Reference explicitly requests the controlled-research cohort. Reports calculate coverage from generation/availability provenance and recompute extrema from valuations, never UI summaries.
+
+Schemas 4.1–4.4 are controlled-research-aware. After migration from 4.1, 4.2, or 4.3, an empty controlled cohort remains empty; it must never fall back to unrelated `is_selected` candidates. The selected-candidate compatibility fallback is restricted to source schemas that predate the `research_role` distinction.
 
 ### Analytics cohort routing
 
 The shared analytics boundary exposes `selected`, `controlled-research`, and `all` cohorts. Economics (including Q50/Q90), Duration/DTE, Spread Width, Exit Policy, futures comparison, execution summaries, portfolio/capital reconstruction, and margin use `selected`. Short-Strike uses `controlled-research` for its primary Reference comparison and `selected` for Maker/Taker robustness. `all` is reserved for diagnostics and low-level tooling; it is not a report default.
+
+### Structural strategy configuration identity (4.3.0)
+
+Every candidate carries `structural_configuration_id`, `structural_configuration_version`, and normalized `structural_configuration`. The v2 identity hashes only ex-ante target DTE family, strike method, requested width, and direction-neutral structure family. Quantity is separate sizing. Direction, realized expiry/DTE, substituted strikes/width, PnL, and exit outcomes are excluded. Schema 4.2 migration derives v2 only from persisted ex-ante fields and marks its absent structured opportunity decision unavailable; a row without enough evidence is rejected rather than assigned an invented configuration.
 
 ## Keys and join semantics
 
@@ -19,6 +25,7 @@ The shared analytics boundary exposes `selected`, `controlled-research`, and `al
 | `valuations.jsonl` | `valuation_id` | Joins `candidate_id + execution_scenario`; evaluated scenarios only. |
 | `outcomes.jsonl` | `outcome_id` | Joins `candidate_id + execution_scenario`; evaluated scenarios only. |
 | `availability.jsonl` | `availability_id` | Complete generated denominator row. Multiple requested widths/policies may resolve to the same structural `candidate_id`; each row retains `requested_strikes` and `actual_strikes`. |
+| `configuration_opportunities.jsonl` | `opportunity_id` (`event_id|structural_configuration_id`) | One canonical generation-level opportunity with structured Q50 trade/no-trade/unavailable state. |
 | `margin_scenarios.jsonl` | `margin_scenario_id` | Joins selected structural `candidate_id`. |
 | `evidence_trades.jsonl` | `evidence_id` | Raw trade catalog with usage references that include `execution_scenario`. |
 | `futures_comparisons.jsonl` | `comparison_id` | One canonical Deribit BTC-PERPETUAL baseline per `event_id` -- never one per option structure. Carries per-unit economics (`gross_pnl_usd_per_unit`, `fees_usd_per_unit`, `funding_usd_per_unit`, `risk_to_invalidation_usd_per_unit`) plus every observation endpoint's own status. |
@@ -119,3 +126,15 @@ immediate maker or taker historical support. The two scenario rows remain `unava
 Delayed and modeled fields in schema 3.2.0 are metadata/placeholders and do not independently make
 a candidate retainable. A status label alone, an unresolved structure, unavailable provenance,
 future evidence, or unreconciled reference economics cannot satisfy the reference branch.
+
+### Schema 4.3.0 corrective contract
+
+`configuration_opportunities.jsonl` is the generation-level event × direction-neutral structural-configuration denominator. It contains one row per event/configuration, all attempted candidate IDs, an optional uniquely entered candidate ID, and a structured Q50 `trade | explicit_no_trade | unavailable` state with stable reason code.
+
+Structural identity `structural-configuration-v2` hashes only target DTE family, strike method, requested width, and direction-neutral structure family. Validation recomputes the normalized fields and hash for candidate, availability-attempt, and opportunity rows. Schema 4.2 migrates ex-ante identity fields deterministically but marks its unrecorded opportunity decision unavailable; it never infers no-trades from narrative text.
+
+`margin_scenarios.margin_inputs.protective_long_mark_coverage` records optional long-leg price coverage. Segregated Standard Margin still requires canonical vertical geometry, but the contemporaneous long mark does not gate IM/MM because the verified formula charges only the marked short option and grants no long offset. Legacy `margin_missing_long_mark` rows remain readable; regenerated schema 4.4 rows do not emit that reason solely for absent optional long-mark evidence.
+
+### Schema 4.4.0 effective pricing provenance
+
+`run.generation_assumptions` is the authoritative effective Reference-pricing contract and must equal the current causal Reference/expiry-forward methodology. Original persisted generation metadata is retained unchanged under `source_generation_assumptions_raw`; it is audit provenance, not an active pricing claim. Schema 4.3 migration moves its former `generation_assumptions` value to that raw field and installs the current effective contract. Arbitrary historical metadata is preserved verbatim rather than rewritten.

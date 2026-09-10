@@ -22,7 +22,8 @@ export function canonicalMarginReason(reason:unknown):CanonicalMarginReasonCode{
  if(text===LEGACY_MARGIN_NOT_COMPUTED_REASON)return "margin_not_recomputed";
  if(/No canonical valuation points/i.test(text))return "margin_no_canonical_valuation_path";
  if(/index price/i.test(text))return "margin_missing_index";
- if(/protective-long mark/i.test(text))return "margin_missing_long_mark";
+ // Kept in the schema union for legacy bundles only. The supported segregated
+ // short-option formula does not require a contemporaneous protective-long mark.
  if(/option mark/i.test(text))return "margin_missing_short_mark";
  if(/historical.*rule period.*not verified/i.test(text))return "margin_historical_rule_unverified";
  if(/unsupported|Cross-account/i.test(text))return "margin_deployment_unsupported";

@@ -17,11 +17,13 @@ test("reference margin is independent of immediate Maker/Taker fills and bounded
  assert.ok(Number(margin.capitalDaysMarginBtc)>0);assert.notEqual(margin.openingInitialMarginBtc,margin.theoreticalMaximumSpreadLossBtc,"maximum economic loss never substitutes for IM");
 });
 
-test("missing reference point inputs and historical boundary produce deterministic machine codes",()=>{
- const cases:[string,(point:Record<string,unknown>)=>void][]=[["margin_missing_index",p=>delete p.targetIndex],["margin_missing_short_mark",p=>delete record(record(p.modelEstimate).sold).priceBtcPerContract],["margin_missing_long_mark",p=>delete record(record(p.modelEstimate).bought).priceBtcPerContract]];
+test("required short/index inputs and historical boundary produce deterministic machine codes",()=>{
+ const cases:[string,(point:Record<string,unknown>)=>void][]=[["margin_missing_index",p=>delete p.targetIndex],["margin_missing_short_mark",p=>delete record(record(p.modelEstimate).sold).priceBtcPerContract]];
  for(const [code,mutate] of cases){const selected=structure(value=>mutate(record(value.referenceValuation!.valuationPathSnapshot[0]))),result=record(buildResearchMarginSnapshot(selected));assert.equal(result.status,"unavailable");assert.equal(result.reasonCode,code);assert.equal(typeof result.reason,"string");}
  const historical=structure(value=>{const ref=record(value.referenceValuation!.entrySnapshot);ref.targetTimestamp=Date.parse("2019-07-31T00:00:00Z");value.referenceValuation!.valuationPathSnapshot=[];});assert.equal(record(buildResearchMarginSnapshot(historical)).reasonCode,"margin_historical_rule_unverified");
 });
+
+test("missing protective-long mark is optional evidence for segregated SM",()=>{const selected=structure(value=>delete record(record(record(value.referenceValuation!.valuationPathSnapshot[0]).modelEstimate).bought).priceBtcPerContract),result=record(buildResearchMarginSnapshot(selected));assert.equal(result.status,"available");assert.deepEqual(result.protectiveLongMarkCoverage,{available:1,total:2});assert.match(String(result.verticalTreatment),/canonical structure is established/)});
 
 test("legacy engine-not-run prose is classified without becoming a reason code",()=>{
  assert.equal(canonicalMarginReason("No margin result was produced."),"margin_not_recomputed");

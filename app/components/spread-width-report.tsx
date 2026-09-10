@@ -1,5 +1,6 @@
 "use client";
 import {useState} from "react";
+import {AuditAttentionControls,ResearchEvidenceBadge} from "./research-evidence-status";
 import type {SpreadWidthReport} from "../lib/spread-width/report";
 import type {VolatilityReport} from "../lib/volatility/volatility-report";
 import {EmbeddedVolatilityContext} from "./volatility-report";
@@ -236,11 +237,11 @@ export function SpreadWidthReportView({report,volatility,view="maker",onViewChan
   </section>
 
   {/* 7 · Audit */}
-  <section className="dd-block"><h3>7 · Matched structures audit</h3>
-   <div className="table-scroll"><table className="dd-table">
+  <details className="dd-block exit-details analytics-audit" data-filter="attention"><summary>7 · Matched-structures audit · {audit.length} structures</summary>
+   <AuditAttentionControls partial={report.unmatched.length} unavailable={report.groups.flatMap(x=>x.structures).filter(x=>x.payoff.maximumStructuralLossUsd.value===null).length} unusual={report.groups.flatMap(x=>x.structures).filter(x=>x.identity.widthSubstituted).length}/><div className="table-scroll"><table className="dd-table">
     <thead><tr><th>Event</th><th>Candidate</th><th>DTE</th><th>Short / long K</th><th>Requested</th><th>Actual</th><th>Analytical layer</th><th>Gross</th><th>Net</th><th>Long-leg cost</th><th>Fees</th><th>Max structural loss</th><th>Resolution</th><th>PnL VPOC</th><th>PnL inval.</th><th>Worst adverse</th><th>Settlement</th><th>Realized thesis exit</th><th>Gross protection</th><th>Net protection</th><th>Return on structural loss</th></tr></thead>
-    <tbody>{rows.map((r:WidthStructure)=><tr key={r.structureExecutionId}>
-     <td>{r.eventId}</td><td>{r.candidateId}</td><td>{r.actualDteDays===null?"—":d1(r.actualDteDays)}</td>
+    <tbody>{rows.map((r:WidthStructure)=>{const evidence=r.payoff.maximumStructuralLossUsd.value===null?"UNAVAILABLE":"VALID",attention=r.identity.widthSubstituted?"UNUSUAL":undefined,reason=evidence==="UNAVAILABLE"?r.payoff.maximumStructuralLossUsd.reason:attention?"Actual protective width was substituted; retained as valid evidence.":null;return <tr key={r.structureExecutionId} data-evidence={evidence} data-attention={attention}>
+     <td><ResearchEvidenceBadge assessment={{status:evidence,reason}}/> {r.eventId}</td><td>{r.candidateId}</td><td>{r.actualDteDays===null?"—":d1(r.actualDteDays)}</td>
      <td>{money(r.identity.shortStrike)} / {money(r.identity.longStrike)}</td>
      <td className={r.identity.widthSubstituted?"dd-muted":undefined} title={r.identity.widthSubstituted?"Historical availability forced a different protective long; economics use the actual width.":undefined}>{r.identity.requestedWidthUsd===null?"—":widthLabel(r.identity.requestedWidthUsd)}</td>
      <td>{r.identity.actualWidthUsd===null?"—":widthLabel(r.identity.actualWidthUsd)}{r.identity.widthSubstituted&&<small className="dd-muted"> ⓘ</small>}</td>
@@ -254,14 +255,14 @@ export function SpreadWidthReportView({report,volatility,view="maker",onViewChan
      <td>{usd(r.pnlAtSettlementUsd)}</td><td title={r.resolutionReason??undefined}>{usd(r.realizedPnlUsd)}</td>
      <td>{usd(r.protection.benefitAtDeepTailUsd.value)}</td><td>{signedUsd(r.protection.netProtectionValueUsd)}</td>
      <td className={r.capital.returnOnStructuralLoss.value===null?"dd-muted":undefined} title={r.capital.returnOnStructuralLoss.reason??undefined}>{ratio(r.capital.returnOnStructuralLoss.value)}</td>
-    </tr>)}</tbody>
+    </tr>})}</tbody>
    </table></div>
    <div className="ur-pager">
     <small>Showing {audit.length?current*pageSize+1:0}–{Math.min((current+1)*pageSize,audit.length)} of {audit.length}. Paging never changes the statistics above.</small>
     <div><button disabled={current<=0} onClick={()=>setPage(current-1)}>Previous</button><span>{current+1} / {pages}</span><button disabled={current>=pages-1} onClick={()=>setPage(current+1)}>Next</button></div>
    </div>
    {report.unmatched.length>0&&<p className="dd-notice">{report.unmatched.length} structure(s) have no adjacent width sharing their event, expiry, short strike and scenario, so they contribute to no pairwise figure. They are listed here rather than silently dropped.</p>}
-  </section>
+  </details>
 
   <details className="ur-methodology"><summary>Methodology, availability and missing data</summary>
    {report.methodology.map((line,i)=><p className="fine-print" key={i}>{line}</p>)}

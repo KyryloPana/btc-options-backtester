@@ -1,6 +1,6 @@
 "use client";
 import {useMemo,useState} from "react";
-import {evidenceRowProps,ResearchEvidenceBadge} from "./research-evidence-status";
+import {AuditAttentionControls,evidenceRowProps,ResearchEvidenceBadge} from "./research-evidence-status";
 import {ChartAxisTag,ChartCrosshair,ChartMarker,ChartReadout,useChartCursor} from "./chart-cursor";
 import {binAt,stepValueAt,type PlotGeometry} from "../lib/chart-interaction";
 import type {
@@ -425,9 +425,9 @@ function DteHistogram({report}:{report:DurationDteReport}){
 
 /* ---------- 16. event-level audit ---------- */
 
-function EventRow({c}:{c:DteCandidate}){
- return <tr>
-  <td>{c.eventId}</td>
+function EventRow({c}:{c:DteCandidate}){const evidence=c.executionScenarioStatus!=="evaluated"?"UNAVAILABLE":c.capture50===null||c.worstAdverseUsd===null?"PARTIAL":"VALID",reason=evidence==="UNAVAILABLE"?c.executionScenarioReason:evidence==="PARTIAL"?"Capture timing or adverse-path evidence is incomplete.":null;
+ return <tr data-evidence={evidence}>
+  <td><ResearchEvidenceBadge assessment={{status:evidence,reason}}/> {c.eventId}</td>
   <td>{c.horizonNominalDays===null?"—":`~${c.horizonNominalDays}D`}</td>
   <td>{c.actualDteDays===null?UNAVAILABLE:d1(c.actualDteDays)}</td>
   <td className="dd-muted">{c.widthUsd===null?"—":c.widthUsd.toLocaleString()}</td>
@@ -534,9 +534,9 @@ export function DurationDteReportView({report,volatility,view="maker",onViewChan
    <section className="dd-block"><h3>15 · Actual DTE distribution</h3><DteHistogram report={report}/></section>
   </div>
 
-  <section className="dd-block">
-   <h3>Event-level observations</h3>
-   <p className="dd-sub">Individual {scenarioLabel} rows underlying this report.</p>
+  <details className="dd-block exit-details analytics-audit" data-filter="attention">
+   <summary>Event-level observations · {report.candidates.length} structures</summary>
+   <p className="dd-sub">Expandable audit of individual {scenarioLabel} rows underlying this report.</p><AuditAttentionControls unavailable={report.candidates.filter(x=>x.executionScenarioStatus!=="evaluated").length} partial={report.candidates.filter(x=>x.executionScenarioStatus==="evaluated"&&(x.capture50===null||x.worstAdverseUsd===null)).length}/>
    <div className="table-scroll"><table className="dd-table">
     <thead><tr><th>Event</th><th>Horizon</th><th>Actual DTE</th><th>Width</th><th>Quality</th><th>{report.scenario==="maker"?"Maker":"Taker"} status</th><th>T_res (post-entry)</th><th>Outcome before expiry</th><th>DTE buffer</th><th>T_survival</th><th>T50%</th><th>PnL@VPOC</th><th>PnL@Inv.</th><th>Worst adverse</th></tr></thead>
     <tbody>{rows.map(c=><EventRow key={c.structureExecutionId} c={c}/>)}</tbody>
@@ -545,7 +545,7 @@ export function DurationDteReportView({report,volatility,view="maker",onViewChan
     <small>Showing {report.candidates.length?current*PAGE_SIZE+1:0}–{Math.min((current+1)*PAGE_SIZE,report.candidates.length)} of {report.candidates.length}. Paging never changes the statistics above.</small>
     <div><button disabled={current<=0} onClick={()=>setPage(current-1)}>Previous</button><span>{current+1} / {pages}</span><button disabled={current>=pages-1} onClick={()=>setPage(current+1)}>Next</button></div>
    </div>
-  </section>
+  </details>
 
   <details className="ur-methodology"><summary>Methodology, availability and missing data</summary>
    {report.methodology.map((line,i)=><p className="fine-print" key={i}>{line}</p>)}

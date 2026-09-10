@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
 import {
-  LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS, RESEARCH_BUNDLE_FILES, RESEARCH_BUNDLE_SCHEMA_VERSION,
+  EFFECTIVE_REFERENCE_PRICING_ASSUMPTIONS, LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS, RESEARCH_BUNDLE_FILES, RESEARCH_BUNDLE_SCHEMA_VERSION,
   buildResearchBundle, validateResearchBundle,
 } from "../app/lib/research-bundle.ts";
 import {
@@ -94,8 +95,8 @@ void CANDIDATES; void candidateIdOf;
 
 /* ---------------- schema contract ---------------- */
 
-test("SCHEMA: 4.1.0 retains volatility and adds controlled-research candidates", () => {
-  assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION, "4.1.0");
+test("SCHEMA: 4.4.0 retains volatility and adds controlled-research candidates", () => {
+  assert.equal(RESEARCH_BUNDLE_SCHEMA_VERSION, "4.4.0");
   assert.ok(RESEARCH_BUNDLE_FILES.includes("event_volatility_state.jsonl"));
   assert.ok(RESEARCH_BUNDLE_FILES.includes("structure_volatility_state.jsonl"));
   assert.ok(RESEARCH_BUNDLE_FILES.includes("entry_delay_sensitivity.jsonl"));
@@ -103,9 +104,14 @@ test("SCHEMA: 4.1.0 retains volatility and adds controlled-research candidates",
   assert.ok((LEGACY_RESEARCH_BUNDLE_SCHEMA_VERSIONS as readonly string[]).includes("3.8.0"));
 });
 
+test("PROVENANCE: effective Reference assumptions are authoritative while source assumptions remain raw audit evidence",()=>{const withAssumptions=(assumptions:unknown)=>{const fixture=referenceOnlyFixture();fixture.events=fixture.events.map(event=>({...event,generationSnapshot:{...event.generationSnapshot,configuration:{...event.generationSnapshot.configuration,modelAssumptions:assumptions as never}}}));return JSON.parse(buildResearchBundle(fixture,now).files["run.json"])};for(const raw of [{model:"Black-Scholes reconstructed IV",rate:0},{vendorModel:"unknown-historical",arbitraryRate:.123}]){const run=withAssumptions(raw);assert.deepEqual(run.generation_assumptions,EFFECTIVE_REFERENCE_PRICING_ASSUMPTIONS);assert.equal(run.source_generation_assumptions_raw.length,2);assert.ok(run.source_generation_assumptions_raw.every((x:unknown)=>JSON.stringify(x)===JSON.stringify(raw)));assert.equal(run.generation_assumptions.fixedGlobalRate,null);assert.notDeepEqual(run.generation_assumptions,raw)}});
+test("VALIDATOR: current effective assumptions cannot contradict current Reference methodology",()=>{const bundle=buildResearchBundle(referenceOnlyFixture(),now),run=JSON.parse(bundle.files["run.json"]);run.generation_assumptions={model:"Black-Scholes reconstructed IV",rate:0};const result=validateResearchBundle({...bundle.files,"run.json":JSON.stringify(run)+"\n"});assert.equal(result.ok,false);assert.match(result.errors.join("\n"),/effective Reference pricing assumptions contradict/)});
+
+test("LEGACY: schema 4.3 separates raw rate-zero assumptions without rewriting them",()=>{const built=buildResearchBundle(referenceOnlyFixture(),now),run=JSON.parse(built.files["run.json"]),raw=[{model:"Black-Scholes reconstructed IV",rate:0}];run.schema_version="4.3.0";run.generation_assumptions=raw;delete run.source_generation_assumptions_raw;const files={...built.files,"run.json":JSON.stringify(run)+"\n"},result=importResearchBundle(new Uint8Array(createResearchBundleZip(files)),"schema-4.3.zip");if(result.status==="invalid")assert.fail(result.errors.join("\n"));assert.equal(result.dataset.schemaVersion,"4.4.0");assert.equal(result.dataset.migratedFrom,"4.3.0");assert.deepEqual(result.dataset.run.generation_assumptions,EFFECTIVE_REFERENCE_PRICING_ASSUMPTIONS);assert.deepEqual(result.dataset.run.source_generation_assumptions_raw,raw)});
+
 test("LEGACY: schema 4.0 preserves compatible selected-only Reference state without inventing roles",()=>{
  const bundle=buildResearchBundle(referenceOnlyFixture(),now),run=JSON.parse(bundle.files["run.json"]);run.schema_version="4.0.0";const files={...bundle.files,"run.json":JSON.stringify(run)+"\n","candidates.jsonl":bundle.files["candidates.jsonl"].trim().split("\n").map(line=>{const row=JSON.parse(line);delete row.research_role;return JSON.stringify(row)}).join("\n")+"\n"};
- const result=importResearchBundle(new Uint8Array(createResearchBundleZip(files)),"schema-4.0.zip");if(result.status==="invalid")assert.fail(result.errors.join("\n"));assert.equal(result.dataset.schemaVersion,"4.1.0");assert.equal(result.dataset.migratedFrom,"4.0.0");assert.ok(result.dataset.tables.candidates.every(row=>row.is_selected===true&&row.research_role===null));assert.ok(result.dataset.tables.candidates.every(row=>(row.reference_valuation as Record<string,unknown>)?.status==="valued"));assert.equal(new Set(result.dataset.tables.candidates.map(row=>row.candidate_id)).size,1);
+ const result=importResearchBundle(new Uint8Array(createResearchBundleZip(files)),"schema-4.0.zip");if(result.status==="invalid")assert.fail(result.errors.join("\n"));assert.equal(result.dataset.schemaVersion,"4.4.0");assert.equal(result.dataset.migratedFrom,"4.0.0");assert.ok(result.dataset.tables.candidates.every(row=>row.is_selected===true&&row.research_role===null));assert.ok(result.dataset.tables.candidates.every(row=>(row.reference_valuation as Record<string,unknown>)?.status==="valued"));assert.equal(new Set(result.dataset.tables.candidates.map(row=>row.candidate_id)).size,1);
 });
 
 test("LEGACY: schema 3.8 volatility rows import with new market collections explicitly empty",()=>{
@@ -151,6 +157,8 @@ test("SCHEMA: injected volatility state exports, validates and carries series id
     assert.ok(row.venue, "every row carries a venue");
   }
 });
+
+test("PRODUCTION WIRING: local export materializes upstream volatility and passes it synchronously to the bundle",()=>{const source=readFileSync(new URL("../scripts/research-bundle-service.ts",import.meta.url),"utf8"),bundle=withVolatility(),structures=bundle.files["structure_volatility_state.jsonl"].trim().split("\n").map(JSON.parse);assert.match(source,/materializeLocalResearchBundleVolatility\(store,diagnostics\)/);assert.match(source,/buildResearchBundle\(store,generated,undefined,\{tradeDatasetMrEventCount,volatility\}\)/);assert.equal(new Set(structures.map(x=>x.candidate_id)).size,structures.length,"one structure-volatility row per selected candidate, without execution multiplication");assert.ok(bundle.files["event_volatility_state.jsonl"].trim());assert.ok(bundle.files["structure_volatility_state.jsonl"].trim())});
 
 /* ---------------- validator invariants ---------------- */
 

@@ -1,4 +1,4 @@
-import test from "node:test";import assert from "node:assert/strict";
+import test from "node:test";import assert from "node:assert/strict";import {readFileSync} from "node:fs";
 import {buildResearchBundle,validateResearchBundle} from "../app/lib/research-bundle.ts";
 import {canonicalStructuralLoss,STRUCTURAL_LOSS_METHOD_VERSION} from "../app/lib/maximum-economic-loss.ts";
 import {payoffExtrema} from "../app/lib/expiry-payoff.ts";
@@ -9,6 +9,8 @@ import {BUILD_PROVENANCE_UNAVAILABLE,buildProvenanceStatus,resolveApplicationBui
 import {CONFIGURATION_IDENTITY_VERSION,ORDER_SIGNIFICANT_CONFIGURATION_PATHS,canonicalConfigurationRepresentation,configurationDifferences,diagnoseMethodologyStaleness,effectiveConfigurationHash} from "../app/lib/configuration-identity.ts";
 import {EXECUTION_TIMING_METADATA,IMMEDIATE_FILL_SEARCH_WINDOWS_MS} from "../app/lib/execution-policy.ts";
 import {MODEL_IV_ANCHOR_MAX_AGE_MINUTES,RESEARCH_WINDOWS_MINUTES,modelHistoricalEvidenceWindows} from "../app/lib/research-valuation.ts";
+import {CURRENT_RESEARCH_ENGINE_VERSIONS} from "../app/lib/research-refresh.ts";
+import {EXPIRY_FORWARD_METHOD_VERSION} from "../app/lib/volatility/expiry-forward.ts";
 import {config,now,referenceOnlyFixture,store} from "./fixtures/research-selection-store.ts";
 import {BARS,ENTRY,HOUR,barClose,barOpen,futuresEvent,futuresMarket,perpetualBars,underlyingPath} from "./fixtures/futures-market.ts";
 
@@ -16,6 +18,8 @@ const rows=(text:string)=>text.trim().split("\n").filter(Boolean).map(line=>JSON
 const bundle=(context={})=>buildResearchBundle(referenceOnlyFixture(),now,undefined,context);
 const futuresBundle=(events:unknown[])=>buildResearchBundle({schemaVersion:"1.8.0",datasetId:"integration",updatedAtUtc:now,events},now,undefined,{tradeDatasetMrEventCount:15});
 const withGeneration=(event:ReturnType<typeof futuresEvent>)=>({...event,generationSnapshot:{...event.generationSnapshot,configuration:config,candidates:[]},selectedStructures:[]});
+
+test("PROVENANCE: current generation metadata names causal Reference and forward methods, never a fixed global rate",()=>{const source=readFileSync(new URL("../app/options-backtester.tsx",import.meta.url),"utf8"),valuation=readFileSync(new URL("../app/lib/research-valuation.ts",import.meta.url),"utf8"),run=bundle().run as Record<string,unknown>;assert.match(source,/referenceValuationMethodVersion:CURRENT_RESEARCH_ENGINE_VERSIONS\.referenceValuation/);assert.match(source,/forwardMethodVersion:EXPIRY_FORWARD_METHOD_VERSION/);assert.match(source,/fixedGlobalRate:null/);assert.doesNotMatch(source,/modelAssumptions:canonicalJson\(\{[^}]*\brate:0/);assert.doesNotMatch(valuation,/export const RESEARCH_METHODOLOGY_VERSION/);assert.equal(run.reference_valuation_methodology_version,CURRENT_RESEARCH_ENGINE_VERSIONS.referenceValuation);assert.deepEqual(run.forward_method_versions,[EXPIRY_FORWARD_METHOD_VERSION]);assert.equal((run.reference_pricing_convention as Record<string,unknown>).fixed_global_rate,null)});
 
 // ---------------------------------------------------------------------------
 // PART 1 -- one canonical maximum economic loss
@@ -526,9 +530,9 @@ test("PART 7: staleness diagnosis names the minority events, and the exporter re
 
 test("PART 7 / versioning: a previous-schema bundle is rejected, never reinterpreted",()=>{
  const built=bundle();
- assert.equal(JSON.parse(built.files["run.json"]).schema_version,"4.1.0");
+ assert.equal(JSON.parse(built.files["run.json"]).schema_version,"4.4.0");
  for(const previous of ["3.6.0","3.5.0","3.4.0","3.3.0"]){
-  const stale={...built.files,"run.json":built.files["run.json"].replace('"4.1.0"',`"${previous}"`)};
+  const stale={...built.files,"run.json":built.files["run.json"].replace('"4.4.0"',`"${previous}"`)};
   assert.equal(validateResearchBundle(stale).ok,false,`${previous} carried different maximum-loss semantics and must not be read as current`);
  }
 });

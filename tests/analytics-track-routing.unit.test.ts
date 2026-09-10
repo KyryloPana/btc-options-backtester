@@ -102,7 +102,7 @@ test("ROUTING: unavailable strict execution does not delete the Reference width 
 });
 
 test("ROUTING: Economics uses Q50 central, Reference counterfactual, and Q90 conservative",()=>{
- const report=buildEconomicReport(fixture(),DEFAULT_ANALYSIS_CONFIGURATION);
+ const report=buildEconomicReport(fixture(),{...DEFAULT_ANALYSIS_CONFIGURATION,exitPolicy:"settlement_benchmark"});
  assert.equal(report.configuration.executionScenario,null);
  assert.equal(report.configuration.pricingTrack,null);
  assert.equal(report.positions,report.central.positions);
@@ -149,7 +149,7 @@ test("ROUTING: the Duration display scenario declares exactly what it scopes",()
 /* ---------------- modeled sensitivity ---------------- */
 
 test("ROUTING: the canonical Economics projection is empirical Q50",()=>{
- const report=buildEconomicReport(fixture(),DEFAULT_ANALYSIS_CONFIGURATION);
+ const report=buildEconomicReport(fixture(),{...DEFAULT_ANALYSIS_CONFIGURATION,exitPolicy:"settlement_benchmark"});
  assert.equal(report.positions,report.modeled.modeled_expected.positions);
 });
 

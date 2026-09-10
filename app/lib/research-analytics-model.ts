@@ -248,10 +248,11 @@ export function createResearchAnalyticsContext(d: AnalysisDataset): ResearchAnal
 }
 
 const CONTROLLED_RESEARCH_ROLES=new Set(["short_strike_technical","short_strike_buffered"]);
-const isNativeControlledResearchDataset=(d:AnalysisDataset)=>d.schemaVersion==="4.1.0"&&d.migratedFrom===null;
-const usesLegacyControlledResearchCompatibility=(d:AnalysisDataset)=>!isNativeControlledResearchDataset(d);
+const CONTROLLED_RESEARCH_AWARE_SCHEMAS=new Set(["4.1.0","4.2.0","4.3.0","4.4.0"]);
+const sourceSchemaVersion=(d:AnalysisDataset)=>d.migratedFrom??d.schemaVersion;
+const usesLegacyControlledResearchCompatibility=(d:AnalysisDataset)=>!CONTROLLED_RESEARCH_AWARE_SCHEMAS.has(sourceSchemaVersion(d));
 /**
- * Cohort selection is centralized here because schema 4.1 candidates.jsonl is
+ * Cohort selection is centralized here because schema 4.1+ candidates.jsonl is
  * no longer synonymous with the manually selected portfolio. Missing
  * is_selected is treated as selected only for in-memory legacy test/tooling
  * fixtures; every validated 4.1 bundle carries the explicit boolean.
@@ -541,14 +542,21 @@ function economics(
   };
 }
 
-const snapshotRow = (base: Row, entry: Row): Row => ({
-  ...base,
-  gross_credit_debit_native: n(entry.grossSpreadBtc),
-  opening_fees_native: n(entry.openingFeesBtc),
-  net_opening_cash_flow_native: n(entry.netOpeningCashFlowBtc),
-  entry_index_price: n(entry.entryTargetIndex) ?? n(entry.targetIndex),
-  entry_quality: entry.estimateQuality,
-});
+const snapshotRow = (base: Row, entry: Row): Row => {
+  const sold=rec(entry.sold),bought=rec(entry.bought),shortPrice=n(sold.priceBtcPerContract),longPrice=n(bought.priceBtcPerContract);
+  return {
+    ...base,
+    // Analytical-track entry legs must never leak from the base/Reference row.
+    // A track without its own leg decomposition can retain aggregate cash flow,
+    // but its execution-specific inverse-payoff loss is intentionally unavailable.
+    entry_legs:shortPrice!==null&&longPrice!==null?{short:{price_native:shortPrice},long:{price_native:longPrice}}:null,
+    gross_credit_debit_native: n(entry.grossSpreadBtc),
+    opening_fees_native: n(entry.openingFeesBtc),
+    net_opening_cash_flow_native: n(entry.netOpeningCashFlowBtc),
+    entry_index_price: n(entry.entryTargetIndex) ?? n(entry.targetIndex),
+    entry_quality: entry.estimateQuality,
+  };
+};
 function canonicalSnapshotTrack(
   id: string,
   track: AnalyticsTrack,
