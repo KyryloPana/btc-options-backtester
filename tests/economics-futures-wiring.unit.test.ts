@@ -5,7 +5,7 @@ import type {AnalysisDataset} from "../app/lib/research-analysis.ts";
 import {buildEconomicReport,economicLayerSummaries} from "../app/lib/economics/report.ts";
 import {DEFAULT_ANALYSIS_CONFIGURATION} from "../app/lib/analysis-configuration.ts";
 import {buildFuturesComparisonReport} from "../app/lib/futures-comparison/report.ts";
-import {scopeFuturesEvents} from "../app/components/futures-presentation-scope.ts";
+import {resolveCandidateSelection,scopeFuturesEvents} from "../app/components/futures-presentation-scope.ts";
 import {EQUAL_RISK_SIZING_METHOD,equalRiskFuturesQuantity} from "../app/lib/futures-baseline.ts";
 import {canonicalStructuralLoss} from "../app/lib/maximum-economic-loss.ts";
 
@@ -340,4 +340,11 @@ test("FUTURES PRESENTATION: candidate scope filters rows without changing report
  const source=readFileSync(new URL("../app/components/futures-comparison-report.tsx",import.meta.url),"utf8");
  assert.match(source,/Full exported benchmark context/);
  assert.match(source,/Unmapped diagnostic/);
+});
+
+test("FUTURES PRESENTATION: a stale configuration is not a valid empty candidate scope",()=>{
+ const catalogA=[{id:"configuration-a",candidateIds:["c1"]}],catalogB=[{id:"configuration-b",candidateIds:[]}];
+ assert.deepEqual(resolveCandidateSelection(catalogA,"configuration-a"),catalogA[0]);
+ assert.equal(resolveCandidateSelection(catalogB,"configuration-a"),null,"an ID absent from the new catalog is stale");
+ assert.deepEqual(resolveCandidateSelection(catalogB,"configuration-b"),catalogB[0],"a valid configuration with zero candidates remains selected and distinguishable");
 });

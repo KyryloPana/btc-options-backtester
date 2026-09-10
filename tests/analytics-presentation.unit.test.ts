@@ -39,7 +39,7 @@ test("PRESENTATION: Research Analytics has one shared import boundary and nested
 
 test("PRESENTATION: scoped configuration controls edit only genuine report inputs",()=>{
  const research=readFileSync(new URL("../app/components/research-controls.tsx",import.meta.url),"utf8"),economics=readFileSync(new URL("../app/components/economics-policy-controls.tsx",import.meta.url),"utf8"),candidate=readFileSync(new URL("../app/components/candidate-configuration.tsx",import.meta.url),"utf8"),shell=readFileSync(new URL("../app/components/shell/research-analytics.tsx",import.meta.url),"utf8"),benchmark=readFileSync(new URL("../app/components/futures-benchmark-scope.tsx",import.meta.url),"utf8");
- for(const field of ["pricingTrack","includedQualityLevels","capitalBasis","exitPolicy","nearFullLossFraction"])assert.match(research,new RegExp(field));
+ for(const field of ["pricingTrack","includedQualityLevels","capitalBasis","researchExitPolicy","nearFullLossFraction"])assert.match(research,new RegExp(field));
  for(const field of ["marginModel","collateralMode","accountEquity","maximumRiskFraction","maximumMarginUtilization","maximumDrawdown"])assert.doesNotMatch(research,new RegExp(field));
  for(const field of ["marginModel","collateralMode","accountEquity","maximumRiskFraction","maximumMarginUtilization"])assert.match(economics,new RegExp(field));
  assert.doesNotMatch(economics,/maximumDrawdown/,"an output-only configuration echo is not presented as an active policy input");
@@ -53,6 +53,27 @@ test("PRESENTATION: scoped configuration controls edit only genuine report input
  assert.doesNotMatch(benchmark,/<select|<input|<button/,"Futures benchmark scope is read-only");
  assert.match(benchmark,/candidate policy does not rewrite it/i);
  for(const component of [research,economics,candidate,benchmark,readFileSync(new URL("../app/components/futures-comparison-report.tsx",import.meta.url),"utf8")])assert.doesNotMatch(component,/buildEconomicReport|buildFuturesComparisonReport|buildDurationDteReport/,"presentation components do not duplicate analytical builders");
+});
+
+test("PRESENTATION: research and candidate exit policies are isolated UI state",()=>{
+ const shell=readFileSync(new URL("../app/components/shell/research-analytics.tsx",import.meta.url),"utf8"),research=readFileSync(new URL("../app/components/research-controls.tsx",import.meta.url),"utf8");
+ assert.match(shell,/useState<PrimaryExitPolicy\|null>\(null\)/);
+ assert.match(shell,/exitPolicy:researchExitPolicy/,"Duration and Exit derive from the research-only policy");
+ assert.match(shell,/exitPolicy:configuration\.exitPolicy/,"Economics derives from candidate policy");
+ assert.match(research,/onResearchExitPolicyChange/);
+ assert.doesNotMatch(research,/set\("exitPolicy"/,"Research controls cannot mutate candidate policy");
+});
+
+test("PRESENTATION: loaded workspaces expose ordered, responsive section navigation without import side effects",()=>{
+ const nav=readFileSync(new URL("../app/components/research-section-nav.tsx",import.meta.url),"utf8"),shell=readFileSync(new URL("../app/components/shell/research-analytics.tsx",import.meta.url),"utf8"),css=readFileSync(new URL("../app/globals.css",import.meta.url),"utf8");
+ const researchIds=["research-summary","research-context","research-controls","research-underlying","research-volatility","research-duration","research-strike","research-spread","research-exit","research-workbench"],economicsIds=["strategy-dataset","strategy-candidate","strategy-account","strategy-economics"],futuresIds=["strategy-dataset","strategy-candidate","strategy-benchmark","strategy-futures"];
+ const positions=(ids:string[])=>ids.map(id=>nav.indexOf(`id:\"${id}\"`));
+ assert.ok(positions(researchIds).every((position,index,list)=>position>=0&&(index===0||position>list[index-1]!)),"Research links follow report order");
+ assert.ok(positions(economicsIds).every(position=>position>=0));assert.ok(positions(futuresIds).every(position=>position>=0));
+ for(const id of new Set([...researchIds,...economicsIds,...futuresIds]))assert.equal(shell.match(new RegExp(`id=\"${id}\"`,"g"))?.length,1,`${id} has one real anchor`);
+ assert.match(shell,/summary&&workspaceMode/,"navigation is mounted only with loaded summary content");
+ assert.doesNotMatch(nav,/\bload\s*\(|arrayBuffer|createResearchImportWorker|setResult/);
+ assert.match(css,/grid-template-columns:190px minmax\(0,1fr\)/);assert.match(css,/\.analytics-section-content\{[^}]*min-width:0/);assert.match(css,/@media\(max-width:1180px\)/);assert.match(css,/overflow-x:auto/);
 });
 
 test("PRESENTATION: partial portfolio chronology is explicit and cannot present a required account",()=>{const source=readFileSync(new URL("../app/components/economic-analysis-report.tsx",import.meta.url),"utf8");assert.match(source,/Partial diagnostic chronology — account conclusions unavailable/);assert.match(source,/selectedPortfolio\.status==="partial"/)});
