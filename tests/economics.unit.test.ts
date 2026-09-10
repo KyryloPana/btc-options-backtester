@@ -56,3 +56,29 @@ test("corrective: settlement fee categories reconcile without duplication",()=>{
 test("final integrity: explicit no-trade conflicts only with genuinely priced selected-policy evidence",()=>{const priced=position("priced-conflict",day(1),day(3),"long",.1,.12,.05),placeholder={...position("placeholder",day(1),day(3),"long",.1,0,.05),status:"not_evaluated" as const,pnlBtc:null,pnlUsd:null},none={tables:{configuration_opportunities:[{event_id:"none",candidate_id:"none",structural_configuration_id:"cfg",structural_configuration:{},economic_opportunity:{status:"explicit_no_trade",reason_code:"empirical_nonpositive_credit_after_fees"}}]}} as unknown as AnalysisDataset,validNone=buildConfigurationEconomics(none,[],config)[0]!,validPlaceholder=buildConfigurationEconomics(opportunityDataset([placeholder],["explicit_no_trade"]),[placeholder],config)[0]!,conflict=buildConfigurationEconomics(opportunityDataset([priced],["explicit_no_trade"]),[priced],config)[0]!;assert.equal(validNone.opportunityExpectancyBtc.value,0);assert.equal(validPlaceholder.opportunityExpectancyBtc.value,0);assert.equal(conflict.status,"integrity_error");assert.equal(conflict.opportunities[0]!.status,"unavailable");assert.equal(conflict.opportunities[0]!.pnlBtc,null);assert.equal(conflict.opportunities[0]!.reasonCode,"explicit_no_trade_conflicts_with_priced_position");assert.equal(conflict.opportunityExpectancyBtc.value,null);const selected=selectedConfigurationPortfolio([conflict],{...config,selectedStructuralConfigurationId:"cfg"});assert.equal(selected.status,"unavailable");assert.equal(selected.portfolio,null)});
 
 test("final completeness: every invested timestamp requires exact PnL, IM, and MM",()=>{const exact=position("exact",day(1),day(3),"long",.1,.01,.05),complete=reconstructPortfolio([exact],config);assert.equal(complete.completeness.status,"complete");for(const [field,mutate] of [["pnl",(p:NonNullable<PositionEconomics["path"]>[number])=>({...p,pnlBtc:u()})],["im",(p:NonNullable<PositionEconomics["path"]>[number])=>({...p,initialMarginBtc:u()})],["mm",(p:NonNullable<PositionEconomics["path"]>[number])=>({...p,maintenanceMarginBtc:u()})]] as const){const broken={...exact,path:exact.path!.map((p,i)=>i===0?mutate(p):p)},portfolio=reconstructPortfolio([broken],config),summary=buildConfigurationEconomics(opportunityDataset([broken]),[broken],config)[0]!,selected=selectedConfigurationPortfolio([summary],{...config,selectedStructuralConfigurationId:"cfg"});assert.equal(portfolio.completeness.status,"partial",field);assert.equal(portfolio.completeness.incompleteStateCount,1,field);assert.equal(portfolio.completeness.firstIncompleteTimestamp,day(1),field);assert.equal(portfolio.minimumRequiredAccountSizeBtc.value,null,field);assert.equal(portfolio.maximumModeledEquityDrawdownBtc.value,null,field);assert.equal(selected.status,"partial",field);assert.equal(selected.portfolio!.minimumRequiredAccountSizeBtc.value,null,field)}});
+
+test("canonical USD economics use each timestamp and find independent USD extrema",()=>{
+ const entry=day(0),later=day(1),exit=day(2),p=position("fx",entry,exit,"long",.2,.01,.2);
+ Object.assign(p,{pnlUsd:1200,totalRealizedFeesUsd:a(90),trackMaximumNetLossUsd:a(100),incrementalInitialMarginUsd:a(12_000),incrementalMaintenanceMarginUsd:a(6_000),peakInitialMarginUsd:a(16_000),peakMaintenanceMarginUsd:a(8_000),capitalDaysUsd:a(28_000),riskMinimumEquityUsd:a(10_000),marginMinimumEquityUsd:a(32_000),minimumEquityUsd:a(32_000)});
+ p.path=[
+  {timestamp:entry,index:60_000,pnlBtc:a(0),pnlUsd:a(0),initialMarginBtc:a(.2),initialMarginUsd:a(12_000),maintenanceMarginBtc:a(.1),maintenanceMarginUsd:a(6_000)},
+  {timestamp:later,index:80_000,pnlBtc:a(0),pnlUsd:a(0),initialMarginBtc:a(.19),initialMarginUsd:a(15_200),maintenanceMarginBtc:a(.095),maintenanceMarginUsd:a(7_600)},
+  {timestamp:exit,index:120_000,pnlBtc:a(0),pnlUsd:a(0),initialMarginBtc:a(.1),initialMarginUsd:a(12_000),maintenanceMarginBtc:a(.05),maintenanceMarginUsd:a(6_000)},
+ ];
+ const portfolio=reconstructPortfolio([p],phaseConfig);
+ assert.equal(portfolio.peakAggregateInitialMarginBtc.value,.2);
+ assert.equal(portfolio.peakAggregateInitialMarginUsd.value,15_200);
+ assert.equal(portfolio.peakAggregateInitialMarginUsdTimestamp,later);
+ assert.equal(portfolio.totalPortfolioCapitalDaysUsd.value,27_200);
+ assert.equal(portfolio.minimumRequiredAccountSizeUsd.value,60_800);
+ assert.equal(portfolio.minimumRequiredAccountUsdTimestamp,later);
+});
+
+test("USD fee total is the sum of separately timestamped canonical components",()=>{
+ const opening=.001*60_000,closing=.0002*120_000,delivery=.00005*120_000;
+ const p=position("fees",day(0),day(2),"long",.2,.01,.2);
+ Object.assign(p,{openingFeesUsd:a(opening),closingFeesUsd:a(closing),deliveryFeesUsd:a(delivery),totalRealizedFeesUsd:a(opening+closing+delivery)});
+ assert.equal(p.totalRealizedFeesUsd.value,90);
+ assert.notEqual(p.totalRealizedFeesUsd.value,p.totalRealizedFeesBtc!*60_000);
+ assert.notEqual(p.totalRealizedFeesUsd.value,p.totalRealizedFeesBtc!*120_000);
+});
