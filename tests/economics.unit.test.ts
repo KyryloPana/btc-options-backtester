@@ -82,3 +82,14 @@ test("USD fee total is the sum of separately timestamped canonical components",(
  assert.notEqual(p.totalRealizedFeesUsd.value,p.totalRealizedFeesBtc!*60_000);
  assert.notEqual(p.totalRealizedFeesUsd.value,p.totalRealizedFeesBtc!*120_000);
 });
+
+test("incomplete canonical USD coverage never masquerades as a complete paired cohort",()=>{
+ const first=position("usd-a",day(1),day(3),"long",.1,.01,.05),second=position("usd-b",day(1),day(3),"long",.1,-.02,.05);
+ for(const p of [first,second])Object.assign(p,{netOpeningCashFlowUsd:a(p.netOpeningCashFlowBtc!*60_000),totalRealizedFeesUsd:a(p.totalRealizedFeesBtc!*60_000),capitalDaysUsd:a(p.capitalDaysBtc.value!*60_000),incrementalInitialMarginUsd:a(p.incrementalInitialMarginBtc.value!*60_000),peakInitialMarginUsd:a(p.peakInitialMarginBtc.value!*60_000)});
+ const complete=buildConfigurationEconomics(opportunityDataset([first,second]),[first,second],config)[0]!;
+ const missing={...second,pnlUsd:null,netOpeningCashFlowUsd:u(),totalRealizedFeesUsd:u(),capitalDaysUsd:u(),incrementalInitialMarginUsd:u(),peakInitialMarginUsd:u()};
+ const partial=buildConfigurationEconomics(opportunityDataset([first,missing]),[first,missing],config)[0]!;
+ assert.equal(partial.medianPnlBtc,complete.medianPnlBtc,"native BTC population and statistic are unchanged");
+ assert.equal(partial.medianPnlUsd,null);assert.equal(partial.worstPnlUsd,null);assert.equal(partial.medianNetCreditUsd,null);assert.equal(partial.medianTotalFeesUsd,null);assert.equal(partial.medianCapitalDaysUsd,null);assert.equal(partial.medianOpeningInitialMarginUsd,null);assert.equal(partial.medianPeakInitialMarginUsd,null);
+ assert.equal(partial.p10PnlUsd.value,null);assert.match(partial.p10PnlUsd.reason!,/1 \/ 2/);assert.deepEqual(partial.usdEffectiveN.pnl,{n:1,requiredN:2});
+});
