@@ -35,7 +35,7 @@ function normalizedLayers(dataset:AnalysisDataset,researchExitPolicy:PrimaryExit
 }
 
 function identityMatches(position:PositionEconomics,eventId:string,configurationId:string){return position.eventId===eventId&&position.structuralConfigurationId===configurationId}
-function isPriced(position:PositionEconomics|undefined){return Boolean(position&&position.status==="priced")}
+function isGenuinelyPriced(position:PositionEconomics|undefined){return Boolean(position&&position.status==="priced"&&position.pnlBtc!==null&&Number.isFinite(position.pnlBtc))}
 
 export function projectResearchEconomicObservationsFromPositions(dataset:AnalysisDataset,researchExitPolicy:PrimaryExitPolicy|null,positionsByLayer:ResearchLayerPositions):readonly ResearchEconomicObservation[]{
  const opportunities=dataset.tables.configuration_opportunities??[];
@@ -46,10 +46,10 @@ export function projectResearchEconomicObservationsFromPositions(dataset:Analysi
   // The generation decision is a Q50 deployability fact. It must never erase
   // valid Reference/Q90 evidence. Only the central modeled_expected layer uses
   // explicit_no_trade as a layer state or treats generation-unavailable as a
-  // blocker. A contradiction between explicit no-trade and priced Q50 evidence
-  // is an integrity failure, matching the canonical Strategy opportunity guard.
+  // blocker. A contradiction between explicit no-trade and genuinely priced Q50
+  // evidence is an integrity failure, matching the canonical Strategy guard.
   if(analyticalTrack==="modeled_expected"&&generation.status==="explicit_no_trade"){
-   if(isPriced(position)){
+   if(isGenuinelyPriced(position)){
     const reason="Canonical explicit no-trade conflicts with a priced Q50 position.";
     return deriveUsdMetrics({eventId,candidateId:position?.candidateId??declaredCandidate,structuralConfigurationId:configurationId,direction:position?.direction??"unknown",dteFamily:configuration.targetDteFamilyDays===null?null:`${configuration.targetDteFamilyDays}D`,actualDteDays:position?.actualDteDays??null,strikeMethod:configuration.strikeMethod,requestedWidth:configuration.requestedWidth,actualWidth:position?.actualWidth??null,structureFamily:configuration.structureFamily,exitPolicy:researchExitPolicy,analyticalTrack,analyticsTrack:position?.analyticsTrack??null,eligible:true,structuralIdentityValid:validIdentity,generationOpportunityStatus:generation.status,generationReasonCode:generation.reasonCode,generationReason:generation.reason,coverageStatus:"unavailable",reasonCode:"explicit_no_trade_conflicts_with_priced_position",grossOpeningCreditUsd:null,openingFeesUsd:null,netOpeningCreditUsd:null,maximumStructuralLossUsd:null,trackMaximumNetLossUsd:null,openingInitialMarginUsd:null,peakInitialMarginUsd:null,pnlUsd:null,holdingDays:null,totalRealizedFeesUsd:null,capitalDaysUsd:null,metricAvailability:absentReasons(reason)});
    }
