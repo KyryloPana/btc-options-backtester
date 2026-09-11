@@ -9,7 +9,13 @@ export type MetricAvailability=Readonly<Record<ResearchEconomicMetric,string|nul
 
 export interface ResearchEconomicObservation {
  eventId:string;candidateId:string|null;structuralConfigurationId:string;direction:string;dteFamily:string|null;actualDteDays:number|null;strikeMethod:string|null;requestedWidth:number|null;actualWidth:number|null;structureFamily:string|null;exitPolicy:string|null;analyticalTrack:ResearchEconomicLayer;analyticsTrack?:AnalyticsTrack|null;
- eligible:boolean;structuralIdentityValid:boolean;generationOpportunityStatus:GenerationOpportunityStatus;generationReasonCode:string|null;generationReason:string|null;coverageStatus:CoverageStatus;reasonCode:string|null;
+ eligible:boolean;
+ /** Canonical event × configuration identity is complete enough for dimension analysis. Defaults to true for legacy in-memory fixtures. */
+ structuralIdentityValid?:boolean;
+ /** Generation/Q50 opportunity decision from configuration_opportunities. It is not the layer-evidence status. */
+ generationOpportunityStatus?:GenerationOpportunityStatus;generationReasonCode?:string|null;generationReason?:string|null;
+ /** Evidence status for this analytical layer. Only modeled_expected may use explicit_no_trade as a layer state. */
+ coverageStatus:CoverageStatus;reasonCode:string|null;
  grossOpeningCreditUsd:number|null;openingFeesUsd:number|null;netOpeningCreditUsd:number|null;
  maximumStructuralLossUsd:number|null;trackMaximumNetLossUsd:number|null;openingInitialMarginUsd:number|null;peakInitialMarginUsd:number|null;
  pnlUsd:number|null;holdingDays:number|null;totalRealizedFeesUsd:number|null;capitalDaysUsd:number|null;
