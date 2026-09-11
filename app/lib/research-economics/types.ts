@@ -2,13 +2,14 @@ import type {AnalyticsTrack} from "../research-analytics-model.ts";
 
 export type ResearchEconomicLayer="reference"|"modeled_expected"|"modeled_conservative";
 export type ResearchDimension="dte"|"strike"|"width"|"execution"|"exit_policy";
+export type GenerationOpportunityStatus="trade"|"explicit_no_trade"|"unavailable";
 export type CoverageStatus="priced"|"explicit_no_trade"|"unavailable";
 export type ResearchEconomicMetric="grossOpeningCreditUsd"|"openingFeesUsd"|"netOpeningCreditUsd"|"totalRealizedFeesUsd"|"maximumStructuralLossUsd"|"trackMaximumNetLossUsd"|"openingInitialMarginUsd"|"peakInitialMarginUsd"|"pnlUsd"|"capitalDaysUsd"|"feeDragUsd"|"returnOnStructuralLossUsd"|"returnOnOpeningImUsd"|"returnOnPeakImUsd"|"pnlPerCapitalDayUsd";
 export type MetricAvailability=Readonly<Record<ResearchEconomicMetric,string|null>>;
 
 export interface ResearchEconomicObservation {
  eventId:string;candidateId:string|null;structuralConfigurationId:string;direction:string;dteFamily:string|null;actualDteDays:number|null;strikeMethod:string|null;requestedWidth:number|null;actualWidth:number|null;structureFamily:string|null;exitPolicy:string|null;analyticalTrack:ResearchEconomicLayer;analyticsTrack?:AnalyticsTrack|null;
- eligible:boolean;coverageStatus:CoverageStatus;reasonCode:string|null;
+ eligible:boolean;structuralIdentityValid:boolean;generationOpportunityStatus:GenerationOpportunityStatus;generationReasonCode:string|null;generationReason:string|null;coverageStatus:CoverageStatus;reasonCode:string|null;
  grossOpeningCreditUsd:number|null;openingFeesUsd:number|null;netOpeningCreditUsd:number|null;
  maximumStructuralLossUsd:number|null;trackMaximumNetLossUsd:number|null;openingInitialMarginUsd:number|null;peakInitialMarginUsd:number|null;
  pnlUsd:number|null;holdingDays:number|null;totalRealizedFeesUsd:number|null;capitalDaysUsd:number|null;
@@ -37,7 +38,7 @@ export interface ExecutionStage {layer:ResearchEconomicLayer;summary:Readonly<Re
 export interface ExecutionSurvivalBucket {bucket:string;stages:readonly ExecutionStage[];degradation:readonly MatchedComparison[]}
 export interface ExitPolicyComparison {baseline:string;policy:string;comparison:MatchedComparison}
 export interface ConfigurationMatrixRow {structuralConfigurationId:string;dteFamily:string|null;strikeMethod:string|null;requestedWidth:number|null;structureFamily:string|null;summary:EconomicSummary}
-export interface ResearchEconomicsPopulation {eligibleOpportunities:number;pricedTrades:number;explicitNoTrades:number;unavailableOpportunities:number;independentEvents:number;coherentConfigurations:number;analyticalLayer:ResearchEconomicLayer;exitPolicy:string|null}
+export interface ResearchEconomicsPopulation {eligibleOpportunities:number;pricedTrades:number;explicitNoTrades:number;unavailableOpportunities:number;independentEvents:number;coherentConfigurations:number;invalidStructuralIdentities:number;generationTradeOpportunities:number;generationExplicitNoTradeOpportunities:number;generationUnavailableOpportunities:number;layerPricedObservations:number;layerUnavailableObservations:number;analyticalLayer:ResearchEconomicLayer;exitPolicy:string|null}
 export interface ResearchEconomicsReport {
  selectedDisplayLayer:ResearchEconomicLayer;defaultDisplayLayer:"modeled_expected";selectedResearchExitPolicy:string|null;outcomeState:"available"|"Exit policy required";
  universe:"full eligible event × ex-ante structural configuration × exit policy × analytical layer matrix";observationIdentity:readonly string[];weighting:"equal_event";tailMinimumN:number;
