@@ -4,7 +4,7 @@ export type ResearchEconomicLayer="reference"|"modeled_expected"|"modeled_conser
 export type ResearchDimension="dte"|"strike"|"width"|"execution"|"exit_policy";
 export type GenerationOpportunityStatus="trade"|"explicit_no_trade"|"unavailable";
 export type CoverageStatus="priced"|"explicit_no_trade"|"unavailable";
-export type ResearchEconomicMetric="grossOpeningCreditUsd"|"openingFeesUsd"|"netOpeningCreditUsd"|"totalRealizedFeesUsd"|"maximumStructuralLossUsd"|"trackMaximumNetLossUsd"|"openingInitialMarginUsd"|"peakInitialMarginUsd"|"pnlUsd"|"capitalDaysUsd"|"feeDragUsd"|"returnOnStructuralLossUsd"|"returnOnOpeningImUsd"|"returnOnPeakImUsd"|"pnlPerCapitalDayUsd";
+export type ResearchEconomicMetric="grossOpeningCreditUsd"|"openingFeesUsd"|"netOpeningCreditUsd"|"totalRealizedFeesUsd"|"maximumStructuralLossUsd"|"trackMaximumNetLossUsd"|"openingInitialMarginUsd"|"peakInitialMarginUsd"|"pnlUsd"|"holdingDays"|"capitalDaysUsd"|"feeDragUsd"|"returnOnStructuralLossUsd"|"returnOnOpeningImUsd"|"returnOnPeakImUsd"|"pnlPerCapitalDayUsd";
 export type MetricAvailability=Readonly<Record<ResearchEconomicMetric,string|null>>;
 
 export interface ResearchEconomicObservation {
@@ -25,7 +25,8 @@ export interface ResearchEconomicObservation {
 
 export type NumericMetric=Exclude<{[K in keyof ResearchEconomicObservation]:ResearchEconomicObservation[K] extends number|null?K:never}[keyof ResearchEconomicObservation],undefined>;
 export type StatisticStatus="available"|"unavailable"|"insufficient_sample";
-export interface Statistic {value:number|null;status:StatisticStatus;rawDenominator:number;effectiveN:number;unavailableCount:number;reason:string|null;weighting:"equal_event"|"identity_pair"}
+export interface MetricCoverage {eligibleObservationN:number;metricAvailableObservationN:number;independentEligibleEventN:number;completeEventN:number;partialEventN:number;zeroEventN:number;effectiveEventN:number}
+export interface Statistic {value:number|null;status:StatisticStatus;rawDenominator:number;effectiveN:number;unavailableCount:number;reason:string|null;weighting:"equal_event"|"identity_pair";coverage?:MetricCoverage}
 export interface TailStatistic extends Statistic {minimumN:number}
 export interface CoverageSummary {eligibleN:number;pricedN:number;explicitNoTradeN:number;unavailableN:number;coverage:number}
 export interface EconomicSummary extends CoverageSummary {
@@ -42,6 +43,7 @@ export interface InteractionCell {row:string;column:string;summary:EconomicSumma
 export interface InteractionMatrix {rows:readonly string[];columns:readonly string[];cells:readonly InteractionCell[]}
 export interface ExecutionStage {layer:ResearchEconomicLayer;summary:Readonly<Record<string,Statistic>>}
 export interface ExecutionSurvivalBucket {bucket:string;stages:readonly ExecutionStage[];degradation:readonly MatchedComparison[]}
+export interface MissingnessAuditItem {category:"generation_opportunity"|"layer_evidence"|"canonical_field"|"exit_policy_prerequisite"|"invalid_structural_identity"|"ambiguous_matching";layer:ResearchEconomicLayer|null;reasonCode:string|null;reason:string;metrics:readonly string[];observationN:number;independentEventN:number;representativeIdentities:readonly string[]}
 export interface ExitPolicyComparison {baseline:string;policy:string;comparison:MatchedComparison}
 export interface ConfigurationMatrixRow {structuralConfigurationId:string;dteFamily:string|null;strikeMethod:string|null;requestedWidth:number|null;structureFamily:string|null;summary:EconomicSummary}
 export interface ResearchEconomicsPopulation {eligibleOpportunities:number;pricedTrades:number;explicitNoTrades:number;unavailableOpportunities:number;independentEvents:number;coherentConfigurations:number;invalidStructuralIdentities:number;generationTradeOpportunities:number;generationExplicitNoTradeOpportunities:number;generationUnavailableOpportunities:number;layerPricedObservations:number;layerUnavailableObservations:number;analyticalLayer:ResearchEconomicLayer;exitPolicy:string|null}
@@ -51,6 +53,6 @@ export interface ResearchEconomicsReport {
  population:ResearchEconomicsPopulation;observations:readonly ResearchEconomicObservation[];marginals:{dte:readonly DimensionBucket[];strike:readonly DimensionBucket[];width:readonly DimensionBucket[]};
  controlledComparisons:{dte:readonly MatchedComparison[];strike:readonly MatchedComparison[];widthAdjacent:readonly MatchedComparison[]};
  interactions:{dteByWidth:InteractionMatrix;dteByStrike:InteractionMatrix;strikeByWidth:InteractionMatrix};
- executionSurvival:{dte:readonly ExecutionSurvivalBucket[];strike:readonly ExecutionSurvivalBucket[];width:readonly ExecutionSurvivalBucket[]};exitPolicyEconomics:readonly ExitPolicyComparison[];configurationMatrix:readonly ConfigurationMatrixRow[];
+ executionSurvival:{availableMetrics:readonly NumericMetric[];defaultMetric:NumericMetric|null;dte:readonly ExecutionSurvivalBucket[];strike:readonly ExecutionSurvivalBucket[];width:readonly ExecutionSurvivalBucket[]};exitPolicyEconomics:readonly ExitPolicyComparison[];configurationMatrix:readonly ConfigurationMatrixRow[];missingnessAudit:readonly MissingnessAuditItem[];
  exclusions:{portfolioEconomics:true;fields:readonly string[]};
 }
