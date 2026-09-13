@@ -32,7 +32,7 @@ Execution layers are not interchangeable: Reference is the execution-independent
 
 Execution survival and degradation are calculated separately within configuration, DTE, strike, and width groups. Source-only, destination-only, common, union, and net coverage change are named independently; no assumption is made that destination coverage must be smaller.
 
-Exit-policy economics holds the analytical execution track fixed and covers Thesis, 50% and 70% capture, 3D/5D/7D caps, and Settlement benchmark. Alternative-policy deltas pair the same event and configuration against Thesis. A null Research exit policy means outcomes were not evaluated; it never defaults to Thesis or mutates the Strategy Evaluation selection.
+Exit-policy economics holds the analytical execution track fixed and covers Thesis, 50% and 70% capture, 3D/5D/7D caps, and Settlement benchmark. Alternative-policy deltas pair the same event and configuration against Thesis. This all-policy analysis is independent of the page-local analytical basis and never mutates Strategy Evaluation.
 
 No winner, score, optimal parameter, or recommendation is produced. Costs, return, risk, and capital deltas have different meanings, and the report presents evidence rather than making a post-hoc strategy selection.
 
@@ -49,3 +49,7 @@ Exit-policy deltas pair each complete alternative against Thesis by exact event 
 Research and Strategy use the same canonical track-evidence gate. Modeled-expected evidence is admissible only for canonical Q50 `trade` identities; stale priced rows on `explicit_no_trade` or `unavailable` identities are excluded and integrity-diagnosed. Reference and Q90 remain counterfactual tracks over canonical membership.
 
 The canonical opportunity universe still determines configuration existence, generation-state counts, opportunity-normalized expectancy, and execution coverage. Ordinary modeled-expected metrics instead use independent events containing canonical Q50 trades as their metric-eligible denominator, so a deliberate no-trade is not mislabeled as missing PnL. Reference and Q90 use all canonical counterfactual opportunity identities as their metric-eligible denominator. Duplicate track/policy event × configuration evidence is never resolved by row order: it is excluded from controlled, execution, and policy deltas and reported as duplicate evidence.
+
+## Self-contained analytical exit basis
+
+Comparative Economics is available immediately for a valid dataset and owns its analytical exit-policy view state. Thesis is the deterministic default. The local selector changes the exit basis for outcome-dependent ordinary configuration, marginal, interaction, and controlled-comparison economics only; it does not configure Strategy Evaluation, Candidate Configuration, or the separate Research Exit Policy report. Canonical opportunity/generation state and exit-independent entry evidence remain unchanged. The Economics by Exit Policy panel always evaluates every canonical policy and always pairs alternatives against Thesis, regardless of the local analytical basis.
