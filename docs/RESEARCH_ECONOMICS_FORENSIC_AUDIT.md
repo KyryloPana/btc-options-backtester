@@ -34,8 +34,7 @@ The deterministic unit fixture currently exercises the following observed audit 
 - one `unavailable_q50_opportunity_conflicts_with_priced_position` identity/configuration;
 - one Q50 unavailable opportunity with producer reason `modeled_execution_not_attempted`;
 - one duplicate canonical opportunity identity (two source rows, one identity/configuration);
-- one identity/configuration with multiple candidate ids;
-- one duplicate selected-track event × configuration identity, which is withheld rather than selected by row order;
+- one canonical candidate plus a noncanonical candidate attempt on the same identity, retained as provenance without becoming duplicate economic evidence;
 - one candidate whose candidate-side structural id disagrees with its canonical opportunity mapping.
 
 These categories mean different things:
@@ -44,7 +43,7 @@ These categories mean different things:
 | --- | --- | --- |
 | Producer problem | stale priced Q50 row on canonical no-trade/unavailable; producer-specific unavailable reason | Upstream generation/materialization evidence is contradictory or absent. |
 | Consumer/join problem | opportunity, availability, candidate, or normalized-position structural ids disagree | Evidence cannot safely join to the canonical identity and is explicitly listed. |
-| Integrity problem | duplicate canonical identity, multiple candidate ids, duplicate selected-track evidence | Ambiguous evidence is withheld; no first/last-write precedence is used. |
+| Integrity problem | duplicate canonical identity or duplicate selected-track evidence | Ambiguous evidence is withheld; no first/last-write precedence is used. |
 | Legitimate unavailable state | a reasoned canonical `unavailable`, absent source outcome, reached but unpriced outcome | Missing evidence remains unavailable and is grouped by its exact reason. |
 | Small-N state | too few independent MR events for a tail threshold | This is neither an integrity error nor proof of missing USD evidence. The forensic ledgers expose counts; report tail thresholds remain unchanged. |
 

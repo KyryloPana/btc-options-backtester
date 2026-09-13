@@ -217,7 +217,7 @@ test("current-schema stores round-trip through migration unchanged",()=>{
 });
 
 test("all prior schema versions are recognized as migratable legacy versions",()=>{
- assert.deepEqual([...LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS],["1.0.0","1.1.0","1.2.0","1.3.0","1.4.0","1.5.0","1.6.0","1.7.0"]);
+ assert.deepEqual([...LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS],["1.0.0","1.1.0","1.2.0","1.3.0","1.4.0","1.5.0","1.6.0","1.7.0","1.8.0"]);
  for(const legacyVersion of LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS){
   const result=validateResearchSelectionStore({...store([]),schemaVersion:legacyVersion});
   assert.equal(result.ok,true,`schema ${legacyVersion} must validate as migratable`);
@@ -245,7 +245,7 @@ test("explicit valuation DTO removes runtime aliases while preserving bundle eco
 test("nine-structure 4H fixture and 25-event store remain below documented size thresholds",async()=>{const fixture=event("scale",Array.from({length:9},(_,i)=>`c${i}`));fixture.selectedStructures=fixture.selectedStructures.map((s,i)=>{const points=Array.from({length:[43,85,181][i%3]},(_,j)=>({timestamp:1+j*14_400_000,status:"priced",targetIndex:100_000+j,rawEstimate:{sold:{priceBtcPerContract:.02},bought:{priceBtcPerContract:.01},estimateQuality:"green"},modelEstimate:{sold:{priceBtcPerContract:.021},bought:{priceBtcPerContract:.011},estimateQuality:"green"},closingFeesBtc:.001,estimatedNetPnlBtc:.008,estimateQuality:"green"}));const maker={...evaluatedScenario(),valuationPathSnapshot:points},taker={...evaluatedScenario(),valuationPathSnapshot:points.map(p=>({...p,estimatedNetPnlBtc:.007}))};return{...s,executionScenarios:{maker,taker},referenceValuation:{status:"valued",reason:null,source:"local_iv_interpolation",entrySnapshot:maker.entrySnapshot,valuationPathSnapshot:points,outcomeSnapshots:maker.outcomeSnapshots,provenance:{executionIndependent:true}}}});const payloadBytes=Buffer.byteLength(JSON.stringify(fixture));assert.ok(payloadBytes<9_000_000,`nine-structure payload regression: ${payloadBytes}`);const dir=await mkdtemp(join(tmpdir(),"research-scale-")),service=new ResearchSelectionService(dir);const saved=await service.upsertEvent("default-sample-trades","scale",fixture);assert.deepEqual((await service.read("default-sample-trades")).events[0],saved.events[0]);const events=Array.from({length:25},(_,i)=>({...fixture,eventId:`scale-${i}`,selectedStructures:fixture.selectedStructures.map(s=>({...s,eventId:`scale-${i}`}))}));const multi={...store(events),datasetId:"scale-store"};await new ResearchSelectionService(dir).save("scale-store",multi);const fileBytes=Buffer.byteLength(await readFile(join(dir,"scale-store.json"),"utf8"));assert.ok(fileBytes<70_000_000,`25-event store regression: ${fileBytes}`);await rm(dir,{recursive:true,force:true});});
 
 
-test("schema 1.8 compact DTOs bound delayed tape, calibration, and modeled path growth",()=>{
+test("schema 1.9 compact DTOs bound delayed tape, calibration, and modeled path growth",()=>{
  const trades=Array.from({length:100},(_,i)=>({instrumentName:"S",tradeId:`t${i}`,timestamp:1_700_000_000_000+i,price:.01,amount:1,direction:"sell",indexPrice:60_000}));
  const path=Array.from({length:181},(_,i)=>({timestamp:i,closingSpreadValueBtc:-i/1e5,closingFeesBtc:.0001,estimatedNetPnlBtc:.01-i/1e5}));
  const records=Array.from({length:200},(_,i)=>({id:`r${i}`,concessionBps:i})),calibration={scenario:"taker",status:"empirically_calibrated",count:records.length,minimum:30,sampleFingerprint:"fp",records};

@@ -2,6 +2,12 @@
 
 Research Comparative Economics answers: **“Which structural parameter choices change the economics?”** It examines the full **ex-ante** structural configuration space and compares position/configuration economics, controlled parameter changes, execution assumptions, and complete exit policies. It does not select a Strategy configuration or reconstruct account equity, concurrency, portfolio drawdown, available funds, or margin utilization. Those belong to Strategy Evaluation Economics, which answers: **“What does the chosen configuration require and produce as a deployable portfolio?”** Canonical position and configuration definitions remain those in [Economic Analysis](economic-analysis.md).
 
+## Canonical materialization boundary
+
+Comparative Economics is keyed by `event_id × structural_configuration_id`, never by candidate ID. Candidate IDs remain generation-attempt provenance. When several actual expiries or contract candidates map to one target-DTE/strike/width/family configuration, exactly one economic materialization may represent it: the candidate persisted as rank 1 by the existing causal, ex-ante generation policy. Array order, realized PnL, later data quality, and future outcomes are never selectors. If an older generation snapshot does not preserve a unique rank-1 decision, that configuration is explicitly unavailable until regeneration rather than being assigned an invented representative.
+
+`selectedStructures` contains only user-selected, deployable Strategy structures. Controlled DTE, width, and strike expansion does not add to it. Those expansions request `researchStructures` with `researchRole: "comparative_economics"`, the exact structural configuration ID, and all attempt candidate IDs. Current selection-store and bundle validation allow at most one such materialization per event/configuration. Legacy ambiguous materializations are preserved for audit, marked unavailable, and require regeneration/reselection.
+
 ## Observation and availability rules
 
 The independent observation is an MR event. Marginal and interaction cells first collapse multiple variants to one event × cell observation, so generating more variants cannot give an event more weight. Reports retain configuration, event, opportunity, and pair denominators separately.

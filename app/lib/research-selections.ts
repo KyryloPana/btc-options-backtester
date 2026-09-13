@@ -1,8 +1,9 @@
 import type { BacktestEvent, Candle, QualityFlag, RetrievedSpread } from "./backtester";
+import {structuralConfigurationIdentity} from "./economics/strategy-configuration.ts";
 
-export const RESEARCH_SELECTION_SCHEMA_VERSION = "1.8.0" as const;
+export const RESEARCH_SELECTION_SCHEMA_VERSION = "1.9.0" as const;
 /** Every schema version this app can still read and migrate forward from. */
-export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS = ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0", "1.7.0"] as const;
+export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS = ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0", "1.7.0", "1.8.0"] as const;
 /** @deprecated kept for external callers; prefer LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS. */
 export const LEGACY_RESEARCH_SELECTION_SCHEMA_VERSION = "1.0.0" as const;
 export type Venue = "deribit" | "bybit" | "binance";
@@ -27,6 +28,8 @@ export interface GenerationCandidateSnapshot {
   actualExpiryTimestamp: number | null; actualDte: number | null; requestedStrikes: { short: number; long: number; width: number };
   actualStrikes: { short: number | null; long: number | null; width: number | null }; structure: string; optionType: string;
   strikeMethod: string; entryQuality: QualityFlag | null;
+  /** Persisted output of the causal, ex-ante expiry-ranking policy. */
+  expiryRank?:number|null; expirySelectionReason?:string|null;
 }
 export interface ReproducibilitySnapshot {
   applicationBuild: string | null; pricingEngineVersion: string; qualityRulesVersion: string; feeScheduleVersion: string;
@@ -111,14 +114,16 @@ export interface SelectedStructure {
   derivedRefreshedAtUtc?: string;
   marginSnapshot: JsonValue; evidenceTradeSnapshots?: JsonValue[]; evidenceUsages?: EvidenceUsageDto[];
 }
-export interface ResearchOnlyStructure extends SelectedStructure { researchRole:"short_strike_technical"|"short_strike_buffered" }
-export interface ResearchSelectionEvent { eventId: string; sourceRun: JsonValue; generationSnapshot: GenerationSnapshot; selectedStructures: SelectedStructure[]; researchStructures?:ResearchOnlyStructure[]; evidenceCatalog?: EvidenceTradeDto[] }
+export type ResearchRole="short_strike_technical"|"short_strike_buffered"|"comparative_economics";
+export interface ResearchOnlyStructure extends SelectedStructure { researchRole:ResearchRole; structuralConfigurationId?:string; attemptCandidateIds?:string[] }
+export interface ResearchSelectionEvent { eventId: string; sourceRun: JsonValue; generationSnapshot: GenerationSnapshot; selectedStructures: SelectedStructure[]; researchStructures?:ResearchOnlyStructure[]; comparativeEconomicsStatus?:{status:"available"|"unavailable";reasonCode:string|null;reason:string|null}; evidenceCatalog?: EvidenceTradeDto[] }
 export interface ResearchSelectionStore { schemaVersion: typeof RESEARCH_SELECTION_SCHEMA_VERSION; datasetId: string; updatedAtUtc: string; events: ResearchSelectionEvent[] }
 export interface SelectionValidationError { path: string; message: string }
 
 const SAFE_ID=/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const iso=(v:unknown)=>typeof v==="string" && Number.isFinite(Date.parse(v)) && /(?:Z|[+-]\d\d:\d\d)$/.test(v);
 const venue=(v:unknown):v is Venue=>v==="deribit"||v==="bybit"||v==="binance";
+export function generationStructuralConfiguration(candidate:GenerationCandidateSnapshot){return structuralConfigurationIdentity({target_horizon_days:candidate.targetHorizon,strike_method:candidate.strikeMethod,requested_strikes:candidate.requestedStrikes,structure_type:candidate.structure});}
 function inspectJson(value:unknown,path:string,errors:SelectionValidationError[]):void {
   if(value===null||typeof value==="string"||typeof value==="boolean")return;
   if(typeof value==="number"){if(!Number.isFinite(value))errors.push({path,message:"Numbers must be finite; use null for unavailable values."});return;}
@@ -150,9 +155,11 @@ export function validateResearchSelectionStore(value:unknown):{ok:true;store:Res
       if(generationAttempts.has(attempt))errors.push({path:`${p}.generationSnapshot.candidates[${j}]`,message:"Duplicate generation attempt; distinct requested variants may share candidateId, but an identical attempt must occur only once."});
       generationAttempts.add(attempt);
     }
+
     for(const [j,s] of (Array.isArray(event.selectedStructures)?event.selectedStructures:[]).entries()){
       const q=`${p}.selectedStructures[${j}]`;
       if(!s||typeof s!=="object"){errors.push({path:q,message:"Selection must be an object."});continue;}
+      if("researchRole" in s)errors.push({path:`${q}.researchRole`,message:"Deployable selectedStructures cannot carry a research-only role."});
       if(s.eventId!==event.eventId)errors.push({path:`${q}.eventId`,message:"Selection event ID must match its event."});
       if(typeof s.candidateId!=="string"||!s.candidateId)errors.push({path:`${q}.candidateId`,message:"Stable candidate ID is required."});
       if(!venue(s.venue))errors.push({path:`${q}.venue`,message:"Venue must be deribit, bybit, or binance."});
@@ -173,6 +180,7 @@ export function validateResearchSelectionStore(value:unknown):{ok:true;store:Res
       }
     }
     const researchKeys=new Set<string>();
+    const comparativeKeys=new Set<string>();
     for(const [j,s] of (Array.isArray(event.researchStructures)?event.researchStructures:[]).entries()){
       const q=`${p}.researchStructures[${j}]`;
       if(!s||typeof s!=="object"){errors.push({path:q,message:"Research structure must be an object."});continue;}
@@ -181,10 +189,12 @@ export function validateResearchSelectionStore(value:unknown):{ok:true;store:Res
       if(!venue(s.venue))errors.push({path:`${q}.venue`,message:"Venue must be deribit, bybit, or binance."});
       if(!iso(s.selectedAtUtc))errors.push({path:`${q}.selectedAtUtc`,message:"A UTC ISO-8601 materialization timestamp is required."});
       if(typeof s.quantity!=="number"||!Number.isFinite(s.quantity)||s.quantity<=0)errors.push({path:`${q}.quantity`,message:"Quantity must be finite and positive."});
-      if(!["short_strike_technical","short_strike_buffered"].includes(String(s.researchRole)))errors.push({path:`${q}.researchRole`,message:"Unknown controlled-research role."});
+      if(!["short_strike_technical","short_strike_buffered","comparative_economics"].includes(String(s.researchRole)))errors.push({path:`${q}.researchRole`,message:"Unknown controlled-research role."});
       const key=`${s.venue}:${s.candidateId}`;if(researchKeys.has(key))errors.push({path:q,message:"Duplicate research candidate identity."});researchKeys.add(key);
       const generated=Array.isArray(event.generationSnapshot?.candidates)?event.generationSnapshot.candidates:[];
-      if(!generated.some(c=>c&&typeof c==="object"&&(c as GenerationCandidateSnapshot).candidateId===s.candidateId))errors.push({path:`${q}.candidateId`,message:"Research candidate is absent from generation provenance."});
+      const generatedCandidate=generated.find(c=>c&&typeof c==="object"&&(c as GenerationCandidateSnapshot).candidateId===s.candidateId) as GenerationCandidateSnapshot|undefined;
+      if(!generatedCandidate)errors.push({path:`${q}.candidateId`,message:"Research candidate is absent from generation provenance."});
+      if(s.researchRole==="comparative_economics"&&generatedCandidate){const identity=generationStructuralConfiguration(generatedCandidate),configurationId=identity.id;if(configurationId===null||s.structuralConfigurationId!==configurationId)errors.push({path:`${q}.structuralConfigurationId`,message:"Comparative Economics materialization must claim the exact generated structural configuration."});else if(comparativeKeys.has(configurationId))errors.push({path:q,message:"Only one Comparative Economics materialization may claim an event × structural configuration."});else comparativeKeys.add(configurationId);const attemptRows=generated.filter(candidate=>generationStructuralConfiguration(candidate).id===configurationId),attempts=attemptRows.map(candidate=>candidate.candidateId).sort(),persisted=[...new Set(s.attemptCandidateIds??[])].sort(),rankOne=attemptRows.filter(candidate=>candidate.expiryRank===1);if(JSON.stringify(attempts)!==JSON.stringify(persisted))errors.push({path:`${q}.attemptCandidateIds`,message:"Comparative Economics materialization must retain every generation-attempt candidate ID for its canonical configuration."});if(attemptRows.length>1&&(rankOne.length!==1||rankOne[0]!.candidateId!==s.candidateId))errors.push({path:`${q}.candidateId`,message:"Comparative Economics materialization must be the persisted ex-ante rank-1 candidate; row order and outcomes are not admissible selectors."});}
       const resolution=s.contractResolution;
       if(!resolution||!["exact_resolved","nearest_listed_resolved","confirmed_not_listed","retrieval_failure","metadata_unavailable"].includes(String(resolution.status)))errors.push({path:`${q}.contractResolution.status`,message:"Research contract-resolution status is invalid."});
       const reference=s.referenceValuation;
@@ -387,7 +397,7 @@ export function migrateResearchSelectionStore(value:unknown):ResearchSelectionSt
   const equivalent=modelTrack!==undefined&&JSON.stringify([modelTrack.entrySnapshot,modelTrack.valuationPathSnapshot,modelTrack.outcomeSnapshots])===JSON.stringify([referenceValuation.entrySnapshot,referenceValuation.valuationPathSnapshot,referenceValuation.outcomeSnapshots]);
   const uniqueUsages=[...new Map(usages.map(usage=>[JSON.stringify(usage),usage])).values()].sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)));
   return{...(rest as unknown as SelectedStructure),strategyVariantId:String(legacy.strategyVariantId??raw.candidateId),contractResolution:(legacy.contractResolution as ContractResolutionSnapshot|undefined)??{status:"metadata_unavailable",reason:"Legacy record; contract metadata status was not recorded.",short:null,long:null},referenceValuation,delayedExecution:(legacy.delayedExecution as SelectedStructure["delayedExecution"]|undefined)??{status:"not_evaluated",reason:notImplemented},modeledExecution:(legacy.modeledExecution as SelectedStructure["modeledExecution"]|undefined)??{expected:{status:"not_evaluated",reason:notImplemented},conservative:{status:"not_evaluated",reason:notImplemented}},executionScenarios,...(modelTrack&&!equivalent?{legacyModelTrack:modelTrack}:{}),selectionProvenance:(legacy.selectionProvenance as SelectedStructure["selectionProvenance"]|undefined)??(wasLegacy?"legacy":undefined),statusLayers:(legacy.statusLayers as JsonValue|undefined)??null,marginSnapshot:compactMarginResult(legacy.marginSnapshot),evidenceTradeSnapshots:[],evidenceUsages:uniqueUsages};
- });return{...event,selectedStructures,evidenceCatalog:[...catalog.values()].sort((a,b)=>a.evidenceId.localeCompare(b.evidenceId))};});return {...store,schemaVersion:RESEARCH_SELECTION_SCHEMA_VERSION,events:events.map(compactResearchSelectionEvent)};}
+ });const materializations=[...selectedStructures,...(event.researchStructures??[])],configurationClaims=new Map<string,Set<string>>();for(const structure of materializations){const generated=event.generationSnapshot.candidates.find(candidate=>candidate.candidateId===structure.candidateId),configurationId=generated?generationStructuralConfiguration(generated).id:null;if(!configurationId)continue;const claims=configurationClaims.get(configurationId)??new Set<string>();claims.add(structure.candidateId);configurationClaims.set(configurationId,claims)}const ambiguousAttempts=[...new Set(event.generationSnapshot.candidates.map(candidate=>generationStructuralConfiguration(candidate).id).filter((id):id is string=>id!==null))].filter(configurationId=>{const attempts=event.generationSnapshot.candidates.filter(candidate=>generationStructuralConfiguration(candidate).id===configurationId);return attempts.length>1&&attempts.filter(candidate=>candidate.expiryRank===1).length!==1}),conflicts=[...new Set([...configurationClaims].filter(([,claims])=>claims.size>1).map(([configurationId])=>configurationId).concat(ambiguousAttempts))].sort();return{...event,selectedStructures,...(conflicts.length?{comparativeEconomicsStatus:{status:"unavailable" as const,reasonCode:"legacy_comparative_materialization_unresolved",reason:`Legacy schema ${originatingSchema} cannot reproduce one canonical materialization for ${conflicts.length} event × structural configuration identit${conflicts.length===1?"y":"ies"}; regenerate/reselect before Comparative Economics.`}}:{}),evidenceCatalog:[...catalog.values()].sort((a,b)=>a.evidenceId.localeCompare(b.evidenceId))};});return {...store,schemaVersion:RESEARCH_SELECTION_SCHEMA_VERSION,events:events.map(compactResearchSelectionEvent)};}
 export function researchEventPayloadDiagnostics(event:ResearchSelectionEvent){const encoder=new TextEncoder(),bytes=(v:unknown)=>encoder.encode(JSON.stringify(v)).byteLength,track=(t:ExecutionScenarioSnapshot|IndependentTrackSnapshot|undefined)=>({totalBytes:bytes(t??null),entryBytes:bytes(t?.entrySnapshot??null),pathBytes:bytes(t?.valuationPathSnapshot??[]),outcomeBytes:bytes(t?.outcomeSnapshots??[]),pathPointCount:t?.valuationPathSnapshot?.length??0});return{sourceEventBytes:bytes(event.sourceRun),generationConfigurationBytes:bytes(event.generationSnapshot.configuration),candidateSnapshotBytes:bytes(event.generationSnapshot.candidates),underlyingHourlyPathBytes:bytes(event.generationSnapshot.underlyingHourlyPath),selectedStructuresBytes:bytes(event.selectedStructures),selectedCandidateBytes:event.selectedStructures.map(s=>({candidateId:s.candidateId,totalBytes:bytes(s),candidateSnapshotBytes:bytes(s.candidateSnapshot),contractResolutionBytes:bytes(s.contractResolution??null),statusLayersBytes:bytes(s.statusLayers??null),maker:track(s.executionScenarios.maker),taker:track(s.executionScenarios.taker),reference:track(s.referenceValuation),legacyModel:track(s.legacyModelTrack),makerEntrySnapshotBytes:bytes(s.executionScenarios.maker.entrySnapshot),makerValuationPathBytes:bytes(s.executionScenarios.maker.valuationPathSnapshot),makerOutcomesBytes:bytes(s.executionScenarios.maker.outcomeSnapshots),takerEntrySnapshotBytes:bytes(s.executionScenarios.taker.entrySnapshot),takerValuationPathBytes:bytes(s.executionScenarios.taker.valuationPathSnapshot),takerOutcomesBytes:bytes(s.executionScenarios.taker.outcomeSnapshots),delayedExecutionBytes:bytes(s.delayedExecution??null),modeledExecutionBytes:bytes(s.modeledExecution??null),marginBytes:bytes(s.marginSnapshot),evidenceBytes:bytes(s.evidenceTradeSnapshots??[]),evidenceUsageBytes:bytes(s.evidenceUsages??[])})),eventEvidenceCatalogBytes:bytes(event.evidenceCatalog??[]),totalBytes:bytes(event)};}
 
 /**
@@ -451,10 +461,11 @@ export function renameResearchSelectionEvent(store:ResearchSelectionStore,oldEve
     evidenceUsages:structure.evidenceUsages?.map(usage=>({...usage,candidateId:candidateIdFor(usage.candidateId,structure.venue)})),
    } satisfies SelectedStructure;
   });
+  const researchStructures=event.researchStructures?.map(structure=>{const candidateId=candidateIdFor(structure.candidateId,structure.venue);return{...structure,eventId:newEventId,candidateId,selectionId:`research~${structure.researchRole}~${candidateId}`,attemptCandidateIds:structure.attemptCandidateIds?.map(id=>candidateIdFor(id,structure.venue)),evidenceUsages:structure.evidenceUsages?.map(usage=>({...usage,candidateId:candidateIdFor(usage.candidateId,structure.venue)}))} satisfies ResearchOnlyStructure;});
   const candidates=event.generationSnapshot.candidates.map(candidate=>({...candidate,candidateId:candidateIdFor(candidate.candidateId,candidate.venue)}));
   // sourceRun carries the event reference the bundle reads its event_id from.
   const sourceRun=renameEventReference(event.sourceRun,newEventId);
-  return {...event,eventId:newEventId,sourceRun,generationSnapshot:{...event.generationSnapshot,candidates},selectedStructures};
+  return {...event,eventId:newEventId,sourceRun,generationSnapshot:{...event.generationSnapshot,candidates},selectedStructures,...(researchStructures?{researchStructures}:{})};
  });
  return {...store,updatedAtUtc:now,events};
 }
