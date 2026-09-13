@@ -1,6 +1,6 @@
 import type {AnalyticsAttention,AnalyticsEvidenceStatus} from "../lib/analytics-attention";
 import {useState} from "react";
-export type ResearchEvidenceStatus=AnalyticsEvidenceStatus|"UNUSUAL";
+export type ResearchEvidenceStatus=AnalyticsEvidenceStatus|"UNUSUAL"|"LOW_N";
 export interface EvidenceAssessment{readonly status:ResearchEvidenceStatus;readonly reason:string|null}
 export function evidenceRowProps(assessment:EvidenceAssessment){return {className:`evidence-status-${assessment.status.toLowerCase()}`,title:assessment.status==="VALID"?undefined:assessment.reason??`${assessment.status} evidence`}}
 export function ResearchEvidenceBadge({assessment}:{assessment:EvidenceAssessment}){const reason=assessment.reason??`${assessment.status} evidence`;return <span className={`evidence-badge evidence-badge-${assessment.status.toLowerCase()}`} title={assessment.status==="VALID"?undefined:reason} aria-label={`Evidence: ${assessment.status}${assessment.status==="VALID"?"":` — ${reason}`}`}>{assessment.status}</span>}

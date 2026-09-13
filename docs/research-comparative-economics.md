@@ -35,3 +35,11 @@ Execution survival and degradation are calculated separately within configuratio
 Exit-policy economics holds the analytical execution track fixed and covers Thesis, 50% and 70% capture, 3D/5D/7D caps, and Settlement benchmark. Alternative-policy deltas pair the same event and configuration against Thesis. A null Research exit policy means outcomes were not evaluated; it never defaults to Thesis or mutates the Strategy Evaluation selection.
 
 No winner, score, optimal parameter, or recommendation is produced. Costs, return, risk, and capital deltas have different meanings, and the report presents evidence rather than making a post-hoc strategy selection.
+
+## Q50 evidence gating and policy pairs
+
+The Q50 generation state gates modeled-expected trade evidence. A priced Q50 row attached to a canonical `explicit_no_trade` or `unavailable` identity is excluded from trade-conditional metrics and diagnosed as an integrity contradiction. Reference and Q90 may still price the same counterfactual identity; they never rewrite its Q50 decision. No synthetic zero position is created. Deliberate zero remains confined to Q50 opportunity-normalized expectancy for canonical explicit no-trades.
+
+Configuration evidence attention distinguishes integrity-invalid, wholly unavailable canonical-USD metrics, partial canonical-USD coverage, and low-N Q50 tails. These are separate from the count of canonical Q50-unavailable opportunities. Primary fee drag is a partial-capable statistic over positions with both canonical total-realized-fees USD and positive canonical gross-opening-credit USD; its effective positions and priced-position denominator are disclosed.
+
+Exit-policy deltas pair each complete alternative against Thesis by exact event and structural-configuration identity before aggregation. A missing side reduces the metric-specific paired N and is never inserted as zero. Absolute policy cohorts remain separately visible. The full-matrix tail is explicitly the fixed-generation-baseline **Q50 trade-conditional P10**, even while Reference or Q90 is selected; BTC and USD tail availability are evaluated independently.
