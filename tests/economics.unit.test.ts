@@ -95,3 +95,5 @@ test("incomplete canonical USD coverage never masquerades as a complete paired c
  assert.equal(partial.medianPnlUsd,null);assert.equal(partial.worstPnlUsd,null);assert.equal(partial.medianNetCreditUsd,null);assert.equal(partial.medianTotalFeesUsd,null);assert.equal(partial.medianCapitalDaysUsd,null);assert.equal(partial.medianOpeningInitialMarginUsd,null);assert.equal(partial.medianPeakInitialMarginUsd,null);
  assert.equal(partial.p10PnlUsd.value,null);assert.match(partial.p10PnlUsd.reason!,/1 \/ 2/);assert.deepEqual(partial.usdEffectiveN.pnl,{n:1,requiredN:2});
 });
+
+test("primary fee drag uses canonical USD fees over canonical USD gross credit",()=>{const row=position("fee-drag",day(1),day(3),"long",.1,.01,.05);Object.assign(row,{grossOpeningCreditBtc:.01,totalRealizedFeesBtc:.001,grossOpeningCreditUsd:a(400),totalRealizedFeesUsd:a(80)});const result=buildConfigurationEconomics(opportunityDataset([row]),[row],config)[0]!;assert.equal(result.medianFeeDrag,.2);assert.notEqual(result.medianFeeDrag,row.totalRealizedFeesBtc!/row.grossOpeningCreditBtc!)});

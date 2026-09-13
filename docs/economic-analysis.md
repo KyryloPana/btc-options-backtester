@@ -6,6 +6,8 @@ Strategy Evaluation Economics answers: **“What does the chosen configuration r
 
 Central Economics is empirical expected-taker Q50 (`modeled_expected`). Reference is the execution-independent fair-value counterfactual, Q90 (`modeled_conservative`) is conservative execution, and Maker/Taker/delayed layers remain diagnostics. Each layer's opportunity denominator is the selected configuration's event × configuration opportunities after canonical cohort projection. Reference/Q50/Q90 pairing occurs only after applying that same configuration scope. Controlled Short-Strike research and every non-selected configuration are excluded; unavailable and rejected/no-trade observations remain distinct from priced positions. With no selected configuration, the report returns `not_selected` and displays no pooled economic fallback.
 
+Track materialization uses the full analytical projection and then intersects it with the explicitly selected canonical configuration opportunity membership. Thus a selectable canonical configuration remains evaluable even if its exporter `is_selected` flag is false, while unrelated controlled-research rows cannot enter merely because the full projection was used.
+
 ## Entry, fees, and risk
 
 Entry gross credit, opening fees, and net opening cash flow are canonical track candidate fields produced by the routed entry ledger. Closing execution fees, delivery fees, and BTC/USD PnL come from the selected canonical outcome. Total realized fees are opening execution + closing execution + delivery, with settlement delivery never relabelled as closing execution. Execution adjustment is executed/modelled credit minus unslipped credit and is not charged a second time.
@@ -28,6 +30,8 @@ Margin capital-days are the piecewise-constant time integral of IM over the sele
 ## Returns and sizing
 
 Every return requires a positive, available denominator. Missing and zero denominators remain unavailable.
+
+Primary fee drag is identical to Research: canonical total realized fees USD / canonical gross opening credit USD. The separately timestamped canonical USD components are used directly; native BTC aggregates are never converted to create this ratio.
 
 For one position:
 
@@ -58,7 +62,7 @@ At a complete state:
 - `requiredEquityMargin(t) = aggregateIM(t) / maximumMarginUtilization`;
 - `requiredEquity(t) = max(requiredEquityRisk(t), requiredEquityMargin(t))` only when both sides are available.
 
-Peak aggregate IM/MM are maxima of the contemporaneous aggregate series, never sums of per-position opening or individual peak values. Modeled-equity drawdown is peak-to-trough on the complete MTM series. Realized-only equity drawdown is retained under that explicit diagnostic name. USD modeled equity uses the causal index at each state. “Modeled available funds” is an analytical reserve calculation, not a claim about historical authenticated Deribit account balances.
+Peak aggregate IM/MM are maxima of the contemporaneous aggregate series, never sums of per-position opening or individual peak values. Modeled-equity drawdown is peak-to-trough on the complete MTM series. Realized-only equity drawdown is retained under that explicit diagnostic name. USD modeled equity is Native BTC collateral marked to USD at each causal index. It includes BTC collateral spot beta and is not canonical option-strategy USD PnL or strategy USD-PnL drawdown. “Modeled available funds” is an analytical reserve calculation, not a claim about historical authenticated Deribit account balances.
 
 ## Corrected matrix, configuration, and portfolio objects (schema 4.4)
 
