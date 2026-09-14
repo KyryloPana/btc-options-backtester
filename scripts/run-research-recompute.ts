@@ -57,7 +57,7 @@ async function main() {
   const beforeIdentity = structuralIdentityOf(before);
   const beforeReference = captureReference(before);
   process.stderr.write(
-    `store ${datasetId}: ${before.events.length} events, ${beforeIdentity.length} selected structures\n`);
+    `store ${datasetId}: ${before.events.length} events, ${beforeIdentity.length} recompute structures\n`);
 
   const service = new DeribitHistoryService(
     "https://history.deribit.com/api/v2/public",
