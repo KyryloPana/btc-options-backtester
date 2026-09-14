@@ -35,13 +35,13 @@ test("forensic audit reports canonical duplicates instead of choosing by row ord
  assert.ok(q50.every(row=>row.pricedThesisOutcome===false));
 });
 
-test("forensic audit retains noncanonical candidate attempts without treating them as economic duplicates",()=>{
+test("forensic audit diagnoses multiple economic rows on one canonical identity as duplicates",()=>{
  const audit=buildResearchEconomicsForensicAudit(dataset([opportunity("e","A","trade","c1")],[candidate("e","c2","A"),candidate("e","c1","A")],[outcome("e","c2"),outcome("e","c1")]));
  assert.equal(audit.canonicalOpportunityLedger[0]!.candidateRowCount,2);
  assert.deepEqual(audit.canonicalOpportunityLedger[0]!.candidateIds,["c1","c2"]);
  assert.equal(audit.trackMaterializationLedger.find(row=>row.identity==="e|A"&&row.track==="modeled_expected")!.normalizedPositionCount,2);
- assert.equal(audit.trackMaterializationLedger.find(row=>row.identity==="e|A"&&row.track==="modeled_expected")!.pricedThesisOutcome,true);
- assert.equal(audit.integrityReasonDistribution.some(row=>row.reason==="duplicate selected-track event × configuration evidence"),false);
+ assert.equal(audit.trackMaterializationLedger.find(row=>row.identity==="e|A"&&row.track==="modeled_expected")!.pricedThesisOutcome,false);
+ assert.equal(audit.integrityReasonDistribution.some(row=>row.reason==="duplicate selected-track event × configuration evidence"),true);
 });
 
 test("forensic audit reports identity mismatch without coercing evidence",()=>{
