@@ -4,13 +4,14 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
 import { compactResearchSelectionEvent, emptyResearchSelectionStore, migrateResearchSelectionStore, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore } from "../app/lib/research-selections.ts";
 import { recomputeSelectedResearch, type RefreshScope, type ResearchRecomputeEngine } from "../app/lib/research-refresh.ts";
+export { RESEARCH_SELECTION_REQUEST_LIMIT_BYTES } from "../app/lib/research-persistence-limits.ts";
+import { RESEARCH_SELECTION_REQUEST_LIMIT_BYTES } from "../app/lib/research-persistence-limits.ts";
 
 const PREFIX="/__local/research-selections",CAPABILITIES="/__local/persistence-capabilities",SAFE_ID=/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 // A store that does not exist yet still needs a stable version for the GET ->
 // If-Match PUT handshake. Using the current time here made every first save
 // stale because read() produced a different version for each request.
 const EMPTY_STORE_VERSION="1970-01-01T00:00:00.000Z";
-export const RESEARCH_SELECTION_REQUEST_LIMIT_BYTES=10_000_000;
 export class ResearchSelectionService{
   readonly directory:string;
   constructor(directory:string){this.directory=directory;}
