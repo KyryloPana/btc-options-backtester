@@ -13,7 +13,7 @@ import type {ResearchSelectionStore} from "./research-selections.ts";
 /** The fields a recompute may never change. */
 export interface StructuralIdentity {
   eventId: string; candidateId: string; venue: string;
-  structuralConfigurationId: string | null; attemptCandidateIds: string; researchRole: string | null;
+  structuralConfigurationId: string | null; generationAttemptIdentities: string; researchRole: string | null;
   optionType: string; structure: string; strikeMethod: string;
   requestedShort: number | null; requestedLong: number | null; requestedWidth: number | null;
   actualShort: number | null; actualLong: number | null; actualWidth: number | null;
@@ -33,7 +33,7 @@ export function structuralIdentityOf(store: ResearchSelectionStore): StructuralI
       rows.push({
         eventId: event.eventId, candidateId: structure.candidateId, venue: structure.venue,
         structuralConfigurationId: "structuralConfigurationId" in structure && typeof structure.structuralConfigurationId === "string" ? structure.structuralConfigurationId : null,
-        attemptCandidateIds: "attemptCandidateIds" in structure && Array.isArray(structure.attemptCandidateIds) ? [...new Set(structure.attemptCandidateIds.filter((id):id is string=>typeof id==="string"))].sort().join("\u0000") : "",
+        generationAttemptIdentities: "generationAttemptIdentities" in structure && Array.isArray(structure.generationAttemptIdentities) ? [...new Set(structure.generationAttemptIdentities.filter((id):id is string=>typeof id==="string"))].sort().join("\u0000") : "",
         researchRole: "researchRole" in structure && typeof structure.researchRole === "string" ? structure.researchRole : null,
         optionType: String(candidate?.optionType ?? ""), structure: String(candidate?.structure ?? ""),
         strikeMethod: String(candidate?.strikeMethod ?? ""),
@@ -49,7 +49,7 @@ export function structuralIdentityOf(store: ResearchSelectionStore): StructuralI
       });
     }
   }
-  return rows.sort((a, b) => `${a.eventId}|${a.candidateId}|${a.researchRole}`.localeCompare(`${b.eventId}|${b.candidateId}|${b.researchRole}`));
+  return rows.sort((a, b) => `${a.eventId}|${a.structuralConfigurationId??a.candidateId}|${a.researchRole}`.localeCompare(`${b.eventId}|${b.structuralConfigurationId??b.candidateId}|${b.researchRole}`));
 }
 
 /** Every structural difference between two stores, or an empty list. */
@@ -59,7 +59,7 @@ export function structuralDifferences(
   const problems: string[] = [];
   if (before.length !== after.length)
     problems.push(`recompute structure count changed: ${before.length} -> ${after.length}`);
-  const key = (r: StructuralIdentity) => `${r.eventId}|${r.candidateId}|${r.researchRole ?? "selected"}`;
+  const key = (r: StructuralIdentity) => `${r.eventId}|${r.structuralConfigurationId??r.candidateId}|${r.researchRole ?? "selected"}`;
   const afterById = new Map(after.map(r => [key(r), r]));
   for (const row of before) {
     const match = afterById.get(key(row));

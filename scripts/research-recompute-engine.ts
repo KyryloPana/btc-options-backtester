@@ -29,7 +29,7 @@ import {analyzeDelayedExecution} from "../app/lib/delayed-execution.ts";
 
 import {buildDerivedResearchOutput, type ResearchScenarioResult} from "../app/lib/research-derived.ts";
 import type {DerivedResearchOutput, ResearchRecomputeEngine} from "../app/lib/research-refresh.ts";
-import type {EvidenceTradeDto, ResearchSelectionStore} from "../app/lib/research-selections.ts";
+import {generationStructuralConfiguration, type EvidenceTradeDto, type ResearchOnlyStructure, type ResearchSelectionStore, type SelectedStructure} from "../app/lib/research-selections.ts";
 import {DeribitHistoryService, type DesiredRequest} from "./deribit-history-api.ts";
 import type {ExecutionCalibrationIndex} from "../app/lib/empirical-taker-execution.ts";
 
@@ -67,6 +67,8 @@ interface EventMarketState {
   readonly apiRequests: number;
 }
 
+const recomputeKey=(row:SelectedStructure|ResearchOnlyStructure)=>"researchRole" in row&&row.researchRole==="comparative_economics"?`${row.eventId}|${String(row.structuralConfigurationId)}`:`${row.eventId}|${row.candidateId}`;
+const candidateFor=(event:ResearchSelectionStore["events"][number],structure:SelectedStructure|ResearchOnlyStructure)=>event.generationSnapshot.candidates.find(candidate=>candidate.candidateId===structure.candidateId&&(!("researchRole" in structure&&structure.researchRole==="comparative_economics")||generationStructuralConfiguration(candidate).id===String(structure.structuralConfigurationId)));
 /** The exact persisted universe eligible for a full recompute. */
 export function eventRecomputeUniverse(event: ResearchSelectionStore["events"][number]) {
   const rows = [
@@ -75,7 +77,7 @@ export function eventRecomputeUniverse(event: ResearchSelectionStore["events"][n
   ];
   const unique = new Map<string, (typeof rows)[number]>();
   for (const row of rows) {
-    const key = `${event.eventId}|${row.candidateId}`;
+    const key = recomputeKey(row);
     if (!unique.has(key)) unique.set(key, row);
   }
   return [...unique.values()];
@@ -110,13 +112,13 @@ async function resolveEventMarket(
   const seen = new Set<string>();
   const recomputeUniverse = eventRecomputeUniverse(event);
   for (const structure of recomputeUniverse) {
-    const candidate = event.generationSnapshot.candidates.find(c => c.candidateId === structure.candidateId);
+    const candidate = candidateFor(event, structure);
     if (!candidate) throw new Error(`Recompute candidate ${structure.candidateId} is absent from its generation snapshot.`);
     const shortStrike = num(candidate.actualStrikes.short), longStrike = num(candidate.actualStrikes.long);
     if (shortStrike === undefined || longStrike === undefined)
       throw new Error(`Recompute candidate ${structure.candidateId} has no resolved strikes to re-resolve contracts for.`);
     const window = obj(dteWindows[String(candidate.targetHorizon)]);
-    const requestId = `${structure.candidateId}`;
+    const requestId = "researchRole" in structure&&structure.researchRole==="comparative_economics"?structure.selectionId:`${structure.candidateId}`;
     if (seen.has(requestId)) continue;
     seen.add(requestId);
     requests.push({
@@ -147,10 +149,10 @@ async function resolveEventMarket(
   // pick the expiry the saved selection actually holds rather than re-ranking.
   const spreadsById = new Map<string, RetrievedSpread>();
   for (const structure of recomputeUniverse) {
-    const candidate = event.generationSnapshot.candidates.find(c => c.candidateId === structure.candidateId)!;
+    const candidate = candidateFor(event, structure)!;
     const match = built.find(s =>
-      s.id.startsWith(structure.candidateId) && s.expiryTimestamp === candidate.actualExpiryTimestamp);
-    if (match) spreadsById.set(structure.candidateId, match);
+      s.id.startsWith("researchRole" in structure&&structure.researchRole==="comparative_economics"?structure.selectionId:structure.candidateId) && s.expiryTimestamp === candidate.actualExpiryTimestamp);
+    if (match) spreadsById.set(recomputeKey(structure), match);
   }
 
   return {
@@ -187,8 +189,8 @@ export function createResearchRecomputeEngine(options: RecomputeEngineOptions): 
     const entryTimestamp = num(source.entryTimestamp)!;
     const entryPrice = num(source.entryPrice)!;
     const candles = (event.generationSnapshot.underlyingHourlyPath ?? []) as unknown as Candle[];
-    const spread = market.spreadsById.get(structure.candidateId);
-    const candidate = event.generationSnapshot.candidates.find(c => c.candidateId === structure.candidateId)!;
+    const spread = market.spreadsById.get(recomputeKey(structure));
+    const candidate = candidateFor(event, structure)!;
 
     const record = (row: RecomputeDiagnostics) => options.diagnostics?.push(row);
 
