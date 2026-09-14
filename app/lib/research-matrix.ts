@@ -1,4 +1,4 @@
-import {generationStructuralConfiguration,type GenerationCandidateSnapshot,type ResearchOnlyStructure,type ResearchSelectionStore} from "./research-selections.ts";
+import {canonicalJson,generationStructuralConfiguration,unavailableResearchStructure,type GenerationCandidateSnapshot,type ResearchOnlyStructure,type ResearchSelectionStore,type SelectedStructure} from "./research-selections.ts";
 
 export type ControlledMatrixMode="short_strike"|"width"|"dte"|"full";
 export type MatrixReason="buffer_rule_not_applicable"|"counterpart_unselected"|"contract_unavailable"|"reference_unavailable"|"collapsed_actual_structure"|"canonical_materialization_unresolved"|"complete";
@@ -13,6 +13,21 @@ const groups=(rows:readonly GenerationCandidateSnapshot[],key:(c:GenerationCandi
 
 /** Resolve the producer's persisted causal rank-1 decision; never use row order as a substitute. */
 export function canonicalComparativeMaterializations(store:ResearchSelectionStore){const resolved:ComparativeMaterializationTarget[]=[],unresolved:string[]=[];for(const event of store.events){for(const [configurationId,attempts] of groups(event.generationSnapshot.candidates,candidate=>generationStructuralConfiguration(candidate).id??`invalid:${candidate.candidateId}`)){const ranked=attempts.filter(candidate=>candidate.expiryRank===1),candidate=attempts.length===1?attempts[0]:ranked.length===1?ranked[0]:null;if(!candidate||configurationId.startsWith("invalid:")){unresolved.push(`${event.eventId}|${configurationId}`);continue}resolved.push({eventId:event.eventId,structuralConfigurationId:configurationId,candidateId:candidate.candidateId,attemptCandidateIds:[...new Set(attempts.map(attempt=>attempt.candidateId))].sort()})}}return{resolved:resolved.sort((a,b)=>`${a.eventId}|${a.structuralConfigurationId}`.localeCompare(`${b.eventId}|${b.structuralConfigurationId}`)),unresolved:unresolved.sort()}}
+
+/**
+ * Persist the complete canonical Comparative Economics universe without
+ * promoting any row into deployable Strategy selection. `evaluated` is output
+ * from the existing Reference/execution engines; rank provenance alone chooses
+ * which generation attempt represents a configuration.
+ */
+export function materializeComparativeEconomics(eventId:string,candidates:readonly GenerationCandidateSnapshot[],evaluated:readonly SelectedStructure[],quantity:number,atUtc:string):{structures:ResearchOnlyStructure[];unresolved:string[]}{
+ const shell:ResearchSelectionStore={schemaVersion:"1.9.0",datasetId:"comparative-materialization",updatedAtUtc:atUtc,events:[{eventId,sourceRun:{},generationSnapshot:{generatedAtUtc:atUtc,configuration:{} as never,candidates:[...candidates],underlyingHourlyPath:[]},selectedStructures:[]}]};
+ const canonical=canonicalComparativeMaterializations(shell),byCandidate=new Map<string,SelectedStructure[]>();
+ for(const structure of evaluated)byCandidate.set(structure.candidateId,[...(byCandidate.get(structure.candidateId)??[]),structure]);
+ const notEvaluated={status:"not_evaluated" as const,reason:"Research-only Comparative Economics materialization; immediate maker/taker execution was not independently observed or evaluated.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]};
+ const structures=canonical.resolved.map(target=>{const candidate=candidates.find(row=>row.candidateId===target.candidateId)!,rows=byCandidate.get(target.candidateId)??[],source=rows.length===1?rows[0]:null,base=source??unavailableResearchStructure(eventId,candidate,quantity,atUtc),rawReference=base.referenceValuation,referenceValuation=rawReference?.status==="valued"||rawReference?.status==="unavailable"?rawReference:unavailableResearchStructure(eventId,candidate,quantity,atUtc).referenceValuation,reason=candidate.availabilityReasons.find(Boolean)??"Canonical Comparative Economics materialization is unavailable.";return{...base,referenceValuation,...(!source?{modeledExecution:{expected:{status:"unavailable",reasonCode:"comparative_candidate_unavailable",reason,source:"modeled_execution",modelVersion:"modeled-execution-v5-empirical-taker",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]},conservative:{status:"unavailable",reasonCode:"comparative_candidate_unavailable",reason,source:"modeled_execution",modelVersion:"modeled-execution-v5-empirical-taker",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]}}}:{}),selectionId:`research~comparative-economics~${target.candidateId}`,selectedAtUtc:atUtc,researchRole:"comparative_economics" as const,structuralConfigurationId:target.structuralConfigurationId,attemptCandidateIds:target.attemptCandidateIds,executionScenarios:{maker:{...notEvaluated},taker:{...notEvaluated}},delayedExecution:undefined,marginSnapshot:null,evidenceTradeSnapshots:[],evidenceUsages:source?.evidenceUsages??[],statusLayers:canonicalJson(source?.statusLayers??null)} satisfies ResearchOnlyStructure}).map(structure=>{const {delayedExecution:_delayed,...persistable}=structure;void _delayed;return persistable}).sort((a,b)=>a.candidateId.localeCompare(b.candidateId));
+ return{structures,unresolved:canonical.unresolved};
+}
 
 /** Pure generated-universe audit. It never mutates availability or deployable Strategy selections. */
 export function previewControlledResearchMatrix(store:ResearchSelectionStore,mode:ControlledMatrixMode):MatrixPreview{

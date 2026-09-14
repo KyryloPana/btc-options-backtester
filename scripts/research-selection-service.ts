@@ -22,7 +22,7 @@ export class ResearchSelectionService{
   async recompute(id:string,scope:RefreshScope,engine:ResearchRecomputeEngine,expectedUpdatedAt?:string|null,onProgress?:(done:number,total:number)=>void){
    const current=await this.read(id);
    if(expectedUpdatedAt&&current.updatedAtUtc!==expectedUpdatedAt)throw Object.assign(new Error("Research selections changed on disk; reload before refreshing."),{status:409});
-   const total=current.events.flatMap(e=>e.selectedStructures.map(s=>({eventId:e.eventId,candidateId:s.candidateId}))).filter(s=>scope.kind==="all"||scope.kind==="event"&&scope.eventId===s.eventId||scope.kind==="structure"&&scope.eventId===s.eventId&&scope.candidateId===s.candidateId).length;
+   const total=current.events.flatMap(e=>[...e.selectedStructures,...(e.researchStructures??[]).filter(s=>s.researchRole==="comparative_economics")].map(s=>({eventId:e.eventId,candidateId:s.candidateId}))).filter(s=>scope.kind==="all"||scope.kind==="event"&&scope.eventId===s.eventId||scope.kind==="structure"&&scope.eventId===s.eventId&&scope.candidateId===s.candidateId).length;
    let done=0;onProgress?.(done,total);
    const wrapped:ResearchRecomputeEngine=async input=>{const output=await engine(input);onProgress?.(++done,total);return output};
    const result=await recomputeSelectedResearch(current,scope,wrapped);

@@ -24,6 +24,8 @@ The directory form must contain every canonical research-bundle file. Import val
 
 The audit never fabricates PositionEconomics, never converts missing values to zero, and never derives USD from an aggregate BTC statistic. The only deliberate zero in the product remains the separately defined Q50 explicit-no-trade term in opportunity-normalized expectancy; this audit only reports that generation state.
 
+For current selection stores, `modeled_execution_not_attempted` is no longer a synonym for “not manually selected.” Generation persists one research-only `comparative_economics` materialization for each resolvable canonical event/configuration, and the empirical recompute operates on those rows as well as Strategy selections. That materialization is the sole producer of `configuration_opportunities.economic_opportunity`. A missing rank-1 representative, failed Reference input, or insufficient empirical calibration remains a reasoned producer-side unavailable state; it is not repaired during export or audit.
+
 ## Root-cause taxonomy and repository evidence
 
 No complete production research bundle is committed in this repository, so the reported production-screen totals (81 opportunities, 36 configurations, 7 events, 47 unavailable opportunities, and 19 invalid configurations) cannot be truthfully decomposed from checked-in data. Run the command against that exact bundle to obtain its distribution.
