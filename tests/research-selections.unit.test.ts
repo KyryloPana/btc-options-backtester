@@ -8,7 +8,7 @@ import { ResearchSelectionService, researchSelectionApiPlugin } from "../scripts
 import { canLeaveDirty } from "../app/lib/trade-datasets.ts";
 import { LOCAL_PERSISTENCE_REQUIRED_MESSAGE, RESEARCH_SELECTION_ENDPOINT_FAILED_MESSAGE, probeLocalPersistence, researchSelectionFailure } from "../app/lib/local-persistence.ts";
 import {attemptControlled,controlledPersistence} from "../app/lib/controlled-research.ts";
-import { LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS, RESEARCH_SELECTION_SCHEMA_VERSION, canSelectResearchCandidate, canonicalJson, compactDelayedExecution, compactEntryEconomics, compactModeledExecution, compactResearchSelectionEvent, compactValuationPoint, emptyResearchSelectionStore, generationAttemptIdentity, migrateResearchSelectionStore, planCandidatePersistence, preserveControlledGenerationProvenance, reconcileGeneratedSelection, safeSelectionChangeSet, sameSelectionIds, selectionChangeSet, researchEventPayloadDiagnostics, stableCandidateId, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure, type Venue } from "../app/lib/research-selections.ts";
+import { LEGACY_RESEARCH_SELECTION_SCHEMA_VERSIONS, RESEARCH_SELECTION_SCHEMA_VERSION, canSelectResearchCandidate, canonicalJson, compactDelayedExecution, compactEntryEconomics, compactModeledExecution, compactResearchSelectionEvent, compactValuationPoint, emptyResearchSelectionStore, generationAttemptIdentity, generationStructuralConfiguration, migrateResearchSelectionStore, planCandidatePersistence, preserveControlledGenerationProvenance, reconcileGeneratedSelection, safeSelectionChangeSet, sameSelectionIds, selectionChangeSet, researchEventPayloadDiagnostics, stableCandidateId, unavailableResearchStructure, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore, type SelectedStructure, type Venue } from "../app/lib/research-selections.ts";
 import {shortStrikeControlledFixture} from "./fixtures/research-selection-store.ts";
 
 const now="2026-08-16T20:00:00.000Z";
@@ -18,6 +18,8 @@ const notEvaluatedScenario=(reason="No compatible-direction tape evidence and no
 const selected=(eventId:string,candidateId:string):SelectedStructure=>({selectionId:`s-${eventId}-${candidateId}`,eventId,candidateId,venue:"deribit",selectedAtUtc:now,quantity:1,candidateSnapshot:{instrument:"BTC-X"},executionScenarios:{maker:evaluatedScenario(),taker:notEvaluatedScenario()},marginSnapshot:null,evidenceTradeSnapshots:[]});
 const event=(eventId:string,ids:string[],all=[...ids,"unselected"]):ResearchSelectionEvent=>({eventId,sourceRun:{eventId},generationSnapshot:{generatedAtUtc:now,configuration:{applicationBuild:null,pricingEngineVersion:"v1",qualityRulesVersion:"v1",feeScheduleVersion:"v1",dteWindows:{},expirySelectionMode:"all-eligible",executionMode:"taker",pricingAssumption:"research-estimate",pricingTracks:["vwap","iv"],historicalEvidenceWindows:{},synchronizationThresholds:{},qualityThresholds:{},feeAssumptions:{},settlementRules:{},valuationInterval:"4h",modelAssumptions:{},generatedAtUtc:now},candidates:all.map(candidateId=>({candidateId,venue:"deribit",selected:ids.includes(candidateId),status:candidateId==="unselected"?"unavailable":"priced",availabilityReasons:candidateId==="unselected"?["no evidence"]:[],targetHorizon:7,eligibleDteRange:{min:5,max:10},actualExpiryTimestamp:1,actualDte:7,requestedStrikes:{short:2,long:1,width:1},actualStrikes:{short:2,long:1,width:1},structure:"credit",optionType:"P",strikeMethod:"anchor",entryQuality:candidateId==="unselected"?null:"green"})),underlyingHourlyPath:[{openTime:1,closeTime:2,open:1,high:2,low:1,close:2,volume:3}]},selectedStructures:ids.map(id=>selected(eventId,id))});
 const store=(events:ResearchSelectionEvent[]):ResearchSelectionStore=>({schemaVersion:RESEARCH_SELECTION_SCHEMA_VERSION,datasetId:"default-sample-trades",updatedAtUtc:now,events});
+const legacyComparativeEvent=(eventId:string):ResearchSelectionEvent=>{const legacy=event(eventId,[`${eventId}-primary`],[`${eventId}-primary`,`${eventId}-alternate`]),[primary,alternate]=legacy.generationSnapshot.candidates;primary!.expiryRank=1;alternate!.expiryRank=2;const configurationId=generationStructuralConfiguration(primary!).id!,research=unavailableResearchStructure(eventId,primary!,1,now);legacy.researchStructures=[{...research,selectionId:"legacy-comparative",researchRole:"comparative_economics",structuralConfigurationId:configurationId,attemptCandidateIds:[primary!.candidateId,alternate!.candidateId]}];return legacy};
+const assertNoUndefined=(value:unknown,path="store"):void=>{if(Array.isArray(value)){value.forEach((child,index)=>assertNoUndefined(child,`${path}[${index}]`));return}if(value&&typeof value==="object")for(const [key,child] of Object.entries(value)){assert.notEqual(child,undefined,`${path}.${key} must not be undefined`);assertNoUndefined(child,`${path}.${key}`)}};
 
 test("stable candidate ID survives regeneration",()=>assert.equal(stableCandidateId(identity()),stableCandidateId(identity())));
 test("venue scopes candidate identity",()=>assert.notEqual(stableCandidateId(identity("deribit")),stableCandidateId(identity("bybit"))));
@@ -210,6 +212,29 @@ test("schema migration preserves a maker-labelled legacy run under maker, not ta
  assert.equal(s.executionScenarios.taker.status,"not_evaluated");
 });
 
+test("schema 1.9 Comparative Economics migration omits legacy attempt ids and remains strict JSON",()=>{
+ const legacy={...store([legacyComparativeEvent("legacy")]),schemaVersion:"1.9.0"};
+ const attempts=legacy.events[0]!.generationSnapshot.candidates.map(generationAttemptIdentity).sort(),migrated=migrateResearchSelectionStore(legacy),row=migrated.events[0]!.researchStructures![0]!;
+ assert.deepEqual(row.generationAttemptIdentities,attempts);
+ assert.equal(Object.hasOwn(row,"attemptCandidateIds"),false);
+ assert.equal(row.candidateId,"legacy-primary");
+ assert.equal(validateResearchSelectionStore(migrated).ok,true);
+ assertNoUndefined(migrated);
+});
+
+test("whole-store upsert succeeds after untouched legacy Comparative Economics events migrate",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"research-legacy-upsert-")),service=new ResearchSelectionService(dir),legacy={...store([legacyComparativeEvent("event-a"),legacyComparativeEvent("event-b")]),schemaVersion:"1.9.0"};
+ try{
+  await service.save("default-sample-trades",legacy);
+  const loaded=await service.read("default-sample-trades");
+  assert.equal(Object.hasOwn(loaded.events.find(row=>row.eventId==="event-a")!.researchStructures![0]!,"attemptCandidateIds"),false);
+  const replacement={...loaded.events.find(row=>row.eventId==="event-b")!,sourceRun:{replaced:true}};
+  const saved=await service.upsertEvent("default-sample-trades","event-b",replacement,loaded.updatedAtUtc);
+  assert.equal(validateResearchSelectionStore(saved).ok,true);assertNoUndefined(saved);
+  assert.equal(Object.hasOwn(saved.events.find(row=>row.eventId==="event-a")!.researchStructures![0]!,"attemptCandidateIds"),false);
+ }finally{await rm(dir,{recursive:true,force:true})}
+});
+
 test("current-schema stores round-trip through migration unchanged",()=>{
  const current=store([event("event-a",["c1"])]);
  const migrated=migrateResearchSelectionStore(current);
@@ -251,7 +276,7 @@ test("comparative research structures cross the canonical compaction boundary",(
  const track={status:"evaluated",reason:null,source:"modeled_execution",modelVersion:"v5",penaltyBps:125,calibration,entrySnapshot:{netOpeningCashFlowBtc:.009,supportingTrades:[trade]},valuationPathSnapshot:path,outcomeSnapshots:[{label:"Settlement",estimatedNetPnlBtc:.004,supportingTrades:[trade]}],provenance:{datasetFingerprint:"dataset-fingerprint"}};
  runtime.researchStructures=[{...base,selectionId:"research~comparative-economics~strategy",researchRole:"comparative_economics",structuralConfigurationId:"7d-anchor-1000",attemptCandidateIds:["strategy","strategy-alt"],executionScenarios:{maker:notEvaluatedScenario(),taker:notEvaluatedScenario()},referenceValuation:{status:"valued",reason:null,source:"local_iv_interpolation",entrySnapshot:{netOpeningCashFlowBtc:.01},valuationPathSnapshot:path,outcomeSnapshots:[{estimatedNetPnlBtc:.005}],provenance:{executionIndependent:true}},modeledExecution:{expected:track,conservative:{...track,penaltyBps:250}},evidenceTradeSnapshots:Array(50).fill(trade),evidenceUsages:[{evidenceId:"evidence~deribit~btc-runtime~runtime-evidence",candidateId:"strategy",role:"entry-pricing",valuationTimestamp:trade.timestamp,pricingTrack:"q50",leg:"sold",executionScenario:null},{evidenceId:"evidence~deribit~btc-runtime~runtime-evidence",candidateId:"strategy",role:"entry-pricing",valuationTimestamp:trade.timestamp,pricingTrack:"q50",leg:"sold",executionScenario:null}]}];
  const before=researchEventPayloadDiagnostics(runtime),compacted=compactResearchSelectionEvent(runtime),after=researchEventPayloadDiagnostics(compacted),row=compacted.researchStructures![0]!;
- assert.equal(after.researchStructureCount,1);assert.equal(after.researchCandidateBytes[0]!.researchRole,"comparative_economics");assert.equal(after.researchCandidateBytes[0]!.structuralConfigurationId,"7d-anchor-1000");assert.ok(after.researchStructuresBytes<before.researchStructuresBytes/2);assert.equal(row.evidenceUsages?.length,1);assert.deepEqual(row.evidenceTradeSnapshots,[]);assert.deepEqual(row.attemptCandidateIds,["strategy","strategy-alt"]);assert.equal((row.referenceValuation!.valuationPathSnapshot as unknown[]).length,181);assert.equal(((row.modeledExecution as any).expected.entrySnapshot as any).netOpeningCashFlowBtc,.009);assert.equal((row.modeledExecution as any).expected.pathDerivation.reference,"referenceValuation.valuationPathSnapshot");assert.doesNotMatch(JSON.stringify(row.modeledExecution),/supportingTrades|calibrationRecords|\"records\"|\"valuationPathSnapshot\":/);
+ assert.equal(after.researchStructureCount,1);assert.equal(after.researchCandidateBytes[0]!.researchRole,"comparative_economics");assert.equal(after.researchCandidateBytes[0]!.structuralConfigurationId,"7d-anchor-1000");assert.ok(after.researchStructuresBytes<before.researchStructuresBytes/2);assert.equal(row.evidenceUsages?.length,1);assert.deepEqual(row.evidenceTradeSnapshots,[]);assert.equal(Object.hasOwn(row,"attemptCandidateIds"),false);assert.equal((row.referenceValuation!.valuationPathSnapshot as unknown[]).length,181);assert.equal(((row.modeledExecution as any).expected.entrySnapshot as any).netOpeningCashFlowBtc,.009);assert.equal((row.modeledExecution as any).expected.pathDerivation.reference,"referenceValuation.valuationPathSnapshot");assert.doesNotMatch(JSON.stringify(row.modeledExecution),/supportingTrades|calibrationRecords|\"records\"|\"valuationPathSnapshot\":/);
 });
 
 test("FULL-SPACE Comparative Economics event stays below 8 MB after research-only Reference compaction",()=>{
