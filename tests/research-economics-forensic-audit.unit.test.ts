@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type {AnalysisDataset} from "../app/lib/research-analysis.ts";
 import {buildResearchEconomicsForensicAudit} from "../app/lib/research-economics/forensic-audit.ts";
+import {buildResearchEconomicsReport} from "../app/lib/research-economics/report.ts";
 
 const fields={targetDteFamilyDays:7,strikeMethod:"anchor",requestedWidth:1000,structureFamily:"credit_vertical"};
 const opportunity=(eventId:string,id:string,status:string,candidateId:string|null,reasonCode?:string)=>({event_id:eventId,opportunity_id:`${eventId}~${id}`,candidate_id:candidateId,attempt_candidate_ids:[],structural_configuration_id:id,structural_configuration:fields,economic_opportunity:{status,reason_code:reasonCode??(status==="explicit_no_trade"?"empirical_nonpositive_credit_after_fees":null),reason:reasonCode??status}});
@@ -52,3 +53,5 @@ test("forensic audit reports identity mismatch without coercing evidence",()=>{
  assert.equal(q50.pricedPositionCount,0);
  assert.equal(q50.eligibleOpportunityIdentityCount,1);
 });
+
+test("compact diagnostics exactly reconcile with forensic identity memberships",()=>{const input=dataset([opportunity("bad","A","unavailable","c1","modeled_execution_not_attempted"),opportunity("healthy","A","trade",null),opportunity("bad","A","unavailable","c1","modeled_execution_not_attempted")],[candidate("bad","c1","A")],[outcome("bad","c1")]),report=buildResearchEconomicsReport(input),audit=buildResearchEconomicsForensicAudit(input);assert.equal(report.diagnostics.integrityAffectedIdentityN,audit.summary.integrityAffectedIdentityCount);assert.equal(report.diagnostics.integrityAffectedConfigurationN,audit.summary.integrityAffectedStructuralConfigurationCount);assert.deepEqual(report.diagnostics.integrityReasons.map(row=>[row.reason,row.affectedIdentityKeys,row.affectedConfigurationIds]),audit.integrityReasonDistribution.map(row=>[row.reason,row.identities,row.structuralConfigurationIds]));assert.deepEqual(report.diagnostics.q50UnavailableReasons.map(row=>[row.reason,row.affectedIdentityKeys]),audit.q50UnavailableReasonDistribution.map(row=>[row.reasonCode,row.identities]));assert.equal(report.diagnostics.q50UnavailableReasons[0]!.affectedIdentityN,1,"duplicate rows cannot inflate unavailable identity membership")});
