@@ -8,6 +8,7 @@ import {structuralDifferences, structuralIdentityOf} from "../app/lib/research-i
 import {CURRENT_RESEARCH_ENGINE_VERSIONS, diagnoseDerivedStaleness, type DerivedResearchOutput} from "../app/lib/research-refresh.ts";
 import {migrateResearchSelectionStore, type ResearchSelectionStore} from "../app/lib/research-selections.ts";
 import {store as fixtureStore, ts} from "./fixtures/research-selection-store.ts";
+import {eventRecomputeUniverse} from "../scripts/research-recompute-engine.ts";
 
 /**
  * The recompute driver.
@@ -147,6 +148,14 @@ test("RECOMPUTE: unchanged selections are genuinely recomputed, not skipped", as
   });
 });
 
+test("RECOMPUTE: market-resolution universe includes only selected and comparative economics candidates",()=>{
+ const saved=migrateResearchSelectionStore(clone(fixtureStore)),event=saved.events[0]!,base=clone(event.selectedStructures[0]!);
+ event.selectedStructures=[];
+ event.researchStructures=[{...base,selectionId:"comparative",researchRole:"comparative_economics",structuralConfigurationId:"structural-configuration-v2:test",attemptCandidateIds:[base.candidateId]},{...base,selectionId:"technical",researchRole:"short_strike_technical"}];
+ assert.deepEqual(eventRecomputeUniverse(event).map(row=>row.selectionId),["comparative"]);
+ assert.equal(event.selectedStructures.length,0,"the comparative candidate remains unselected");
+});
+
 test("RECOMPUTE: a stale causal-reference-v1 structure becomes current", async () => {
   await withStore(async ({service, id}) => {
     const before = await service.read(id);
@@ -284,6 +293,16 @@ test("IDENTITY CHECK: it detects a moved strike, a lost candidate and an added o
   const movedExpiry = clone(before);
   movedExpiry[0]!.expiryTimestamp = (movedExpiry[0]!.expiryTimestamp ?? 0) + 86_400_000;
   assert.ok(structuralDifferences(before, movedExpiry).some(d => d.includes("expiryTimestamp")));
+});
+
+test("IDENTITY CHECK: comparative materializations and normalized attempt provenance are guarded",()=>{
+ const saved=migrateResearchSelectionStore(clone(fixtureStore)),event=saved.events[0]!,source=event.selectedStructures[0]!;
+ event.researchStructures=[{...clone(source),selectionId:"research-comparative",researchRole:"comparative_economics",structuralConfigurationId:"structural-configuration-v2:test",attemptCandidateIds:["second","first"]}];
+ const before=structuralIdentityOf(saved),reordered=clone(saved);reordered.events[0]!.researchStructures![0]!.attemptCandidateIds=["first","second"];
+ assert.deepEqual(structuralDifferences(before,structuralIdentityOf(reordered)),[]);
+ const moved=clone(saved);moved.events[0]!.researchStructures![0]!.quantity=(moved.events[0]!.researchStructures![0]!.quantity??1)+1;
+ assert.ok(structuralDifferences(before,structuralIdentityOf(moved)).some(problem=>problem.includes("quantity")));
+ assert.equal(saved.events[0]!.selectedStructures.length,event.selectedStructures.length,"comparative safety never promotes a Strategy selection");
 });
 
 /* ==================== route ==================== */

@@ -67,6 +67,20 @@ interface EventMarketState {
   readonly apiRequests: number;
 }
 
+/** The exact persisted universe eligible for a full recompute. */
+export function eventRecomputeUniverse(event: ResearchSelectionStore["events"][number]) {
+  const rows = [
+    ...event.selectedStructures,
+    ...(event.researchStructures ?? []).filter(row => row.researchRole === "comparative_economics"),
+  ];
+  const unique = new Map<string, (typeof rows)[number]>();
+  for (const row of rows) {
+    const key = `${event.eventId}|${row.candidateId}`;
+    if (!unique.has(key)) unique.set(key, row);
+  }
+  return [...unique.values()];
+}
+
 /**
  * Resolve one event's market state ONCE.
  *
@@ -94,12 +108,13 @@ async function resolveEventMarket(
   const requests: DesiredRequest[] = [];
   const desired: DesiredSpread[] = [];
   const seen = new Set<string>();
-  for (const structure of event.selectedStructures) {
+  const recomputeUniverse = eventRecomputeUniverse(event);
+  for (const structure of recomputeUniverse) {
     const candidate = event.generationSnapshot.candidates.find(c => c.candidateId === structure.candidateId);
-    if (!candidate) throw new Error(`Selected ${structure.candidateId} is absent from its generation snapshot.`);
+    if (!candidate) throw new Error(`Recompute candidate ${structure.candidateId} is absent from its generation snapshot.`);
     const shortStrike = num(candidate.actualStrikes.short), longStrike = num(candidate.actualStrikes.long);
     if (shortStrike === undefined || longStrike === undefined)
-      throw new Error(`Selected ${structure.candidateId} has no resolved strikes to re-resolve contracts for.`);
+      throw new Error(`Recompute candidate ${structure.candidateId} has no resolved strikes to re-resolve contracts for.`);
     const window = obj(dteWindows[String(candidate.targetHorizon)]);
     const requestId = `${structure.candidateId}`;
     if (seen.has(requestId)) continue;
@@ -131,7 +146,7 @@ async function resolveEventMarket(
   // Key by the ORIGINAL request id so a structure finds its own contracts, and
   // pick the expiry the saved selection actually holds rather than re-ranking.
   const spreadsById = new Map<string, RetrievedSpread>();
-  for (const structure of event.selectedStructures) {
+  for (const structure of recomputeUniverse) {
     const candidate = event.generationSnapshot.candidates.find(c => c.candidateId === structure.candidateId)!;
     const match = built.find(s =>
       s.id.startsWith(structure.candidateId) && s.expiryTimestamp === candidate.actualExpiryTimestamp);
