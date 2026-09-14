@@ -6,7 +6,7 @@ import {
  buildResearchBundle,validateResearchBundle,
 } from "../app/lib/research-bundle.ts";
 import {
- deleteResearchSelectionEvent,renameResearchSelectionEvent,stableCandidateId,stableSelectionId,
+ deleteResearchSelectionEvent,generationAttemptIdentity,generationStructuralConfiguration,renameResearchSelectionEvent,stableCandidateId,stableSelectionId,
  validateResearchSelectionStore,type ResearchSelectionEvent,type ResearchSelectionStore,type SelectedStructure,
 } from "../app/lib/research-selections.ts";
 
@@ -180,9 +180,13 @@ test("IDENTITY: a rename that changes nothing, or targets a missing event, is a 
 });
 
 test("IDENTITY: the renamed store still passes canonical validation",()=>{
- const after=renameResearchSelectionEvent(store([selectionEvent("mr-01",2)]),"mr-01","mr-renamed");
+ const before=store([selectionEvent("mr-01",2)]),event=before.events[0]!,candidate=event.generationSnapshot.candidates[0]!;candidate.expiryRank=1;const configurationId=generationStructuralConfiguration(candidate).id!;
+ const research=structure("mr-01");research.executionScenarios={maker:{status:"not_evaluated",reason:"Research only.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]},taker:{status:"not_evaluated",reason:"Research only.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]}};research.contractResolution={status:"metadata_unavailable",reason:"Fixture",short:null,long:null};research.referenceValuation={status:"unavailable",reason:"Fixture",source:"unavailable",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[],provenance:{}};event.researchStructures=[{...research,researchRole:"comparative_economics",structuralConfigurationId:configurationId,generationAttemptIdentities:[generationAttemptIdentity(candidate)],attemptCandidateIds:[candidate.candidateId]}];
+ const after=renameResearchSelectionEvent(before,"mr-01","mr-renamed"),renamed=after.events[0]!.researchStructures![0]!;
  const checked=validateResearchSelectionStore(after);
  assert.equal(checked.ok,true,JSON.stringify(checked));
+ assert.equal(Object.hasOwn(renamed,"attemptCandidateIds"),false);
+ assert.equal(JSON.parse(renamed.generationAttemptIdentities![0]!)[0],renamed.candidateId);
 });
 
 /* ---------------- deletion ---------------- */
