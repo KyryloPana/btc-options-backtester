@@ -69,3 +69,41 @@ The canonical opportunity universe still determines configuration existence, gen
 ## Self-contained analytical exit basis
 
 Comparative Economics is available immediately for a valid dataset and owns its analytical exit-policy view state. Thesis is the deterministic default. The local selector changes the exit basis for outcome-dependent ordinary configuration, marginal, interaction, and controlled-comparison economics only; it does not configure Strategy Evaluation, Candidate Configuration, or the separate Research Exit Policy report. Canonical opportunity/generation state and exit-independent entry evidence remain unchanged. The Economics by Exit Policy panel always evaluates every canonical policy and always pairs alternatives against Thesis, regardless of the local analytical basis.
+# Production-boundary regeneration
+
+Comparative Economics materialization is initiated from the application's **Research → Controlled matrix** workflow. Confirming that workflow persists `researchRole="comparative_economics"` rows only; it does not add or modify Strategy `selectedStructures`. Preserve the source selection store before any regeneration:
+
+```bash
+cp data/research-selections/<dataset>.json data/research-selections/<dataset>.pre-comparative-recompute.json
+```
+
+After materialization, recompute the persisted structures with the current causal market and execution-calibration inputs:
+
+```bash
+node --experimental-strip-types scripts/run-research-recompute.ts \
+  <dataset> artifacts/research-recompute-audit.json \
+  --execution-estimator=<execution-calibration-directory-or-json>
+```
+
+This step may retrieve Deribit historical instruments, contract trades, delivery prices, and the same-expiry volatility ladder. The command refuses to write if selected or Comparative Economics structural identity changes. A schema 1.9 store without unambiguous persisted rank provenance must instead be regenerated from its originating generation state.
+
+Export the bundle from the running local application without modifying its JSON:
+
+```bash
+curl --fail --output artifacts/<dataset>-research.zip \
+  "http://localhost:3000/api/research-bundle?datasetId=<dataset>"
+```
+
+Import validation, the final production-boundary acceptance summary, and the full forensic audit are then:
+
+```bash
+npm run audit:research-economics -- artifacts/<dataset>-research.zip --acceptance
+npm run audit:research-economics -- artifacts/<dataset>-research.zip \
+  --output artifacts/<dataset>-research-forensic-audit.json
+```
+
+The acceptance command exits non-zero for current-schema integrity contradictions. Ordinary unavailable historical evidence is reported by reason and is not corruption. A Low-N tail is a statistical limitation; its shared minimum is `max(20, analysisConfiguration.minimumCellEvents)` and is never reduced by the audit.
+
+## Checkout artifact availability
+
+This checkout does not contain the exact production `data/research-selections/<dataset>.json`, a production Research bundle ZIP/directory, or a current execution-calibration artifact. Consequently production regeneration and production coverage counts cannot be evaluated from this checkout. The deterministic tests exercise the same boundaries without claiming production-data coverage.
