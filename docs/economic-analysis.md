@@ -1,10 +1,12 @@
 # Economic Analysis methodology
 
-Economics is a **selected-cohort, one-policy** report. It is not evaluated until a Complete Exit Policy is configured. Once configured, every economic observation is keyed by `candidate_id × analytical_track × exit_policy`, and the winning endpoint is consumed from Complete Exit-Policy Analysis without independently reordering triggers.
+Strategy Evaluation Economics answers: **“What does the chosen configuration require and produce as a deployable portfolio?”** It is a strictly **one-structural-configuration, one-policy** report. It is not evaluated until both a canonical Candidate Configuration and a Complete Exit Policy are selected. Once configured, every visible strategy statistic is scoped to that configuration before aggregation and keyed by `event × structural_configuration_id × analytical_track × exit_policy`. Cross-configuration DTE, strike, and width questions belong exclusively to [Research Comparative Economics](research-comparative-economics.md).
 
 ## Analytical tracks and denominator
 
-Central Economics is empirical expected-taker Q50 (`modeled_expected`). Reference is the execution-independent fair-value counterfactual, Q90 (`modeled_conservative`) is conservative execution, and Maker/Taker/delayed layers remain diagnostics. Each layer's opportunity denominator is the unique candidate identities in the selected cohort after canonical cohort projection. Controlled Short-Strike research is excluded; unavailable and rejected/no-trade observations remain distinct from priced positions.
+Central Economics is empirical expected-taker Q50 (`modeled_expected`). Reference is the execution-independent fair-value counterfactual, Q90 (`modeled_conservative`) is conservative execution, and Maker/Taker/delayed layers remain diagnostics. Each layer's opportunity denominator is the selected configuration's event × configuration opportunities after canonical cohort projection. Reference/Q50/Q90 pairing occurs only after applying that same configuration scope. Controlled Short-Strike research and every non-selected configuration are excluded; unavailable and rejected/no-trade observations remain distinct from priced positions. With no selected configuration, the report returns `not_selected` and displays no pooled economic fallback.
+
+Track materialization uses the full analytical projection and then intersects it with the explicitly selected canonical configuration opportunity membership. Thus a selectable canonical configuration remains evaluable even if its exporter `is_selected` flag is false, while unrelated controlled-research rows cannot enter merely because the full projection was used.
 
 ## Entry, fees, and risk
 
@@ -29,6 +31,8 @@ Margin capital-days are the piecewise-constant time integral of IM over the sele
 
 Every return requires a positive, available denominator. Missing and zero denominators remain unavailable.
 
+Primary fee drag is identical to Research: canonical total realized fees USD / canonical gross opening credit USD. The separately timestamped canonical USD components are used directly; native BTC aggregates are never converted to create this ratio.
+
 For one position:
 
 - risk-side required equity = track maximum net loss / configured maximum risk fraction;
@@ -37,13 +41,13 @@ For one position:
 
 The global **Duration capital basis** control scopes Duration & DTE capital-time analysis. Economics reports its canonical structural-risk and policy-window margin denominators independently; that control does not switch or hide Economics denominators.
 
-## Configuration-level economics and portfolio selection
+## Selected-configuration economics and portfolio selection
 
 A structural configuration is identified canonically at export by `structural_configuration_id` (version `structural-configuration-v2`). Its inputs are only ex-ante structural choices: target DTE family, strike method, requested width, and direction-neutral structure family. Quantity is a separate sizing input. Direction, actual DTE, substituted strikes/width, PnL, and exits are deliberately excluded. Schema 4.3 persists and validates the identifier and normalized fields; schema 4.2 imports recompute it only from persisted ex-ante fields.
 
-Configuration comparisons use one independent MR event per observation. A configuration/event pair must contain at most one candidate; duplicates are an integrity error naming every conflicting candidate. Trade-conditional statistics use priced events only. Explicit canonical no-trades contribute zero to opportunity-normalized expectancy, while unavailable evidence makes that expectancy unavailable. P10/P5 require at least `max(20, minimumCellEvents)` independent priced events.
+The selected configuration uses one independent MR event per observation. A configuration/event pair must contain at most one candidate; duplicates are an integrity error naming every conflicting candidate. Trade-conditional statistics use priced events only. Explicit canonical no-trades contribute zero to opportunity-normalized expectancy, while unavailable evidence makes that expectancy unavailable. P10/P5 require at least `max(20, minimumCellEvents)` independent priced events.
 
-No configuration is selected from historical performance. Configuration-level economics are always comparable, but account chronology is built only for `selectedStructuralConfigurationId`; otherwise the report says to select a configuration.
+No configuration is selected from historical performance. Strategy Evaluation never browses or ranks the full configuration universe: it consumes only `selectedStructuralConfigurationId`. The full configuration matrix and controlled parameter comparisons are shown once, in Research Comparative Economics. Account chronology is built only for the selected identity; otherwise Strategy Economics asks for Candidate Configuration selection.
 
 ## Time-indexed strategy portfolio
 
@@ -58,7 +62,7 @@ At a complete state:
 - `requiredEquityMargin(t) = aggregateIM(t) / maximumMarginUtilization`;
 - `requiredEquity(t) = max(requiredEquityRisk(t), requiredEquityMargin(t))` only when both sides are available.
 
-Peak aggregate IM/MM are maxima of the contemporaneous aggregate series, never sums of per-position opening or individual peak values. Modeled-equity drawdown is peak-to-trough on the complete MTM series. Realized-only equity drawdown is retained under that explicit diagnostic name. USD modeled equity uses the causal index at each state. “Modeled available funds” is an analytical reserve calculation, not a claim about historical authenticated Deribit account balances.
+Peak aggregate IM/MM are maxima of the contemporaneous aggregate series, never sums of per-position opening or individual peak values. Modeled-equity drawdown is peak-to-trough on the complete MTM series. Realized-only equity drawdown is retained under that explicit diagnostic name. USD modeled equity is Native BTC collateral marked to USD at each causal index. It includes BTC collateral spot beta and is not canonical option-strategy USD PnL or strategy USD-PnL drawdown. “Modeled available funds” is an analytical reserve calculation, not a claim about historical authenticated Deribit account balances.
 
 ## Corrected matrix, configuration, and portfolio objects (schema 4.4)
 
@@ -66,7 +70,7 @@ The research matrix denominator is the canonical `configuration_opportunities.js
 
 A structural configuration is direction-neutral: nominal target-DTE family + short-strike rule + requested width + `credit_vertical` family. Direction, quantity, actual expiry/DTE/strikes/width, exits, and PnL are excluded. Quantity remains position sizing, not structural identity. Identity version v2 is recomputed during validation. Native schema 4.4 bundles with inconsistent normalized fields or hashes fail; schema 4.2 migration can recompute v2 from its persisted ex-ante fields, while its missing structured opportunity decision is explicitly unavailable.
 
-The generation state is resolved against the configured Complete Exit Policy before aggregation: `priced_trade` requires exactly one matching priced position with finite PnL; `explicit_no_trade` remains the single canonical economic rejection; every intended trade with a missing, unpriced, or conflicting selected-policy result becomes `unavailable`. Opportunity expectancy is `sum(priced Q50 PnL + zero for canonical explicit no-trades) / all eligible event × configuration opportunities`, and is unavailable if any eligible opportunity is unavailable. Trade-conditional PnL statistics use priced trades only. Strategy headline KPIs only appear after explicit configuration selection; before selection the header describes the research matrix.
+The generation state is resolved against the configured Complete Exit Policy before aggregation: `priced_trade` requires exactly one matching priced position with finite PnL; `explicit_no_trade` remains the single canonical economic rejection; every intended trade with a missing, unpriced, or conflicting selected-policy result becomes `unavailable`. Opportunity expectancy is `sum(priced Q50 PnL + zero for canonical explicit no-trades) / all eligible event × selected-configuration opportunities`, and is unavailable if any eligible opportunity is unavailable. Trade-conditional PnL statistics use priced trades only. Strategy headline KPIs only appear after explicit configuration selection; before selection no matrix or pooled fallback is shown.
 
 Execution survival uses paired candidate + event + complete-Exit-Policy identities. Reference→Q50 and Q50→Q90 report median within-pair changes; absolute layer cards are secondary.
 
@@ -87,3 +91,9 @@ Production bundle export materializes volatility upstream from the local evidenc
 ## Local regeneration and acceptance audit
 
 The canonical persisted input is `data/research-selections/<dataset-id>.json`; the matching independent-event denominator is read from `data/trade-datasets/<dataset-id>.json`. Refresh saved derived rows with `node --experimental-strip-types scripts/run-research-recompute.ts <dataset-id> <audit.json> --execution-estimator=<artifact-directory-or-json>`. With `BTC_OPTIONS_LOCAL_DATA_ROOT` and `BTC_OPTIONS_VOLATILITY_CACHE_ROOT` pointing to the prepared immutable evidence/cache, start the local application and download `/__local/research-bundle/<dataset-id>`; that endpoint materializes volatility before synchronous bundle construction. Run `npm run audit:volatility-production -- <dataset-id> data/research-selections` to emit the canonical volatility coverage audit. Regeneration uses the corrected margin implementation automatically; no bundle-row rewriting or additional code change is required.
+
+Fee-drag coverage is reported as contributing metric positions over priced positions. Positions missing canonical total-fee USD, canonical gross-credit USD, or a positive gross-credit denominator do not enter the median and never contribute zero.
+
+Research-only Comparative Economics materializations also export an explicit verified segregated Standard Margin scenario (or an exact unavailable reason) for their own candidate/configuration. This extends capital evidence across the canonical research universe without making those candidates deployable Strategy selections. Policy-window clipping, exact piecewise capital-days integration, and contemporaneous USD indices remain unchanged; Cross Standard Margin and Portfolio Margin remain unsupported.
+
+Strategy applies the shared canonical Q50 evidence gate before exposing its central layer. A stale priced modeled-expected row on a selected canonical no-trade or unavailable identity is removed from KPIs, pairing, audit, and portfolio reconstruction, and makes the selected configuration `selection_unavailable`. A canonical explicit no-trade without stale Q50 evidence remains valid, positionless, and contributes zero only to opportunity-normalized expectancy. Duplicate event × selected-configuration track evidence is likewise non-evaluable rather than last-write-wins.

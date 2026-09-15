@@ -1,4 +1,4 @@
-import { canonicalJson, compactResearchSelectionEvent, type JsonValue, type ResearchSelectionStore, type SelectedStructure } from "./research-selections.ts";
+import { canonicalJson, compactResearchSelectionEvent, type JsonValue, type ResearchOnlyStructure, type ResearchSelectionStore, type SelectedStructure } from "./research-selections.ts";
 import { buildModeledExecution } from "./modeled-execution.ts";
 import { buildResearchMarginSnapshot, LEGACY_MARGIN_NOT_COMPUTED_REASON } from "./research-margin.ts";
 
@@ -64,7 +64,16 @@ export async function recomputeSelectedResearch(store:ResearchSelectionStore,sco
   const modeledCurrent=(["expected","conservative"] as const).every(mode=>object(modeled[mode]).modelVersion===CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution);
   const {modeledExecution:_claimedModeledVersion,...rebuiltVersions}=output.versions;void _claimedModeledVersion;
   structures.push({...structure,executionScenarios:output.executionScenarios,referenceValuation,delayedExecution:canonicalJson(output.delayedExecution),modeledExecution,marginSnapshot:buildResearchMarginSnapshot(recomputedStructure),evidenceTradeSnapshots:output.evidenceTradeSnapshots?.map(canonicalJson),evidenceUsages:output.evidenceUsages,statusLayers:canonicalJson(output.statusLayers),derivedVersions:{...rebuiltVersions,...(modeledCurrent?{modeledExecution:CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution}:{})},derivedRefreshedAtUtc:now});refreshed++;
- }events.push({...event,selectedStructures:structures});}
+ }
+ const researchStructures=[] as ResearchOnlyStructure[];
+ for(const structure of event.researchStructures??[]){
+  if(structure.researchRole!=="comparative_economics"||!selected(scope,event.eventId,structure.candidateId)){researchStructures.push(structure);continue;}
+  const output=await engine({eventId:event.eventId,sourceRun:event.sourceRun,generationSnapshot:event.generationSnapshot,structure});
+  const referenceValuation=output.referenceValuation,modeledExecution=output.modeledExecution??buildModeledExecution(referenceValuation),modeled=object(modeledExecution),modeledCurrent=(["expected","conservative"] as const).every(mode=>object(modeled[mode]).modelVersion===CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution);
+  const notEvaluated={status:"not_evaluated" as const,reason:"Research-only Comparative Economics materialization; immediate maker/taker execution was not independently observed or evaluated.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]},{delayedExecution:_delayed,...researchBase}=structure;void _delayed;
+  researchStructures.push({...researchBase,executionScenarios:{maker:{...notEvaluated},taker:{...notEvaluated}},referenceValuation,modeledExecution,marginSnapshot:null,evidenceTradeSnapshots:[],evidenceUsages:output.evidenceUsages,statusLayers:canonicalJson(output.statusLayers),derivedVersions:{...structure.derivedVersions,...output.versions,...(modeledCurrent?{modeledExecution:CURRENT_RESEARCH_ENGINE_VERSIONS.modeledExecution}:{})},derivedRefreshedAtUtc:now});refreshed++;
+ }
+ events.push({...event,selectedStructures:structures,researchStructures});}
  if(scope.kind!=="all"&&refreshed===0)throw new Error("No saved selected structure matched the requested refresh scope.");
  return{store:{...store,updatedAtUtc:now,events:events.map(compactResearchSelectionEvent)},refreshed};
 }

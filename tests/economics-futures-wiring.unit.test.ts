@@ -164,9 +164,9 @@ test("ECONOMICS: expected modelled execution stays unavailable when uncalibrated
  assert.equal(expected.pricedPositions,0);
  assert.equal(expected.medianExitPnlBtc,null,"Unavailable, not 0");
  assert.equal(expected.medianReturnOnStructuralLoss,null);
- assert.match(expected.reason!,/unavailable|calibration/i);
+ assert.match(expected.reason!,/unavailable|calibration|No priced position/i);
  // Conservative is a distinct row and is never used in place of expected.
- assert.notEqual(expected.reason,layers.find(l=>l.track==="modeled_conservative")!.reason);
+ assert.equal(layers.find(l=>l.track==="modeled_conservative")!.pricedPositions,0,"no unselected layer may leak pooled positions");
 });
 
 test("ECONOMICS: missing margin stays unavailable rather than becoming a return of zero",()=>{

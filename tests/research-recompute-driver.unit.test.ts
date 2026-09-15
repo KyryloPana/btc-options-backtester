@@ -6,8 +6,13 @@ import {join} from "node:path";
 import {ResearchSelectionService} from "../scripts/research-selection-service.ts";
 import {structuralDifferences, structuralIdentityOf} from "../app/lib/research-identity.ts";
 import {CURRENT_RESEARCH_ENGINE_VERSIONS, diagnoseDerivedStaleness, type DerivedResearchOutput} from "../app/lib/research-refresh.ts";
-import {migrateResearchSelectionStore, type ResearchSelectionStore} from "../app/lib/research-selections.ts";
+import {comparativeMaterializationId,generationAttemptIdentity,generationStructuralConfiguration,migrateResearchSelectionStore, type ResearchSelectionStore} from "../app/lib/research-selections.ts";
 import {store as fixtureStore, ts} from "./fixtures/research-selection-store.ts";
+import {eventRecomputeUniverse} from "../scripts/research-recompute-engine.ts";
+import {createResearchRecomputeEngine} from "../scripts/research-recompute-engine.ts";
+import {recomputeSelectedResearch} from "../app/lib/research-refresh.ts";
+import {validateResearchSelectionStore} from "../app/lib/research-selections.ts";
+import {priceInverseOption} from "../app/lib/inverse-option-pricing.ts";
 
 /**
  * The recompute driver.
@@ -147,6 +152,26 @@ test("RECOMPUTE: unchanged selections are genuinely recomputed, not skipped", as
   });
 });
 
+test("RECOMPUTE: market-resolution universe includes only selected and comparative economics candidates",()=>{
+ const saved=migrateResearchSelectionStore(clone(fixtureStore)),event=saved.events[0]!,base=clone(event.selectedStructures[0]!);
+ event.selectedStructures=[];
+ event.researchStructures=[{...base,selectionId:"comparative",researchRole:"comparative_economics",structuralConfigurationId:"structural-configuration-v2:test",attemptCandidateIds:[base.candidateId]},{...base,selectionId:"technical",researchRole:"short_strike_technical"}];
+ assert.deepEqual(eventRecomputeUniverse(event).map(row=>row.selectionId),["comparative"]);
+ assert.equal(event.selectedStructures.length,0,"the comparative candidate remains unselected");
+});
+
+test("RECOMPUTE INTEGRATION: an unselected comparative-only candidate resolves and rebuilds Reference, Q50, and Q90",async()=>{
+ const saved=migrateResearchSelectionStore(clone(fixtureStore)),event=saved.events[0]!,candidate=event.generationSnapshot.candidates[0]!,base=clone(event.selectedStructures[0]!);
+ saved.events=[event];event.selectedStructures=[];event.generationSnapshot.candidates=[candidate];event.researchStructures=[{...base,selectionId:comparativeMaterializationId(event.eventId,generationStructuralConfiguration(candidate).id!),candidateId:candidate.candidateId,researchRole:"comparative_economics",structuralConfigurationId:generationStructuralConfiguration(candidate).id!,generationAttemptIdentities:[generationAttemptIdentity(candidate)],executionScenarios:{maker:{status:"not_evaluated",reason:"Research only.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]},taker:{status:"not_evaluated",reason:"Research only.",entrySnapshot:null,valuationPathSnapshot:[],outcomeSnapshots:[]}}}];
+ const entry=Number((event.sourceRun as any).event.entryTimestamp),expiry=candidate.actualExpiryTimestamp!,requested:string[]=[];
+ (event.sourceRun as any).event.vpocTimestamp=entry+864e5;(event.sourceRun as any).event.exitTimestamp=entry+2*864e5;
+ const series=(instrumentName:string,strike:number,optionType:"P"|"C")=>{const priced=priceInverseOption({optionType:optionType==="P"?"put":"call",indexPrice:100,strike,valuationTimestamp:entry-1,expiryTimestamp:expiry,ivDecimal:.55,forwardPrice:102});if(priced.status!=="priced")throw new Error("fixture price unavailable");const price=priced.priceBtc;return{instrumentName,expiryTimestamp:expiry,expiryLabel:"2026-08-23",strike,optionType,trades:[{instrumentName,timestamp:entry-1,price,markPrice:price,amount:2,indexPrice:100,direction:"buy" as const,iv:55,ivApiPercent:55,ivDecimal:.55,tradeSeq:"1"},{instrumentName,timestamp:entry-1,price,markPrice:price,amount:2,indexPrice:100,direction:"sell" as const,iv:55,ivApiPercent:55,ivDecimal:.55,tradeSeq:"2"}],firstTradeTimestamp:entry-1,lastTradeTimestamp:entry-1,sourceFiles:["fixture"],creationTimestamp:entry-2}};
+ const inventory=[80,85,90,95,100,105].flatMap(strike=>[series(`BTC-X-${strike}-P`,strike,"P"),series(`BTC-X-${strike}-C`,strike,"C")]),service={totalRequestCount:0,resolve:async(_entry:number,requests:any[])=>{requested.push(...requests.map(row=>row.requestId));service.totalRequestCount++;return{candidates:requests.map(row=>({...row,desiredSoldStrike:row.soldStrike,desiredBoughtStrike:row.boughtStrike,expiryTimestamp:expiry,expiryLabel:"2026-08-23",actualDte:7,soldInstrumentName:"BTC-X-100-P",boughtInstrumentName:"BTC-X-90-P",soldStrike:100,boughtStrike:90,soldCreationTimestamp:entry-2,boughtCreationTimestamp:entry-2,strikeResolutionSensible:true,strikeResolutionNote:"exact",dataStatus:"available"})),inventory,crossSection:{ladderInstrumentCount:inventory.length}}}};
+ const calibration={artifact:{artifactHash:"fixture-calibration-v1",sourceDatasetFingerprint:"fixture",coverageStartMs:entry-30*864e5,coverageEndMs:entry-1,tradeCount:500},execution:()=>({fallbackLevel:"action_dte_amount" as const,tradeCount:500,calendarDayCount:10,expiryDayGroupCount:20,q50VolPoints:0,q90VolPoints:.1,dteBand:"7-14" as const,amountBand:"small" as const}),reference:()=>({fallbackLevel:"dte" as const,tradeCount:500,calendarDayCount:10,expiryDayGroupCount:20,q90VolPoints:.1,dteBand:"7-14" as const})};
+ const diagnostics:any[]=[],created=createResearchRecomputeEngine({service:service as any,executionCalibration:calibration as any,diagnostics});created.prime(saved);const before=structuralIdentityOf(saved),result=await recomputeSelectedResearch(saved,{kind:"all"},created.engine),after=structuralIdentityOf(result.store),row=result.store.events[0]!.researchStructures![0]!;
+ assert.deepEqual(requested,[event.researchStructures[0]!.selectionId]);assert.equal(result.store.events[0]!.selectedStructures.length,0);assert.deepEqual(structuralDifferences(before,after),[]);assert.equal(row.researchRole,"comparative_economics");assert.equal(row.referenceValuation?.status,"valued");assert.doesNotMatch(String(row.referenceValuation?.reason??""),/Exact contracts/);assert.equal((row.modeledExecution as any).expected.status,"evaluated");assert.equal((row.modeledExecution as any).conservative.status,"evaluated");assert.equal(row.executionScenarios.maker.status,"not_evaluated");assert.equal(row.executionScenarios.taker.status,"not_evaluated");const validation=validateResearchSelectionStore(result.store);assert.equal(validation.ok,true,JSON.stringify(validation.errors));assert.equal(diagnostics[0]?.status,"recomputed");
+});
+
 test("RECOMPUTE: a stale causal-reference-v1 structure becomes current", async () => {
   await withStore(async ({service, id}) => {
     const before = await service.read(id);
@@ -284,6 +309,16 @@ test("IDENTITY CHECK: it detects a moved strike, a lost candidate and an added o
   const movedExpiry = clone(before);
   movedExpiry[0]!.expiryTimestamp = (movedExpiry[0]!.expiryTimestamp ?? 0) + 86_400_000;
   assert.ok(structuralDifferences(before, movedExpiry).some(d => d.includes("expiryTimestamp")));
+});
+
+test("IDENTITY CHECK: comparative materializations and normalized attempt provenance are guarded",()=>{
+ const saved=migrateResearchSelectionStore(clone(fixtureStore)),event=saved.events[0]!,source=event.selectedStructures[0]!;
+ event.researchStructures=[{...clone(source),selectionId:"research-comparative",researchRole:"comparative_economics",structuralConfigurationId:"structural-configuration-v2:test",attemptCandidateIds:["second","first"]}];
+ const before=structuralIdentityOf(saved),reordered=clone(saved);reordered.events[0]!.researchStructures![0]!.attemptCandidateIds=["first","second"];
+ assert.deepEqual(structuralDifferences(before,structuralIdentityOf(reordered)),[]);
+ const moved=clone(saved);moved.events[0]!.researchStructures![0]!.quantity=(moved.events[0]!.researchStructures![0]!.quantity??1)+1;
+ assert.ok(structuralDifferences(before,structuralIdentityOf(moved)).some(problem=>problem.includes("quantity")));
+ assert.equal(saved.events[0]!.selectedStructures.length,event.selectedStructures.length,"comparative safety never promotes a Strategy selection");
 });
 
 /* ==================== route ==================== */

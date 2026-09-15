@@ -4,13 +4,14 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
 import { compactResearchSelectionEvent, emptyResearchSelectionStore, migrateResearchSelectionStore, validateResearchSelectionStore, type ResearchSelectionEvent, type ResearchSelectionStore } from "../app/lib/research-selections.ts";
 import { recomputeSelectedResearch, type RefreshScope, type ResearchRecomputeEngine } from "../app/lib/research-refresh.ts";
+export { RESEARCH_SELECTION_REQUEST_LIMIT_BYTES } from "../app/lib/research-persistence-limits.ts";
+import { RESEARCH_SELECTION_REQUEST_LIMIT_BYTES } from "../app/lib/research-persistence-limits.ts";
 
 const PREFIX="/__local/research-selections",CAPABILITIES="/__local/persistence-capabilities",SAFE_ID=/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 // A store that does not exist yet still needs a stable version for the GET ->
 // If-Match PUT handshake. Using the current time here made every first save
 // stale because read() produced a different version for each request.
 const EMPTY_STORE_VERSION="1970-01-01T00:00:00.000Z";
-export const RESEARCH_SELECTION_REQUEST_LIMIT_BYTES=10_000_000;
 export class ResearchSelectionService{
   readonly directory:string;
   constructor(directory:string){this.directory=directory;}
@@ -22,7 +23,7 @@ export class ResearchSelectionService{
   async recompute(id:string,scope:RefreshScope,engine:ResearchRecomputeEngine,expectedUpdatedAt?:string|null,onProgress?:(done:number,total:number)=>void){
    const current=await this.read(id);
    if(expectedUpdatedAt&&current.updatedAtUtc!==expectedUpdatedAt)throw Object.assign(new Error("Research selections changed on disk; reload before refreshing."),{status:409});
-   const total=current.events.flatMap(e=>e.selectedStructures.map(s=>({eventId:e.eventId,candidateId:s.candidateId}))).filter(s=>scope.kind==="all"||scope.kind==="event"&&scope.eventId===s.eventId||scope.kind==="structure"&&scope.eventId===s.eventId&&scope.candidateId===s.candidateId).length;
+   const total=current.events.flatMap(e=>[...e.selectedStructures,...(e.researchStructures??[]).filter(s=>s.researchRole==="comparative_economics")].map(s=>({eventId:e.eventId,candidateId:s.candidateId}))).filter(s=>scope.kind==="all"||scope.kind==="event"&&scope.eventId===s.eventId||scope.kind==="structure"&&scope.eventId===s.eventId&&scope.candidateId===s.candidateId).length;
    let done=0;onProgress?.(done,total);
    const wrapped:ResearchRecomputeEngine=async input=>{const output=await engine(input);onProgress?.(++done,total);return output};
    const result=await recomputeSelectedResearch(current,scope,wrapped);

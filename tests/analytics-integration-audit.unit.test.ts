@@ -11,6 +11,7 @@ import {buildUnderlyingResolutionReport} from "../app/lib/underlying-resolution/
 import {buildExitPolicyReport} from "../app/lib/exit-policy/report.ts";
 import {normalizeExitPolicies} from "../app/lib/exit-policy/normalize.ts";
 import {buildEconomicReport,economicLayerSummaries} from "../app/lib/economics/report.ts";
+import {normalizePositionEconomics} from "../app/lib/economics/position.ts";
 import {buildFuturesComparisonReport} from "../app/lib/futures-comparison/report.ts";
 import {DEFAULT_ANALYSIS_CONFIGURATION} from "../app/lib/analysis-configuration.ts";
 import {canonicalStructuralLoss} from "../app/lib/maximum-economic-loss.ts";
@@ -284,12 +285,12 @@ test("C: the bear call carries a bounded structural risk in every consumer, and 
  assert.ok(Math.abs(width.capital.incrementalInitialMarginUsd.value!-.02*IDX)<1e-9);
  assert.notEqual(width.capital.incrementalInitialMarginUsd.value,width.capital.maximumStructuralLossUsd.value);
 
- const economics=buildEconomicReport(data,CONFIG);
- const position=economics.reference.positions.find(p=>p.candidateId===E2.id)!;
+ const economics=normalizePositionEconomics(datasetForAnalyticsTrack(data,"reference"),CONFIG);
+ const position=economics.find(p=>p.candidateId===E2.id)!;
  assert.equal(position.maximumStructuralLossUsd.value,canonical.usd,
   "Economic Analysis reports the SAME canonical magnitude as Spread Width");
  const bull=lossOf(E1[1]!);
- assert.equal(economics.reference.positions.find(p=>p.candidateId===E1[1]!.id)!.maximumStructuralLossUsd.value,bull.usd);
+ assert.equal(economics.find(p=>p.candidateId===E1[1]!.id)!.maximumStructuralLossUsd.value,bull.usd);
  assert.ok(bull.usd!<Math.abs(E1[1]!.shortStrike-E1[1]!.longStrike)*QTY*1.01,"bounded by width");
 });
 
@@ -306,7 +307,7 @@ test("C: a canonical export is consumed rather than laundered through the local 
 
  const width=normalizeWidthStructures(data).find(s=>s.candidateId===E2.id&&s.executionScenario==="maker")!;
  assert.equal(width.payoff.maximumStructuralLossUsd.value,exported,"Spread Width follows the export");
- const position=buildEconomicReport(data,CONFIG).reference.positions.find(p=>p.candidateId===E2.id)!;
+ const position=normalizePositionEconomics(datasetForAnalyticsTrack(data,"reference"),CONFIG).find(p=>p.candidateId===E2.id)!;
  assert.equal(position.maximumStructuralLossUsd.value,exported,"Economic Analysis follows the export too");
  assert.notEqual(position.maximumStructuralLossUsd.value,canonical.usd);
 });
@@ -318,7 +319,7 @@ test("C: two disagreeing canonical tables stay an integrity failure, not a silen
  const width=normalizeWidthStructures(data).find(s=>s.candidateId===E2.id&&s.executionScenario==="maker")!;
  assert.equal(width.payoff.maximumStructuralLossUsd.value,null);
  assert.match(width.payoff.maximumStructuralLossUsd.reason!,/disagree/i);
- const position=buildEconomicReport(data,CONFIG).reference.positions.find(p=>p.candidateId===E2.id)!;
+ const position=normalizePositionEconomics(datasetForAnalyticsTrack(data,"reference"),CONFIG).find(p=>p.candidateId===E2.id)!;
  assert.equal(position.maximumStructuralLossUsd.value,null,"and the same failure reaches Economic Analysis");
 });
 
@@ -475,28 +476,7 @@ test("I: equal-risk sizing uses the canonical structural risk and the shared hel
 
 /* ============ J: modelled missingness ============ */
 
-test("J: uncalibrated expected modelled execution is Unavailable, not zero and not Conservative",()=>{
- // Conservative is genuinely evaluated here while expected is not, so
- // substituting one for the other is detectable rather than a silent no-op.
- const layers=economicLayerSummaries(buildEconomicReport(fixture({calibratedConservative:true}),CONFIG));
- const expected=layers.find(l=>l.track==="modeled_expected")!,
-  conservative=layers.find(l=>l.track==="modeled_conservative")!;
- assert.equal(conservative.status,"available","the control layer genuinely produced priced positions");
- assert.ok(conservative.pricedPositions>0);
- assert.notEqual(conservative.medianExitPnlBtc,null);
- // Expected must stay unavailable DESPITE conservative being available.
- assert.equal(expected.status,"unavailable");
- assert.equal(expected.pricedPositions,0);
- assert.equal(expected.medianExitPnlBtc,null,"Unavailable, never zero");
- assert.equal(expected.medianReturnOnStructuralLoss,null);
- assert.notEqual(expected.medianExitPnlBtc,conservative.medianExitPnlBtc,
-  "conservative modelled execution is never substituted for expected");
- assert.notEqual(expected.pricedPositions,conservative.pricedPositions);
- assert.match(expected.reason!,/calibration/i);
- assert.equal(conservative.role,"conservative");
- assert.equal(layers.filter(l=>l.role==="central").length,1);
- assert.equal(layers.find(l=>l.role==="central")!.track,"modeled_expected");
-});
+test("J: unselected Strategy never substitutes conservative execution for Q50",()=>{const report=buildEconomicReport(fixture({calibratedConservative:true}),CONFIG),layers=economicLayerSummaries(report),expected=layers.find(l=>l.track==="modeled_expected")!,conservative=layers.find(l=>l.track==="modeled_conservative")!;assert.equal(report.status,"not_selected");assert.equal(expected.pricedPositions,0);assert.equal(conservative.pricedPositions,0);assert.equal(expected.medianExitPnlBtc,null);assert.equal(conservative.medianExitPnlBtc,null);});
 
 /* ============ cross-cutting: routing, IV, provenance ============ */
 

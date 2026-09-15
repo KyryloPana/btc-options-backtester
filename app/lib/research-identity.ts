@@ -13,6 +13,7 @@ import type {ResearchSelectionStore} from "./research-selections.ts";
 /** The fields a recompute may never change. */
 export interface StructuralIdentity {
   eventId: string; candidateId: string; venue: string;
+  structuralConfigurationId: string | null; generationAttemptIdentities: string; researchRole: string | null;
   optionType: string; structure: string; strikeMethod: string;
   requestedShort: number | null; requestedLong: number | null; requestedWidth: number | null;
   actualShort: number | null; actualLong: number | null; actualWidth: number | null;
@@ -26,10 +27,14 @@ export function structuralIdentityOf(store: ResearchSelectionStore): StructuralI
   const rows: StructuralIdentity[] = [];
   for (const event of store.events) {
     const byId = new Map(event.generationSnapshot.candidates.map(c => [c.candidateId, c]));
-    for (const structure of event.selectedStructures) {
+    const structures = [...event.selectedStructures, ...(event.researchStructures ?? []).filter(row => row.researchRole === "comparative_economics")];
+    for (const structure of structures) {
       const candidate = byId.get(structure.candidateId);
       rows.push({
         eventId: event.eventId, candidateId: structure.candidateId, venue: structure.venue,
+        structuralConfigurationId: "structuralConfigurationId" in structure && typeof structure.structuralConfigurationId === "string" ? structure.structuralConfigurationId : null,
+        generationAttemptIdentities: "generationAttemptIdentities" in structure && Array.isArray(structure.generationAttemptIdentities) ? [...new Set(structure.generationAttemptIdentities.filter((id):id is string=>typeof id==="string"))].sort().join("\u0000") : "",
+        researchRole: "researchRole" in structure && typeof structure.researchRole === "string" ? structure.researchRole : null,
         optionType: String(candidate?.optionType ?? ""), structure: String(candidate?.structure ?? ""),
         strikeMethod: String(candidate?.strikeMethod ?? ""),
         requestedShort: numberOrNull(candidate?.requestedStrikes?.short),
@@ -44,7 +49,7 @@ export function structuralIdentityOf(store: ResearchSelectionStore): StructuralI
       });
     }
   }
-  return rows.sort((a, b) => a.candidateId.localeCompare(b.candidateId));
+  return rows.sort((a, b) => `${a.eventId}|${a.structuralConfigurationId??a.candidateId}|${a.researchRole}`.localeCompare(`${b.eventId}|${b.structuralConfigurationId??b.candidateId}|${b.researchRole}`));
 }
 
 /** Every structural difference between two stores, or an empty list. */
@@ -53,17 +58,18 @@ export function structuralDifferences(
 ): string[] {
   const problems: string[] = [];
   if (before.length !== after.length)
-    problems.push(`selected structure count changed: ${before.length} -> ${after.length}`);
-  const afterById = new Map(after.map(r => [r.candidateId, r]));
+    problems.push(`recompute structure count changed: ${before.length} -> ${after.length}`);
+  const key = (r: StructuralIdentity) => `${r.eventId}|${r.structuralConfigurationId??r.candidateId}|${r.researchRole ?? "selected"}`;
+  const afterById = new Map(after.map(r => [key(r), r]));
   for (const row of before) {
-    const match = afterById.get(row.candidateId);
+    const match = afterById.get(key(row));
     if (!match) { problems.push(`candidate ${row.candidateId} disappeared`); continue; }
     for (const key of Object.keys(row) as (keyof StructuralIdentity)[])
       if (row[key] !== match[key])
         problems.push(`${row.candidateId}.${key}: ${String(row[key])} -> ${String(match[key])}`);
   }
   for (const row of after)
-    if (!before.some(b => b.candidateId === row.candidateId))
+    if (!before.some(b => key(b) === key(row)))
       problems.push(`candidate ${row.candidateId} appeared`);
   return problems;
 }

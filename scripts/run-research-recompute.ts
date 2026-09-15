@@ -26,7 +26,7 @@ const obj = (v: unknown): Row => v && typeof v === "object" && !Array.isArray(v)
 /** The previous methodology's output, captured before anything is overwritten. */
 function captureReference(store: ResearchSelectionStore) {
   const rows: Row[] = [];
-  for (const event of store.events) for (const structure of event.selectedStructures) {
+  for (const event of store.events) for (const structure of [...event.selectedStructures, ...(event.researchStructures ?? []).filter(row => row.researchRole === "comparative_economics")]) {
     const reference = obj(structure.referenceValuation as unknown);
     rows.push({
       event_id: event.eventId, candidate_id: structure.candidateId,
@@ -57,7 +57,7 @@ async function main() {
   const beforeIdentity = structuralIdentityOf(before);
   const beforeReference = captureReference(before);
   process.stderr.write(
-    `store ${datasetId}: ${before.events.length} events, ${beforeIdentity.length} selected structures\n`);
+    `store ${datasetId}: ${before.events.length} events, ${beforeIdentity.length} recompute structures\n`);
 
   const service = new DeribitHistoryService(
     "https://history.deribit.com/api/v2/public",
@@ -71,7 +71,7 @@ async function main() {
   prime(before);
 
   let done = 0;
-  const total = beforeIdentity.length;
+  const total = before.events.reduce((count, event) => count + event.selectedStructures.length + (event.researchStructures ?? []).filter(row => row.researchRole === "comparative_economics").length, 0);
   const wrapped: typeof engine = async input => {
     const output = await engine(input);
     done += 1;
